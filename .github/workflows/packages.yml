@@ -87,7 +87,7 @@ jobs:
           Copy-Item target/release/muxus.exe $stage
           Copy-Item packaging/LICENSE, ATTRIBUTION.md $stage
           Get-ChildItem assets/fonts/*-LICENSE.txt, assets/icons/LICENSE-*.txt | Copy-Item -Destination $stage
-          python -I packaging/third_party_licenses.py "$stage/THIRD_PARTY_LICENSES.txt" --target x86_64-pc-windows-msvc
+          python -I -X utf8 packaging/third_party_licenses.py "$stage/THIRD_PARTY_LICENSES.txt" --target x86_64-pc-windows-msvc
           Compress-Archive -Path $stage -DestinationPath "dist/muxus-$version-win-x64.zip"
       - uses: actions/upload-artifact@v4
         with:
