@@ -180,7 +180,7 @@ impl Render for SftpWindow {
             .items_center()
             .gap(px(10.))
             .h(px(layout::TOP_BAR_HEIGHT))
-            .pl(px(16.))
+            .pl(px(window_frame::traffic_light_inset(window).unwrap_or(16.)))
             .pr(px(if controls.is_some() { 0. } else { 16. }))
             .bg(p.sidebar)
             .border_b_1()

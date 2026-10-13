@@ -694,7 +694,7 @@ impl SettingsWindow {
                 .flex_none()
                 .items_center()
                 .h(px(layout::TOP_BAR_HEIGHT + 1.))
-                .pl(px(20.))
+                .pl(px(window_frame::traffic_light_inset(window).unwrap_or(20.)))
                 .bg(bar)
                 .border_b_1()
                 .border_color(p.divider),
@@ -711,7 +711,7 @@ impl SettingsWindow {
             window_frame::window_controls(window, cx),
             |bar, controls| bar.child(controls),
         )
-        .when(!window_frame::client_decorated(window), |bar| {
+        .when(!window_frame::draws_window_controls(window), |bar| {
             bar.pr(px(16.))
         })
         .into_any_element()

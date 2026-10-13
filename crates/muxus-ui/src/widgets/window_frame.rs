@@ -52,8 +52,17 @@ pub fn app_window_options(
         window_decorations: Some(WindowDecorations::Client),
         window_min_size: Some(min_size),
         app_id: Some(app_id.into()),
+        // [`title_bar`] moves the window itself; AppKit must not drag it too.
+        app_owns_titlebar_drag: true,
         ..Default::default()
     }
+}
+
+/// Room the title bar leaves at its left end for the macOS traffic lights (placed at
+/// `traffic_light_position`, 16px in), as `TopBar.tsx` pads for them; `None` elsewhere and
+/// in fullscreen, where macOS hides them.
+pub fn traffic_light_inset(window: &Window) -> Option<f32> {
+    (cfg!(target_os = "macos") && !window.is_fullscreen()).then_some(80.)
 }
 
 use crate::color::alpha;
@@ -146,6 +155,17 @@ pub fn client_decorated(window: &Window) -> bool {
     matches!(window.window_decorations(), Decorations::Client { .. }) && !window.is_fullscreen()
 }
 
+/// The title bar carries [`window_controls`]: on a client-decorated Linux window, and on
+/// Windows, where GPUI reports server decorations but hides the native title bar (and its
+/// buttons) for a transparent title bar. macOS keeps its traffic lights.
+pub fn draws_window_controls(window: &Window) -> bool {
+    if cfg!(target_os = "windows") {
+        !window.is_fullscreen()
+    } else {
+        client_decorated(window)
+    }
+}
+
 /// The radius of the window's top corners: rounded while it floats, square
 /// when maximized, tiled to the top or fullscreen.
 pub fn window_corner_radius(window: &Window) -> f32 {
@@ -157,16 +177,31 @@ pub fn window_corner_radius(window: &Window) -> f32 {
 
 /// Make `bar` the window's title bar: a press drags the window, a double
 /// press maximizes or restores it.
+///
+/// On Windows the bar is a caption area instead (`start_window_move` does nothing there):
+/// Windows drags, double-click maximizes and snaps it, unless the app claims the press,
+/// which is how the controls on the bar keep theirs.
 pub fn title_bar<E: InteractiveElement>(bar: E) -> E {
+    #[cfg(target_os = "windows")]
+    let bar = bar.window_control_area(gpui_kit::WindowControlArea::Drag);
     bar.on_mouse_down(
         MouseButton::Left,
         |event: &MouseDownEvent, window: &mut Window, cx: &mut App| {
             // Controls on the bar claim their own presses (prevent_default).
             if window.default_prevented() {
+                cx.stop_propagation();
+                return;
+            }
+            if cfg!(target_os = "windows") {
                 return;
             }
             if event.click_count == 2 {
-                window.zoom_window();
+                if cfg!(target_os = "macos") {
+                    // Zooms or minimizes, as the user's Dock setting says.
+                    window.titlebar_double_click();
+                } else {
+                    window.zoom_window();
+                }
             } else {
                 window.start_window_move();
             }
@@ -176,7 +211,7 @@ pub fn title_bar<E: InteractiveElement>(bar: E) -> E {
 }
 
 /// Minimize, maximize/restore and close, for the right end of the title bar;
-/// `None` when the window has no client frame.
+/// `None` when the platform draws them ([`draws_window_controls`]).
 ///
 /// Measured from the Electron build in the same headless GNOME session: 24px
 /// circles 13px apart, 10px from the window edge, tinted ~9% toward the
@@ -184,7 +219,7 @@ pub fn title_bar<E: InteractiveElement>(bar: E) -> E {
 /// `titleBarColors`). The overlay sits 16px past the last toolbar button, as
 /// the toolbar's padding reserves it.
 pub fn window_controls(window: &Window, cx: &App) -> Option<AnyElement> {
-    if !client_decorated(window) {
+    if !draws_window_controls(window) {
         return None;
     }
     let theme = cx.theme();

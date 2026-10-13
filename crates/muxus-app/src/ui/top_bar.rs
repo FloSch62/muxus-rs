@@ -18,7 +18,9 @@ use muxus_ui::widgets::{Button, ButtonColor, IconButton};
 
 use crate::ui::prefs::{THEME_MODE_OPTIONS, theme_mode_icon, theme_mode_label};
 use crate::ui::shell::{AppShell, ShellMenu};
-use muxus_ui::widgets::window_frame::{title_bar, window_controls, window_corner_radius};
+use muxus_ui::widgets::window_frame::{
+    title_bar, traffic_light_inset, window_controls, window_corner_radius,
+};
 
 /// `withChord`: "New tab · Ctrl+Shift+T".
 pub fn with_chord(label: &str, command: &str) -> String {
@@ -54,7 +56,7 @@ impl AppShell {
             .items_center()
             .gap(px(12.))
             .h(px(height))
-            .pl(px(16.))
+            .pl(px(traffic_light_inset(window).unwrap_or(16.)))
             .pr(px(16.));
         let mut bar = title_bar(bar);
 
