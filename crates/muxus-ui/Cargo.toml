@@ -1,0 +1,20 @@
+[package]
+name = "muxus-ui"
+description = "Theme tokens and shared widgets that reproduce the Muxus look in GPUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+gpui-kit = { version = "=0.7.3", features = ["assets", "tree-sitter-languages"] }
+rust-embed = { version = "8.7.2", features = ["interpolate-folder-path"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+log = "0.4"
+# Headless windows for the widget tests (tests/*.rs).
+gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }

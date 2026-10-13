@@ -1,0 +1,29 @@
+//! Terminal emulation engine, schemes, keyword highlighting, scrollback snapshots.
+
+pub mod buffer;
+pub mod clipboard_paste;
+pub mod color;
+pub mod custom_schemes;
+pub mod drop_paths;
+pub mod file_drop;
+pub mod filter;
+pub mod fit;
+pub mod font_catalog;
+pub mod highlight_profiles;
+pub mod keyboard;
+pub mod keywords;
+pub mod links;
+pub mod mouse;
+pub mod osc52;
+pub mod palette;
+pub mod paste;
+pub mod right_click;
+pub mod scrollback;
+pub mod search;
+pub mod selection;
+pub mod send_break;
+pub mod serialize;
+pub mod shell_integration;
+pub mod ssh_summary;
+pub mod style;
+pub mod terminal;

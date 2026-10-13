@@ -1,0 +1,54 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+exclude = ["vendor"]
+default-members = ["crates/muxus-app"]
+
+[workspace.package]
+version = "0.11.1"
+edition = "2024"
+license = "MIT"
+rust-version = "1.99"
+repository = "https://github.com/FloSch62/muxus"
+
+# Each crate declares its own third-party dependencies in its own Cargo.toml.
+# Only the internal crates are listed here, so crates refer to each other as
+# `muxus-core.workspace = true`.
+[workspace.dependencies]
+muxus-core = { path = "crates/muxus-core" }
+muxus-store = { path = "crates/muxus-store" }
+muxus-ssh = { path = "crates/muxus-ssh" }
+muxus-local = { path = "crates/muxus-local" }
+muxus-telnet = { path = "crates/muxus-telnet" }
+muxus-serial = { path = "crates/muxus-serial" }
+muxus-rdp = { path = "crates/muxus-rdp" }
+muxus-vnc = { path = "crates/muxus-vnc" }
+muxus-mgmt = { path = "crates/muxus-mgmt" }
+muxus-import = { path = "crates/muxus-import" }
+muxus-term = { path = "crates/muxus-term" }
+muxus-session = { path = "crates/muxus-session" }
+muxus-ui = { path = "crates/muxus-ui" }
+muxus-term-view = { path = "crates/muxus-term-view" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true
+
+# The terminal engine with the scrolling and printing hot paths reworked (see
+# docs/parity/terminal-perf.md).
+[patch.crates-io]
+par-term-emu-core = { path = "vendor/par-term-emu-core" }

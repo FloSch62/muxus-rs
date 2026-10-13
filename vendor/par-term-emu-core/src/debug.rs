@@ -1,0 +1,468 @@
+//! Diagnostics for par-term-emu: the `log` facade first; the file logger
+//! is an optional sink enabled by `DEBUG_LEVEL`.
+//!
+//! Every record goes to the [`log`] crate under the target
+//! [`LOG_TARGET`], formatted `[CATEGORY] message`, so an embedder's own
+//! logger (par-mux's stderr sink, the streamer's `tracing` subscriber, a
+//! `pyo3-log` bridge) receives core diagnostics at the level it enables.
+//!
+//! The file sink is controlled by the DEBUG_LEVEL environment variable:
+//! - 0 or unset: no file
+//! - 1: Errors only
+//! - 2: Info level (screen switches, device queries)
+//! - 3: Debug level (VT sequences, buffer changes)
+//! - 4: Trace level (every operation, buffer snapshots)
+//!
+//! File output goes to `par_term_emu_core_rust_debug_rust_{pid}.log` (one
+//! file per process) in the system temp directory (std::env::temp_dir():
+//! /tmp on Linux, per-user temp on macOS, %TEMP% on Windows), which keeps
+//! debug output off a TUI's stdout/stderr.
+
+use parking_lot::Mutex;
+use std::fmt;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Once, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
+/// Debug level configuration
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DebugLevel {
+    /// Logging disabled.
+    Off = 0,
+    /// Errors only.
+    Error = 1,
+    /// Errors and informational messages.
+    Info = 2,
+    /// Adds debug messages.
+    Debug = 3,
+    /// Adds trace-level messages.
+    Trace = 4,
+}
+
+impl DebugLevel {
+    /// The `log` level a record at this level is emitted at.
+    fn to_log_level(self) -> Option<log::Level> {
+        match self {
+            DebugLevel::Off => None,
+            DebugLevel::Error => Some(log::Level::Error),
+            DebugLevel::Info => Some(log::Level::Info),
+            DebugLevel::Debug => Some(log::Level::Debug),
+            DebugLevel::Trace => Some(log::Level::Trace),
+        }
+    }
+
+    fn from_env() -> Self {
+        Self::from_value(std::env::var("DEBUG_LEVEL").ok().as_deref())
+    }
+
+    /// Parse a `DEBUG_LEVEL` value; unset or unparseable means `Off`.
+    fn from_value(raw: Option<&str>) -> Self {
+        match raw.map(|val| val.trim().parse::<u8>()) {
+            Some(Ok(1)) => DebugLevel::Error,
+            Some(Ok(2)) => DebugLevel::Info,
+            Some(Ok(3)) => DebugLevel::Debug,
+            Some(Ok(4)) => DebugLevel::Trace,
+            _ => DebugLevel::Off,
+        }
+    }
+}
+
+/// Global debug logger
+struct DebugLogger {
+    level: DebugLevel,
+    file: Option<std::fs::File>,
+}
+
+impl DebugLogger {
+    fn new() -> Self {
+        let level = DebugLevel::from_env();
+
+        let file = if level != DebugLevel::Off {
+            // Rust uses a separate log file from Python, written to the system temp
+            // dir (std::env::temp_dir(): /tmp on Linux, per-user temp on macOS, %TEMP% on Windows)
+            // so the Rust and Python logs land in the same place. The PID suffix
+            // keeps concurrent emulator processes from truncating each other's logs.
+            let log_path = std::env::temp_dir().join(format!(
+                "par_term_emu_core_rust_debug_rust_{}.log",
+                std::process::id()
+            ));
+
+            let mut options = OpenOptions::new();
+            options.write(true).truncate(true).create(true);
+            #[cfg(unix)]
+            {
+                // The temp dir is shared and world-writable: create the log
+                // owner-only and refuse to follow a symlink planted at the path
+                // (open then fails and logging is silently disabled — fail closed).
+                options.mode(0o600);
+                options.custom_flags(libc::O_NOFOLLOW);
+            }
+
+            match options.open(&log_path) {
+                Ok(f) => {
+                    // Write header
+                    let mut logger = DebugLogger {
+                        level,
+                        file: Some(f),
+                    };
+                    logger.write_raw(&format!(
+                        "\n{}\npar-term-emu Rust debug session started at {} (level={:?})\n{}\n",
+                        "=".repeat(80),
+                        get_timestamp(),
+                        level,
+                        "=".repeat(80)
+                    ));
+                    return logger;
+                }
+                Err(_e) => {
+                    // Silently fail if log file can't be opened
+                    // This prevents debug output from interfering with TUI applications
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        DebugLogger { level, file }
+    }
+
+    fn write_raw(&mut self, msg: &str) {
+        if let Some(ref mut file) = self.file {
+            let _ = file.write_all(msg.as_bytes());
+            let _ = file.flush();
+        }
+    }
+
+    fn log(&mut self, level: DebugLevel, category: &str, msg: &str) {
+        if level <= self.level {
+            let timestamp = get_timestamp();
+            let level_str = match level {
+                DebugLevel::Error => "ERROR",
+                DebugLevel::Info => "INFO ",
+                DebugLevel::Debug => "DEBUG",
+                DebugLevel::Trace => "TRACE",
+                DebugLevel::Off => return,
+            };
+            self.write_raw(&format!(
+                "[{}] [{}] [{}] {}\n",
+                timestamp, level_str, category, msg
+            ));
+        }
+    }
+}
+
+static LOGGER: OnceLock<Mutex<DebugLogger>> = OnceLock::new();
+
+fn get_logger() -> &'static Mutex<DebugLogger> {
+    LOGGER.get_or_init(|| Mutex::new(DebugLogger::new()))
+}
+
+// The level check runs on every escape sequence (QA-112), so it reads an
+// AtomicU8 instead of the LOGGER mutex; the mutex serializes file writes
+// only, and is taken only once a message is known to be enabled.
+static LOG_LEVEL: AtomicU8 = AtomicU8::new(0);
+static LOG_LEVEL_INIT: Once = Once::new();
+
+fn current_level() -> DebugLevel {
+    LOG_LEVEL_INIT.call_once(|| {
+        LOG_LEVEL.store(DebugLevel::from_env() as u8, Ordering::Relaxed);
+    });
+    match LOG_LEVEL.load(Ordering::Relaxed) {
+        1 => DebugLevel::Error,
+        2 => DebugLevel::Info,
+        3 => DebugLevel::Debug,
+        4 => DebugLevel::Trace,
+        _ => DebugLevel::Off,
+    }
+}
+
+fn get_timestamp() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}.{:06}", now.as_secs(), now.subsec_micros())
+}
+
+/// The `log` target every core record is emitted under.
+pub const LOG_TARGET: &str = "par_term_emu_core_rust";
+
+/// Whether the `DEBUG_LEVEL` file sink wants records at `level`.
+fn file_enabled(level: DebugLevel) -> bool {
+    level <= current_level()
+}
+
+/// Whether the installed `log` logger wants records at `level` for
+/// [`LOG_TARGET`]. `log_enabled!` checks the global max level (an atomic
+/// load) before asking the logger, so an embedder that enables Debug for
+/// its own crate only does not make the parser format records for ours.
+fn facade_enabled(level: DebugLevel) -> bool {
+    level
+        .to_log_level()
+        .is_some_and(|lvl| log::log_enabled!(target: LOG_TARGET, lvl))
+}
+
+/// Check if debugging is enabled at given level, in either sink.
+///
+/// Runs on every escape sequence (QA-112): with no `DEBUG_LEVEL` and no
+/// logger installed it is two atomic loads and false.
+pub fn is_enabled(level: DebugLevel) -> bool {
+    file_enabled(level) || facade_enabled(level)
+}
+
+/// Log a message at specified level to the `log` facade and, when
+/// `DEBUG_LEVEL` enables it, the debug file. Every helper in this module
+/// funnels through here.
+pub fn log(level: DebugLevel, category: &str, msg: &str) {
+    if facade_enabled(level) {
+        if let Some(lvl) = level.to_log_level() {
+            log::log!(target: LOG_TARGET, lvl, "[{category}] {msg}");
+        }
+    }
+    // The LOGGER mutex is taken only once the file sink wants the record.
+    if file_enabled(level) {
+        get_logger().lock().log(level, category, msg);
+    }
+}
+
+/// Log formatted message
+pub fn logf(level: DebugLevel, category: &str, args: fmt::Arguments) {
+    if is_enabled(level) {
+        log(level, category, &format!("{}", args));
+    }
+}
+
+// Convenience macros for logging
+/// Log a formatted message at [`DebugLevel::Error`].
+#[macro_export]
+macro_rules! debug_error {
+    ($category:expr, $($arg:tt)*) => {
+        $crate::debug::logf($crate::debug::DebugLevel::Error, $category, format_args!($($arg)*))
+    };
+}
+
+/// Log a formatted message at [`DebugLevel::Info`].
+#[macro_export]
+macro_rules! debug_info {
+    ($category:expr, $($arg:tt)*) => {
+        $crate::debug::logf($crate::debug::DebugLevel::Info, $category, format_args!($($arg)*))
+    };
+}
+
+/// Log a formatted message at [`DebugLevel::Debug`].
+#[macro_export]
+macro_rules! debug_log {
+    ($category:expr, $($arg:tt)*) => {
+        $crate::debug::logf($crate::debug::DebugLevel::Debug, $category, format_args!($($arg)*))
+    };
+}
+
+/// Log a formatted message at [`DebugLevel::Trace`].
+#[macro_export]
+macro_rules! debug_trace {
+    ($category:expr, $($arg:tt)*) => {
+        $crate::debug::logf($crate::debug::DebugLevel::Trace, $category, format_args!($($arg)*))
+    };
+}
+
+/// Screen switch logging
+pub fn log_screen_switch(to_alt: bool, reason: &str) {
+    // Trace: every alt-screen entry/exit from any pane app lands here; Info
+    // floods stderr sinks (the attach client's is the rendered screen).
+    if is_enabled(DebugLevel::Trace) {
+        log(
+            DebugLevel::Trace,
+            "SCREEN_SWITCH",
+            &format!(
+                "switched to {} screen ({})",
+                if to_alt { "ALTERNATE" } else { "PRIMARY" },
+                reason
+            ),
+        );
+    }
+}
+
+/// Device query logging
+pub fn log_device_query(query: &str, response: &[u8]) {
+    // Trace: device queries arrive in bursts from real apps; Info floods
+    // any stderr sink (the attach client's is the rendered screen).
+    if is_enabled(DebugLevel::Trace) {
+        let hex: String = response
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
+        log(
+            DebugLevel::Trace,
+            "DEVICE_QUERY",
+            &format!("query='{}' response=[{}]", query, hex),
+        );
+    }
+}
+
+/// Buffer snapshot logging
+pub fn log_buffer_snapshot(label: &str, rows: usize, cols: usize, content: &str) {
+    if is_enabled(DebugLevel::Trace) {
+        log(
+            DebugLevel::Trace,
+            "BUFFER_SNAPSHOT",
+            &format!(
+                "{} ({}x{})\n{:-<80}\n{}\n{:-<80}",
+                label, rows, cols, "", content, ""
+            ),
+        );
+    }
+}
+
+/// Generation counter logging
+pub fn log_generation_change(old: u64, new: u64, reason: &str) {
+    if is_enabled(DebugLevel::Debug) {
+        log(
+            DebugLevel::Debug,
+            "GENERATION",
+            &format!("counter changed: {} -> {} ({})", old, new, reason),
+        );
+    }
+}
+
+/// CSI dispatch logging
+pub fn log_csi_dispatch(params: &[i64], intermediates: &[u8], final_byte: char) {
+    if is_enabled(DebugLevel::Debug) {
+        let params_str: String = params
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(";");
+        let inter_str: String = intermediates.iter().map(|&b| b as char).collect();
+        log(
+            DebugLevel::Debug,
+            "CSI",
+            &format!(
+                "CSI {}{}{}  (params=[{}])",
+                if inter_str.is_empty() { "" } else { &inter_str },
+                final_byte,
+                "",
+                params_str
+            ),
+        );
+    }
+}
+
+/// OSC dispatch logging
+pub fn log_osc_dispatch(params: &[&[u8]]) {
+    if is_enabled(DebugLevel::Debug) {
+        let params_str: String = params
+            .iter()
+            .map(|p| String::from_utf8_lossy(p).to_string())
+            .collect::<Vec<_>>()
+            .join(";");
+        log(DebugLevel::Debug, "OSC", &format!("OSC {}", params_str));
+    }
+}
+
+/// ESC dispatch logging
+pub fn log_esc_dispatch(intermediates: &[u8], final_byte: char) {
+    if is_enabled(DebugLevel::Debug) {
+        let inter_str: String = intermediates.iter().map(|&b| b as char).collect();
+        log(
+            DebugLevel::Debug,
+            "ESC",
+            &format!("ESC {}{}", inter_str, final_byte),
+        );
+    }
+}
+
+/// Print character logging
+pub fn log_print(c: char, col: usize, row: usize) {
+    if is_enabled(DebugLevel::Trace) {
+        log(
+            DebugLevel::Trace,
+            "PRINT",
+            &format!("char='{}' (U+{:04X}) at ({},{})", c, c as u32, col, row),
+        );
+    }
+}
+
+/// Execute control code logging
+pub fn log_execute(byte: u8) {
+    if is_enabled(DebugLevel::Debug) {
+        let name = match byte {
+            0x07 => "BEL",
+            0x08 => "BS",
+            0x09 => "HT",
+            0x0A => "LF",
+            0x0B => "VT",
+            0x0C => "FF",
+            0x0D => "CR",
+            0x0E => "SO",
+            0x0F => "SI",
+            _ => "???",
+        };
+        log(
+            DebugLevel::Debug,
+            "EXECUTE",
+            &format!("control=0x{:02X} ({})", byte, name),
+        );
+    }
+}
+
+/// Scroll operation logging
+pub fn log_scroll(direction: &str, region_top: usize, region_bottom: usize, lines: usize) {
+    if is_enabled(DebugLevel::Debug) {
+        log(
+            DebugLevel::Debug,
+            "SCROLL",
+            &format!(
+                "{} {} lines in region [{}..{}]",
+                direction, lines, region_top, region_bottom
+            ),
+        );
+    }
+}
+
+/// PTY operation logging
+pub fn log_pty_read(bytes_read: usize) {
+    if is_enabled(DebugLevel::Trace) {
+        log(
+            DebugLevel::Trace,
+            "PTY_READ",
+            &format!("read {} bytes from PTY", bytes_read),
+        );
+    }
+}
+
+/// Log PTY input bytes as a hex string when debug logging is enabled.
+pub fn log_pty_write(bytes: &[u8]) {
+    if is_enabled(DebugLevel::Debug) {
+        let hex: String = bytes
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
+        log(
+            DebugLevel::Debug,
+            "PTY_WRITE",
+            &format!("wrote {} bytes: [{}]", bytes.len(), hex),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_debug_level_parsing() {
+        assert_eq!(DebugLevel::from_value(Some("3")), DebugLevel::Debug);
+        assert_eq!(DebugLevel::from_value(Some(" 4 ")), DebugLevel::Trace);
+        assert_eq!(DebugLevel::from_value(Some("0")), DebugLevel::Off);
+        assert_eq!(DebugLevel::from_value(None), DebugLevel::Off);
+        assert_eq!(DebugLevel::from_value(Some("junk")), DebugLevel::Off);
+        assert_eq!(DebugLevel::from_value(Some("9")), DebugLevel::Off);
+    }
+}

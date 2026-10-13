@@ -1,0 +1,1879 @@
+use super::*;
+use crate::cell::Cell;
+use crate::color::{Color, NamedColor};
+
+#[test]
+fn test_grid_creation() {
+    let grid = Grid::new(80, 24, 1000);
+    assert_eq!(grid.cols(), 80);
+    assert_eq!(grid.rows(), 24);
+}
+
+#[test]
+fn scrollback_storage_is_per_line_rows() {
+    // Acceptance 1: scrollback is a per-line collection (Vec<Box<[Cell]>>),
+    // NOT one flat buffer. Each stored row owns exactly its own cells — one
+    // small allocation per line at its scroll-off width — so a single heap
+    // allocation can no longer scale as max_scrollback × cols × Cell.
+    let mut grid = Grid::new(80, 5, 10_000);
+    assert!(grid.scrollback_rows.is_empty());
+
+    // Scroll enough lines to fill the buffer (and wrap past its cap).
+    for i in 0..30 {
+        for col in 0..grid.cols() {
+            grid.set(col, 0, Cell::new((b'A' + (i % 26) as u8) as char));
+        }
+        grid.scroll_up(1);
+    }
+
+    // The container shape is per-line rows: 10_000 cap holds 30 rows of
+    // 80 cells each — the collection holds rows, not one flat Vec whose
+    // length is lines × cols.
+    assert_eq!(grid.scrollback_rows.len(), 30);
+    assert_eq!(grid.scrollback_lines, 30);
+    for row in &grid.scrollback_rows {
+        assert_eq!(row.len(), 80, "each row carries exactly its own width");
+    }
+    // The per-line collection's total length is bounded by content, and
+    // `scrollback_line` still returns the same slices as before.
+    assert_eq!(grid.scrollback_line(0).unwrap().len(), 80);
+    assert_eq!(grid.scrollback_line(29).unwrap().len(), 80);
+}
+
+#[test]
+fn scroll_eviction_drops_one_row_not_a_buffer_rebuild() {
+    // Acceptance 1 (eviction): when the buffer is full, scrolling off one
+    // more line evicts exactly one row — the per-line container shrinks
+    // back to max_scrollback entries; no wholesale buffer copy occurs.
+    let mut grid = Grid::new(10, 3, 5);
+    for i in 0..12 {
+        grid.set(0, 0, Cell::new((b'A' + i as u8) as char));
+        grid.scroll_up(1);
+    }
+    assert_eq!(grid.scrollback_rows.len(), 5);
+    // Oldest lines ('A'..'G') were evicted; oldest retained is 'H'.
+    assert_eq!(grid.scrollback_line(0).unwrap()[0].c, 'H');
+    assert_eq!(grid.scrollback_line(4).unwrap()[0].c, 'L');
+}
+
+#[test]
+fn snapshot_round_trips_per_line_storage() {
+    // Acceptance 2/3 companion: capture flattens per-line rows into the
+    // flat snapshot payload; restore re-slices it per line. Content and
+    // per-line identity survive the round trip.
+    let mut grid = Grid::new(10, 3, 100);
+    for i in 0..5 {
+        for col in 0..grid.cols() {
+            grid.set(col, 0, Cell::new((b'A' + i as u8) as char));
+        }
+        grid.scroll_up(1);
+    }
+
+    let snap = grid.capture_snapshot();
+    // Flat payload: 5 lines × 10 cols, oldest first.
+    assert_eq!(snap.scrollback_cells.len(), 5 * 10);
+    assert_eq!(snap.scrollback_cells[0].c, 'A');
+    assert_eq!(snap.scrollback_cells[40].c, 'E');
+
+    let mut restored = Grid::new(10, 3, 100);
+    restored.restore_from_snapshot(&snap);
+    assert_eq!(restored.scrollback_len(), 5);
+    for i in 0..5 {
+        let line = restored.scrollback_line(i).unwrap();
+        assert_eq!(line.len(), 10);
+        assert_eq!(line[0].c, (b'A' + i as u8) as char);
+    }
+}
+
+#[test]
+fn resize_with_large_scrollback_preserves_row_allocations() {
+    // Acceptance 3: resize cost is bounded by the viewport. The stored
+    // per-line rows are untouched by a resize (same allocations survive —
+    // asserted via pointer identity), so a resize never rebuilds or copies
+    // the scrollback.
+    let mut grid = Grid::new(80, 5, 500);
+    for i in 0..120 {
+        for col in 0..grid.cols() {
+            grid.set(col, 0, Cell::new((b'A' + (i % 26) as u8) as char));
+        }
+        grid.scroll_up(1);
+    }
+
+    let before: Vec<*const Cell> = grid
+        .scrollback_rows
+        .iter()
+        .map(|row| row.as_ptr())
+        .collect();
+    let lens_before: Vec<usize> = grid.scrollback_rows.iter().map(|r| r.len()).collect();
+
+    // Both resize paths: height-only, then a width change.
+    grid.resize(80, 8);
+    grid.resize(120, 8);
+
+    assert_eq!(grid.scrollback_rows.len(), before.len());
+    for (row, &old_ptr) in grid.scrollback_rows.iter().zip(&before) {
+        assert_eq!(
+            row.as_ptr(),
+            old_ptr,
+            "resize must not reallocate stored scrollback rows"
+        );
+    }
+    let lens_after: Vec<usize> = grid.scrollback_rows.iter().map(|r| r.len()).collect();
+    assert_eq!(lens_after, lens_before, "row widths survive untouched");
+    // Content spot-check: newest and oldest lines intact.
+    assert_eq!(grid.scrollback_line(0).unwrap()[0].c, 'A');
+    assert_eq!(
+        grid.scrollback_line(119).unwrap()[0].c,
+        (b'A' + (119 % 26) as u8) as char
+    );
+}
+
+#[test]
+fn test_grid_set_get() {
+    let mut grid = Grid::new(80, 24, 1000);
+    let cell = Cell::new('A');
+    grid.set(5, 10, cell);
+
+    let retrieved = grid.get(5, 10).unwrap();
+    assert_eq!(retrieved.c, 'A');
+}
+
+#[test]
+fn test_grid_clear() {
+    let mut grid = Grid::new(80, 24, 1000);
+    grid.set(5, 10, Cell::new('A'));
+    grid.clear();
+
+    let cell = grid.get(5, 10).unwrap();
+    assert_eq!(cell.c, ' ');
+}
+
+#[test]
+fn test_grid_scroll() {
+    let mut grid = Grid::new(80, 24, 1000);
+    grid.set(0, 0, Cell::new('A'));
+    grid.set(0, 1, Cell::new('B'));
+
+    grid.scroll_up(1);
+
+    assert_eq!(grid.get(0, 0).unwrap().c, 'B');
+    assert_eq!(grid.scrollback_len(), 1);
+}
+
+#[test]
+fn test_grid_resize() {
+    let mut grid = Grid::new(80, 24, 1000);
+    grid.set(5, 5, Cell::new('X'));
+
+    grid.resize(100, 30);
+    assert_eq!(grid.cols(), 100);
+    assert_eq!(grid.rows(), 30);
+    assert_eq!(grid.get(5, 5).unwrap().c, 'X');
+}
+
+#[test]
+fn test_scroll_region_up() {
+    let mut grid = Grid::new(80, 10, 1000);
+    for i in 0..10 {
+        grid.set(0, i, Cell::new((b'0' + i as u8) as char));
+    }
+
+    grid.scroll_region_up(2, 2, 7); // Scroll lines 2-7 up by 2
+
+    // Line 2 should now contain what was at line 4
+    assert_eq!(grid.get(0, 2).unwrap().c, '4');
+    // Lines 6-7 should be blank
+    assert_eq!(grid.get(0, 6).unwrap().c, ' ');
+    assert_eq!(grid.get(0, 7).unwrap().c, ' ');
+}
+
+#[test]
+fn test_scroll_region_up_top_anchored_pushes_scrollback() {
+    let mut grid = Grid::new(5, 6, 10);
+    for row in 0..6 {
+        grid.set(0, row, Cell::new((b'A' + row as u8) as char));
+    }
+
+    assert!(grid.scroll_region_up(1, 0, 3));
+
+    assert_eq!(grid.scrollback_len(), 1);
+    let line0 = grid.scrollback_line(0).unwrap();
+    assert_eq!(line0[0].c, 'A');
+    assert_eq!(grid.get(0, 0).unwrap().c, 'B');
+    assert_eq!(grid.get(0, 1).unwrap().c, 'C');
+    assert_eq!(grid.get(0, 2).unwrap().c, 'D');
+    assert_eq!(grid.get(0, 3).unwrap().c, ' ');
+    assert_eq!(grid.get(0, 4).unwrap().c, 'E');
+    assert_eq!(grid.get(0, 5).unwrap().c, 'F');
+}
+
+#[test]
+fn test_scroll_region_down() {
+    let mut grid = Grid::new(80, 10, 1000);
+    for i in 0..10 {
+        grid.set(0, i, Cell::new((b'0' + i as u8) as char));
+    }
+
+    grid.scroll_region_down(2, 2, 7); // Scroll lines 2-7 down by 2
+
+    // Line 4 should now contain what was at line 2
+    assert_eq!(grid.get(0, 4).unwrap().c, '2');
+    // Lines 2-3 should be blank
+    assert_eq!(grid.get(0, 2).unwrap().c, ' ');
+    assert_eq!(grid.get(0, 3).unwrap().c, ' ');
+}
+
+#[test]
+fn test_insert_lines_edge_case() {
+    let mut grid = Grid::new(80, 10, 1000);
+    for i in 0..10 {
+        grid.set(0, i, Cell::new((b'A' + i as u8) as char));
+    }
+
+    // Insert at bottom of scroll region
+    grid.insert_lines(7, 2, 9);
+
+    assert_eq!(grid.get(0, 7).unwrap().c, ' '); // Should be blank
+    assert_eq!(grid.get(0, 8).unwrap().c, ' '); // Should be blank
+}
+
+#[test]
+fn test_delete_lines_edge_case() {
+    let mut grid = Grid::new(80, 10, 1000);
+    for i in 0..10 {
+        grid.set(0, i, Cell::new((b'A' + i as u8) as char));
+    }
+
+    // Delete from near bottom (delete 2 lines starting at row 7)
+    // Row 7 has 'H', row 8 has 'I', row 9 has 'J'
+    // After deleting rows 7 and 8, row 9 moves to row 7
+    grid.delete_lines(2, 7, 9);
+
+    assert_eq!(grid.get(0, 7).unwrap().c, 'J'); // Line 9 moves to 7
+    assert_eq!(grid.get(0, 8).unwrap().c, ' '); // Should be blank
+    assert_eq!(grid.get(0, 9).unwrap().c, ' '); // Should be blank
+}
+
+#[test]
+fn test_insert_chars_at_end_of_line() {
+    let mut grid = Grid::new(10, 5, 1000);
+    for i in 0..10 {
+        grid.set(i, 0, Cell::new((b'0' + i as u8) as char));
+    }
+
+    grid.insert_chars(8, 0, 5); // Insert 5 at position 8 (only 2 spots left)
+
+    assert_eq!(grid.get(8, 0).unwrap().c, ' '); // Should be blank
+    assert_eq!(grid.get(9, 0).unwrap().c, ' '); // Should be blank
+}
+
+#[test]
+fn test_delete_chars_boundary() {
+    let mut grid = Grid::new(10, 5, 1000);
+    for i in 0..10 {
+        grid.set(i, 0, Cell::new((b'A' + i as u8) as char));
+    }
+
+    grid.delete_chars(7, 0, 10); // Delete 10 chars from position 7 (only 3 exist)
+
+    assert_eq!(grid.get(7, 0).unwrap().c, ' ');
+    assert_eq!(grid.get(8, 0).unwrap().c, ' ');
+    assert_eq!(grid.get(9, 0).unwrap().c, ' ');
+}
+
+#[test]
+fn test_erase_chars_boundary() {
+    let mut grid = Grid::new(10, 5, 1000);
+    for i in 0..10 {
+        grid.set(i, 0, Cell::new((b'X' + i as u8) as char));
+    }
+
+    grid.erase_chars(5, 0, 20, Color::Named(NamedColor::Black)); // Erase 20 chars from position 5 (only 5 exist)
+
+    assert_eq!(grid.get(4, 0).unwrap().c, '\\'); // Should be preserved (X + 4)
+    for i in 5..10 {
+        assert_eq!(grid.get(i, 0).unwrap().c, ' '); // Should be erased
+    }
+}
+
+#[test]
+fn test_clear_line_operations() {
+    let mut grid = Grid::new(10, 5, 1000);
+    for i in 0..10 {
+        grid.set(i, 2, Cell::new('X'));
+    }
+
+    // Clear from position 5 to end
+    grid.clear_line_right(5, 2, Color::Named(NamedColor::Black));
+
+    assert_eq!(grid.get(4, 2).unwrap().c, 'X'); // Preserved
+    assert_eq!(grid.get(5, 2).unwrap().c, ' '); // Cleared
+    assert_eq!(grid.get(9, 2).unwrap().c, ' '); // Cleared
+}
+
+#[test]
+fn test_clear_line_left() {
+    let mut grid = Grid::new(10, 5, 1000);
+    for i in 0..10 {
+        grid.set(i, 2, Cell::new('X'));
+    }
+
+    // Clear from start to position 5 (inclusive)
+    grid.clear_line_left(5, 2, Color::Named(NamedColor::Black));
+
+    for i in 0..=5 {
+        assert_eq!(grid.get(i, 2).unwrap().c, ' '); // Cleared
+    }
+    assert_eq!(grid.get(6, 2).unwrap().c, 'X'); // Preserved
+}
+
+#[test]
+fn test_clear_screen_operations() {
+    let mut grid = Grid::new(10, 10, 1000);
+    for row in 0..10 {
+        for col in 0..10 {
+            grid.set(col, row, Cell::new('X'));
+        }
+    }
+
+    // Clear from (5,5) to end of screen
+    grid.clear_screen_below(5, 5, Color::Named(NamedColor::Black));
+
+    assert_eq!(grid.get(4, 5).unwrap().c, 'X'); // Before cursor on same line - preserved
+    assert_eq!(grid.get(5, 5).unwrap().c, ' '); // At cursor - cleared
+    assert_eq!(grid.get(0, 6).unwrap().c, ' '); // Next line - cleared
+    assert_eq!(grid.get(0, 4).unwrap().c, 'X'); // Previous line - preserved
+}
+
+// ===== BCE (Background Color Erase) Tests =====
+
+#[test]
+fn test_bce_clear_line_right() {
+    let mut grid = Grid::new(10, 5, 1000);
+    for i in 0..10 {
+        grid.set(i, 2, Cell::new('X'));
+    }
+    let bg = Color::Rgb(0, 128, 0); // green
+    grid.clear_line_right(5, 2, bg);
+
+    assert_eq!(grid.get(4, 2).unwrap().c, 'X'); // Preserved
+    assert_eq!(grid.get(5, 2).unwrap().c, ' '); // Cleared
+    assert_eq!(grid.get(5, 2).unwrap().bg(), bg); // BCE: green bg
+    assert_eq!(grid.get(9, 2).unwrap().bg(), bg); // BCE: green bg
+}
+
+#[test]
+fn test_bce_clear_line_left() {
+    let mut grid = Grid::new(10, 5, 1000);
+    for i in 0..10 {
+        grid.set(i, 2, Cell::new('X'));
+    }
+    let bg = Color::Rgb(0, 0, 255); // blue
+    grid.clear_line_left(5, 2, bg);
+
+    for i in 0..=5 {
+        assert_eq!(grid.get(i, 2).unwrap().c, ' '); // Cleared
+        assert_eq!(grid.get(i, 2).unwrap().bg(), bg); // BCE: blue bg
+    }
+    assert_eq!(grid.get(6, 2).unwrap().c, 'X'); // Preserved
+}
+
+#[test]
+fn test_bce_clear_row() {
+    let mut grid = Grid::new(10, 5, 1000);
+    for i in 0..10 {
+        grid.set(i, 2, Cell::new('X'));
+    }
+    let bg = Color::Rgb(255, 0, 0); // red
+    grid.clear_row_with_bg(2, bg);
+
+    for i in 0..10 {
+        assert_eq!(grid.get(i, 2).unwrap().c, ' ');
+        assert_eq!(grid.get(i, 2).unwrap().bg(), bg); // BCE: red bg
+    }
+}
+
+#[test]
+fn test_bce_clear_screen_below() {
+    let mut grid = Grid::new(10, 10, 1000);
+    for row in 0..10 {
+        for col in 0..10 {
+            grid.set(col, row, Cell::new('X'));
+        }
+    }
+    let bg = Color::Rgb(128, 0, 128); // magenta
+    grid.clear_screen_below(5, 5, bg);
+
+    assert_eq!(grid.get(4, 5).unwrap().c, 'X'); // Before cursor - preserved
+    assert_eq!(grid.get(5, 5).unwrap().c, ' '); // At cursor - cleared
+    assert_eq!(grid.get(5, 5).unwrap().bg(), bg); // BCE
+    assert_eq!(grid.get(0, 6).unwrap().c, ' '); // Next line - cleared
+    assert_eq!(grid.get(0, 6).unwrap().bg(), bg); // BCE
+    assert_eq!(grid.get(0, 4).unwrap().c, 'X'); // Previous line - preserved
+}
+
+#[test]
+fn test_bce_clear_screen_above() {
+    let mut grid = Grid::new(10, 10, 1000);
+    for row in 0..10 {
+        for col in 0..10 {
+            grid.set(col, row, Cell::new('X'));
+        }
+    }
+    let bg = Color::Indexed(42); // indexed color
+    grid.clear_screen_above(5, 5, bg);
+
+    assert_eq!(grid.get(0, 4).unwrap().c, ' '); // Previous line - cleared
+    assert_eq!(grid.get(0, 4).unwrap().bg(), bg); // BCE
+    assert_eq!(grid.get(5, 5).unwrap().c, ' '); // At cursor - cleared
+    assert_eq!(grid.get(5, 5).unwrap().bg(), bg); // BCE
+    assert_eq!(grid.get(6, 5).unwrap().c, 'X'); // After cursor - preserved
+}
+
+#[test]
+fn test_bce_erase_characters() {
+    let mut grid = Grid::new(10, 5, 1000);
+    for i in 0..10 {
+        grid.set(i, 0, Cell::new('X'));
+    }
+    let bg = Color::Rgb(0, 128, 0);
+    grid.erase_characters(3, 0, 4, bg);
+
+    assert_eq!(grid.get(2, 0).unwrap().c, 'X'); // Preserved
+    for i in 3..7 {
+        assert_eq!(grid.get(i, 0).unwrap().c, ' '); // Erased
+        assert_eq!(grid.get(i, 0).unwrap().bg(), bg); // BCE
+    }
+    assert_eq!(grid.get(7, 0).unwrap().c, 'X'); // Preserved
+}
+
+#[test]
+fn test_bce_clear_with_bg() {
+    let mut grid = Grid::new(10, 3, 1000);
+    for row in 0..3 {
+        for col in 0..10 {
+            grid.set(col, row, Cell::new('X'));
+        }
+    }
+    let bg = Color::Rgb(255, 255, 0); // yellow
+    grid.clear_with_bg(bg);
+
+    for row in 0..3 {
+        for col in 0..10 {
+            assert_eq!(grid.get(col, row).unwrap().c, ' ');
+            assert_eq!(grid.get(col, row).unwrap().bg(), bg); // BCE
+        }
+    }
+}
+
+#[test]
+fn test_clear_screen_above() {
+    let mut grid = Grid::new(10, 10, 1000);
+    for row in 0..10 {
+        for col in 0..10 {
+            grid.set(col, row, Cell::new('X'));
+        }
+    }
+
+    // Clear from start of screen to (5,5)
+    grid.clear_screen_above(5, 5, Color::Named(NamedColor::Black));
+
+    assert_eq!(grid.get(0, 4).unwrap().c, ' '); // Previous line - cleared
+    assert_eq!(grid.get(5, 5).unwrap().c, ' '); // At cursor - cleared
+    assert_eq!(grid.get(6, 5).unwrap().c, 'X'); // After cursor on same line - preserved
+    assert_eq!(grid.get(0, 6).unwrap().c, 'X'); // Next line - preserved
+}
+
+#[test]
+fn test_scrollback_limit() {
+    let mut grid = Grid::new(80, 5, 3); // Max 3 lines of scrollback
+
+    // Scroll up 5 times
+    for i in 0..5 {
+        grid.set(0, 0, Cell::new((b'A' + i as u8) as char));
+        grid.scroll_up(1);
+    }
+
+    // Should only have 3 lines in scrollback (max)
+    assert_eq!(grid.scrollback_len(), 3);
+
+    // Should have the most recent 3
+    let line0 = grid.scrollback_line(0).unwrap();
+    assert_eq!(line0[0].c, 'C'); // First scrolled should be 'C' (oldest kept)
+}
+
+#[test]
+fn test_scroll_down_no_scrollback() {
+    let mut grid = Grid::new(80, 5, 100);
+    for i in 0..5 {
+        grid.set(0, i, Cell::new((b'A' + i as u8) as char));
+    }
+
+    grid.scroll_down(2);
+
+    // First 2 lines should be blank
+    assert_eq!(grid.get(0, 0).unwrap().c, ' ');
+    assert_eq!(grid.get(0, 1).unwrap().c, ' ');
+    // Line 2 should have what was at line 0
+    assert_eq!(grid.get(0, 2).unwrap().c, 'A');
+}
+
+#[test]
+fn test_get_out_of_bounds() {
+    let grid = Grid::new(80, 24, 1000);
+
+    assert!(grid.get(100, 0).is_none());
+    assert!(grid.get(0, 100).is_none());
+    assert!(grid.get(100, 100).is_none());
+}
+
+#[test]
+fn test_row_access() {
+    let mut grid = Grid::new(10, 5, 1000);
+    for i in 0..10 {
+        grid.set(i, 2, Cell::new((b'A' + i as u8) as char));
+    }
+
+    let row = grid.row(2).unwrap();
+    assert_eq!(row.len(), 10);
+    assert_eq!(row[0].c, 'A');
+    assert_eq!(row[5].c, 'F');
+}
+
+#[test]
+fn test_resize_smaller() {
+    let mut grid = Grid::new(80, 24, 1000);
+    grid.set(50, 20, Cell::new('X'));
+
+    grid.resize(40, 10); // Shrink grid
+
+    assert_eq!(grid.cols(), 40);
+    assert_eq!(grid.rows(), 10);
+    // Data at (50, 20) should be lost
+    assert!(grid.get(50, 20).is_none());
+}
+
+#[test]
+fn test_resize_preserves_scrollback_when_width_unchanged() {
+    let mut grid = Grid::new(10, 3, 3);
+
+    // Create a few scrollback lines by scrolling up
+    for ch in ['A', 'B', 'C'] {
+        grid.set(0, 0, Cell::new(ch));
+        grid.scroll_up(1);
+    }
+
+    assert_eq!(grid.scrollback_len(), 3);
+    let before = grid
+        .scrollback_line(0)
+        .and_then(|line| line.first())
+        .unwrap()
+        .c;
+    assert_eq!(before, 'A');
+
+    // Change only height; width stays the same
+    grid.resize(10, 5);
+
+    assert_eq!(grid.scrollback_len(), 3);
+    let after = grid
+        .scrollback_line(0)
+        .and_then(|line| line.first())
+        .unwrap()
+        .c;
+    assert_eq!(after, 'A');
+}
+
+#[test]
+fn test_resize_reflows_scrollback_when_width_changes() {
+    let mut grid = Grid::new(10, 3, 3);
+
+    grid.set(0, 0, Cell::new('X'));
+    grid.scroll_up(1);
+    assert_eq!(grid.scrollback_len(), 1);
+
+    grid.resize(20, 3);
+
+    assert_eq!(grid.cols(), 20);
+    // Scrollback should now be preserved and reflowed, not cleared
+    assert_eq!(grid.scrollback_len(), 1);
+    let line = grid.scrollback_line(0).unwrap();
+    assert_eq!(line[0].c, 'X');
+}
+
+#[test]
+fn test_export_text_buffer_basic() {
+    let mut grid = Grid::new(10, 3, 1000);
+
+    // Set some content
+    grid.set(0, 0, Cell::new('H'));
+    grid.set(1, 0, Cell::new('e'));
+    grid.set(2, 0, Cell::new('l'));
+    grid.set(3, 0, Cell::new('l'));
+    grid.set(4, 0, Cell::new('o'));
+
+    grid.set(0, 1, Cell::new('W'));
+    grid.set(1, 1, Cell::new('o'));
+    grid.set(2, 1, Cell::new('r'));
+    grid.set(3, 1, Cell::new('l'));
+    grid.set(4, 1, Cell::new('d'));
+
+    let text = grid.export_text_buffer();
+    let lines: Vec<&str> = text.lines().collect();
+
+    // Last empty line is not included since we don't add newline for empty last row
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0], "Hello");
+    assert_eq!(lines[1], "World");
+}
+
+#[test]
+fn test_export_text_buffer_with_scrollback() {
+    let mut grid = Grid::new(10, 2, 1000);
+
+    // Add first line
+    grid.set(0, 0, Cell::new('L'));
+    grid.set(1, 0, Cell::new('1'));
+
+    // Scroll up (moves L1 to scrollback)
+    grid.scroll_up(1);
+
+    // Add second line
+    grid.set(0, 0, Cell::new('L'));
+    grid.set(1, 0, Cell::new('2'));
+
+    let text = grid.export_text_buffer();
+    let lines: Vec<&str> = text.lines().collect();
+
+    // Should have scrollback line followed by current screen
+    assert_eq!(lines[0], "L1");
+    assert_eq!(lines[1], "L2");
+}
+
+#[test]
+fn test_export_text_buffer_trims_trailing_spaces() {
+    let mut grid = Grid::new(10, 2, 1000);
+
+    // Set content with trailing spaces
+    grid.set(0, 0, Cell::new('H'));
+    grid.set(1, 0, Cell::new('i'));
+    // Columns 2-9 remain as spaces
+
+    let text = grid.export_text_buffer();
+    let lines: Vec<&str> = text.lines().collect();
+
+    // Should trim trailing spaces
+    assert_eq!(lines[0], "Hi");
+}
+
+#[test]
+fn test_export_text_buffer_handles_wrapped_lines() {
+    let mut grid = Grid::new(10, 3, 1000);
+
+    // Set first line and mark as wrapped
+    grid.set(0, 0, Cell::new('A'));
+    grid.set(1, 0, Cell::new('B'));
+    grid.set_line_wrapped(0, true);
+
+    // Set second line (continuation)
+    grid.set(0, 1, Cell::new('C'));
+    grid.set(1, 1, Cell::new('D'));
+
+    let text = grid.export_text_buffer();
+
+    // Should not have newline between wrapped lines
+    assert!(text.starts_with("ABCD"));
+}
+
+#[test]
+fn test_export_text_buffer_wide_chars() {
+    let mut grid = Grid::new(10, 2, 1000);
+
+    // Set a wide character (width 2)
+    let mut cell = Cell::new('中');
+    cell.flags.set_wide_char(true);
+    grid.set(0, 0, cell);
+
+    // Set a wide char spacer
+    let mut spacer = Cell::default();
+    spacer.flags.set_wide_char_spacer(true);
+    grid.set(1, 0, spacer);
+
+    // Set another wide character
+    let mut cell2 = Cell::new('文');
+    cell2.flags.set_wide_char(true);
+    grid.set(2, 0, cell2);
+
+    let mut spacer2 = Cell::default();
+    spacer2.flags.set_wide_char_spacer(true);
+    grid.set(3, 0, spacer2);
+
+    let text = grid.export_text_buffer();
+    let lines: Vec<&str> = text.lines().collect();
+
+    // Should skip wide char spacers, only include the actual wide characters
+    assert_eq!(lines[0], "中文");
+}
+
+#[test]
+fn test_fill_rectangle() {
+    let mut grid = Grid::new(80, 24, 1000);
+
+    // Fill a 3x3 rectangle starting at (5, 5) with 'X'
+    let fill_cell = Cell::new('X');
+    grid.fill_rectangle(fill_cell, 5, 5, 7, 7);
+
+    // Check that cells inside the rectangle are filled
+    assert_eq!(grid.get(5, 5).unwrap().c, 'X');
+    assert_eq!(grid.get(6, 6).unwrap().c, 'X');
+    assert_eq!(grid.get(7, 7).unwrap().c, 'X');
+
+    // Check that cells outside are not affected
+    assert_eq!(grid.get(4, 5).unwrap().c, ' ');
+    assert_eq!(grid.get(8, 7).unwrap().c, ' ');
+}
+
+#[test]
+fn test_fill_rectangle_boundaries() {
+    let mut grid = Grid::new(80, 24, 1000);
+
+    // Fill rectangle at grid boundaries
+    let fill_cell = Cell::new('B');
+    grid.fill_rectangle(fill_cell, 0, 0, 2, 2);
+
+    assert_eq!(grid.get(0, 0).unwrap().c, 'B');
+    assert_eq!(grid.get(1, 1).unwrap().c, 'B');
+    assert_eq!(grid.get(2, 2).unwrap().c, 'B');
+}
+
+#[test]
+fn test_copy_rectangle() {
+    let mut grid = Grid::new(80, 24, 1000);
+
+    // Set up source rectangle with pattern
+    for row in 2..5 {
+        for col in 2..5 {
+            grid.set(col, row, Cell::new('S'));
+        }
+    }
+
+    // Copy rectangle from (2,2) to (10,10)
+    grid.copy_rectangle(2, 2, 4, 4, 10, 10);
+
+    // Verify copy
+    assert_eq!(grid.get(10, 10).unwrap().c, 'S');
+    assert_eq!(grid.get(11, 11).unwrap().c, 'S');
+    assert_eq!(grid.get(12, 12).unwrap().c, 'S');
+
+    // Original should still exist
+    assert_eq!(grid.get(2, 2).unwrap().c, 'S');
+}
+
+#[test]
+fn test_copy_rectangle_to_different_location() {
+    let mut grid = Grid::new(80, 24, 1000);
+
+    // Set up source with unique chars in non-overlapping area
+    grid.set(0, 0, Cell::new('A'));
+    grid.set(1, 0, Cell::new('B'));
+    grid.set(0, 1, Cell::new('C'));
+    grid.set(1, 1, Cell::new('D'));
+
+    // Copy to far away location (no overlap)
+    grid.copy_rectangle(0, 0, 1, 1, 10, 10);
+
+    // Verify copy worked
+    assert_eq!(grid.get(10, 10).unwrap().c, 'A');
+    assert_eq!(grid.get(11, 10).unwrap().c, 'B');
+    assert_eq!(grid.get(10, 11).unwrap().c, 'C');
+    assert_eq!(grid.get(11, 11).unwrap().c, 'D');
+}
+
+#[test]
+fn test_erase_rectangle_unconditional() {
+    let mut grid = Grid::new(80, 24, 1000);
+
+    // Fill with different chars
+    grid.set(10, 10, Cell::new('U'));
+    grid.set(11, 11, Cell::new('V'));
+
+    // Erase unconditionally
+    grid.erase_rectangle_unconditional(10, 10, 11, 11);
+
+    assert_eq!(grid.get(10, 10).unwrap().c, ' ');
+    assert_eq!(grid.get(11, 11).unwrap().c, ' ');
+}
+
+#[test]
+fn test_change_attributes_in_rectangle() {
+    let mut grid = Grid::new(80, 24, 1000);
+
+    // Set up cells with chars
+    for row in 3..6 {
+        for col in 3..6 {
+            let mut cell = Cell::new('M');
+            cell.flags.set_bold(false);
+            grid.set(col, row, cell);
+        }
+    }
+
+    // Change attributes - make them bold (attribute 1 = bold)
+    let attributes = [1u16];
+    grid.change_attributes_in_rectangle(3, 3, 5, 5, &attributes);
+
+    // Verify attributes changed but char remained
+    let cell = grid.get(4, 4).unwrap();
+    assert_eq!(cell.c, 'M');
+    assert!(cell.flags.bold());
+}
+
+#[test]
+fn test_reverse_attributes_in_rectangle() {
+    let mut grid = Grid::new(80, 24, 1000);
+
+    // Set up cells
+    let mut cell = Cell::new('R');
+    cell.flags.set_reverse(false);
+    grid.set(20, 20, cell);
+
+    // Reverse attributes - attribute 7 toggles reverse flag
+    let attributes = [7u16];
+    grid.reverse_attributes_in_rectangle(20, 20, 20, 20, &attributes);
+
+    // Verify reverse flag is now true
+    let reversed = grid.get(20, 20).unwrap();
+    assert_eq!(reversed.c, 'R');
+    assert!(reversed.flags.reverse());
+
+    // Toggle again - should go back to false
+    grid.reverse_attributes_in_rectangle(20, 20, 20, 20, &attributes);
+    let unreversed = grid.get(20, 20).unwrap();
+    assert!(!unreversed.flags.reverse());
+}
+
+#[test]
+fn test_row_text() {
+    let mut grid = Grid::new(80, 24, 1000);
+
+    // Set up a row with text
+    let text = "Hello, World!";
+    for (i, ch) in text.chars().enumerate() {
+        grid.set(i, 5, Cell::new(ch));
+    }
+
+    let row_text = grid.row_text(5);
+    assert!(row_text.starts_with("Hello, World!"));
+}
+
+#[test]
+fn test_row_text_with_wide_chars() {
+    let mut grid = Grid::new(80, 24, 1000);
+
+    // Set wide character
+    let mut cell = Cell::new('中');
+    cell.flags.set_wide_char(true);
+    grid.set(0, 0, cell);
+
+    // Set spacer
+    let mut spacer = Cell::default();
+    spacer.flags.set_wide_char_spacer(true);
+    grid.set(1, 0, spacer);
+
+    let row_text = grid.row_text(0);
+    // Should skip the spacer
+    assert_eq!(row_text.chars().next().unwrap(), '中');
+}
+
+#[test]
+fn test_content_as_string() {
+    let mut grid = Grid::new(10, 3, 1000);
+
+    // Fill first row
+    for col in 0..10 {
+        grid.set(col, 0, Cell::new('A'));
+    }
+
+    // Fill second row partially
+    for col in 0..5 {
+        grid.set(col, 1, Cell::new('B'));
+    }
+
+    let content = grid.content_as_string();
+    let lines: Vec<&str> = content.lines().collect();
+
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].starts_with("AAAAAAAAAA"));
+    assert!(lines[1].starts_with("BBBBB"));
+}
+
+#[test]
+fn test_is_scrollback_wrapped_circular() {
+    let mut grid = Grid::new(80, 2, 3); // Small scrollback for testing
+
+    // Scroll multiple times to trigger circular buffer
+    for i in 0..5 {
+        grid.scroll_up(1);
+        if i % 2 == 0 {
+            grid.scrollback_wrapped[grid
+                .scrollback_lines
+                .saturating_sub(1)
+                .min(grid.max_scrollback - 1)] = true;
+        }
+    }
+
+    // Test wrapped state retrieval - just ensure it doesn't panic with circular buffer
+    let _wrapped = grid.is_scrollback_wrapped(0);
+}
+
+#[test]
+fn test_debug_snapshot() {
+    let mut grid = Grid::new(10, 3, 2);
+
+    // Add some content
+    grid.set(0, 0, Cell::new('D'));
+    grid.set(1, 0, Cell::new('E'));
+    grid.set(2, 0, Cell::new('B'));
+    grid.set(3, 0, Cell::new('U'));
+    grid.set(4, 0, Cell::new('G'));
+
+    let snapshot = grid.debug_snapshot();
+
+    // Verify snapshot contains expected content
+    assert!(snapshot.contains("DEBUG"));
+    assert!(snapshot.contains("|DEBUG"));
+}
+
+#[test]
+fn test_scrollback_line_circular_buffer() {
+    let mut grid = Grid::new(80, 24, 2); // Max 2 scrollback lines
+
+    // Scroll 3 times to wrap circular buffer
+    grid.scroll_up(1);
+    grid.scroll_up(1);
+    grid.scroll_up(1);
+
+    // Accessing scrollback should not panic
+    let line = grid.scrollback_line(0);
+    assert!(line.is_some());
+
+    let line = grid.scrollback_line(1);
+    assert!(line.is_some() || line.is_none()); // Depends on implementation
+}
+
+#[test]
+fn test_set_line_wrapped_bounds() {
+    let mut grid = Grid::new(80, 24, 1000);
+
+    // Set wrapped state
+    grid.set_line_wrapped(5, true);
+    assert!(grid.is_line_wrapped(5));
+
+    // Clear it
+    grid.set_line_wrapped(5, false);
+    assert!(!grid.is_line_wrapped(5));
+
+    // Out of bounds should not panic
+    grid.set_line_wrapped(100, true);
+    assert!(!grid.is_line_wrapped(100));
+}
+
+#[test]
+fn test_export_styled_buffer() {
+    let mut grid = Grid::new(20, 3, 1000);
+
+    // Add some styled content
+    let mut cell = Cell::new('S');
+    cell.flags.set_bold(true);
+    grid.set(0, 0, cell);
+
+    let styled = grid.export_styled_buffer();
+
+    // Should contain ANSI codes for bold
+    assert!(styled.contains("\x1b["));
+}
+
+/// Pins the exact bytes of every styled exporter (QA-214 hoisted their shared
+/// cell loop): SGR diffing within a row, the reset at unwrapped row ends,
+/// SGR state carried across a wrapped scrollback row, trailing-blank
+/// trimming, skipped empty rows, and the per-row framing each path adds.
+/// The DEFAULT colors (fg White, bg Black) are omitted from every SGR run —
+/// a replaying host paints them with its own defaults (the grey-band
+/// contract, `probe_osc133_prompt_bg_source` over in terminal_tests.rs).
+#[test]
+fn test_styled_exports_golden_bytes() {
+    let mut grid = Grid::new(4, 3, 10);
+    let mut red_bold = Cell::new('A');
+    red_bold.set_fg(Color::Named(NamedColor::Red));
+    red_bold.flags.set_bold(true);
+    grid.set(0, 0, red_bold);
+    grid.set(1, 0, Cell::new('b'));
+    grid.set_line_wrapped(0, true);
+    let mut red_bold_c = Cell::new('C');
+    red_bold_c.set_fg(Color::Named(NamedColor::Red));
+    red_bold_c.flags.set_bold(true);
+    grid.set(0, 1, red_bold_c);
+    grid.scroll_up(2);
+    let mut green_bg = Cell::new('x');
+    green_bg.set_bg(Color::Named(NamedColor::Green));
+    grid.set(1, 0, green_bg);
+    grid.set(0, 2, Cell::new('z'));
+
+    assert_eq!(
+        grid.export_styled_buffer(),
+        "\x1b[0;31;1mA\x1b[0mb\x1b[0;31;1mC\x1b[0m\n \x1b[0;42mx\x1b[0m\n\x1b[0m\nz\x1b[0m\n"
+    );
+    assert_eq!(
+        grid.export_scrollback_styled(None),
+        "\x1b[0;31;1mC\x1b[0m\n\x1b[0;31;1mA\x1b[0mb"
+    );
+    assert_eq!(
+        grid.export_visible_screen_styled(),
+        "\x1b[H\x1b[1;1H \x1b[0;42mx\x1b[0m\x1b[3;1Hz\x1b[0m"
+    );
+    assert_eq!(
+        grid.export_visible_screen_styled_lines(),
+        " \x1b[0;42mx\x1b[0m\n\nz\n"
+    );
+    assert_eq!(
+        grid.export_row_styled(grid.row(0).unwrap()),
+        " \x1b[0;42mx\x1b[0m"
+    );
+    assert_eq!(grid.export_row_styled(grid.row(1).unwrap()), "");
+}
+
+#[test]
+fn test_clear_row() {
+    let mut grid = Grid::new(80, 24, 1000);
+
+    // Fill a row
+    for col in 0..80 {
+        grid.set(col, 10, Cell::new('X'));
+    }
+
+    // Clear it
+    grid.clear_row(10);
+
+    // Verify cleared
+    for col in 0..80 {
+        assert_eq!(grid.get(col, 10).unwrap().c, ' ');
+    }
+}
+
+// ===== Scrollback Reflow Tests =====
+
+#[test]
+fn test_scrollback_width_increase_keeps_lines_and_content() {
+    // Per-line scrollback storage: a width change only reflows the visible
+    // screen. Stored lines keep the width they scrolled off at; content
+    // must survive untouched.
+    let mut grid = Grid::new(10, 3, 100);
+
+    // Create a line that wraps: "ABCDEFGHIJ" (10 chars) + "KLMNO" (5 chars)
+    // This will be 2 physical lines with wrap=true on the first
+    for (i, ch) in "ABCDEFGHIJ".chars().enumerate() {
+        grid.set(i, 0, Cell::new(ch));
+    }
+    grid.set_line_wrapped(0, true);
+    for (i, ch) in "KLMNO".chars().enumerate() {
+        grid.set(i, 1, Cell::new(ch));
+    }
+
+    // Scroll these lines into scrollback
+    grid.scroll_up(2);
+    assert_eq!(grid.scrollback_len(), 2);
+    assert!(grid.is_scrollback_wrapped(0)); // First line should be wrapped
+
+    // Resize to wider (20 cols) - stored lines keep their 10-col width
+    grid.resize(20, 3);
+
+    assert_eq!(grid.scrollback_len(), 2);
+    assert!(grid.is_scrollback_wrapped(0)); // Wrap flags unchanged
+
+    // Both stored lines preserved with their content
+    let line0 = grid.scrollback_line(0).unwrap();
+    let line1 = grid.scrollback_line(1).unwrap();
+    assert_eq!(line0.len(), 10);
+    assert_eq!(line1.len(), 10);
+    assert_eq!(line0[0].c, 'A');
+    assert_eq!(line0[4].c, 'E');
+    assert_eq!(line1[0].c, 'K');
+    assert_eq!(line1[4].c, 'O');
+}
+
+#[test]
+fn test_scrollback_width_decrease_keeps_lines_and_content() {
+    // Narrowing the grid must not rebuild the scrollback: the stored line
+    // keeps its original (wider) width and its content.
+    let mut grid = Grid::new(20, 3, 100);
+
+    // Create a single line with 15 characters
+    for (i, ch) in "ABCDEFGHIJKLMNO".chars().enumerate() {
+        grid.set(i, 0, Cell::new(ch));
+    }
+
+    // Scroll into scrollback
+    grid.scroll_up(1);
+    assert_eq!(grid.scrollback_len(), 1);
+    assert!(!grid.is_scrollback_wrapped(0));
+
+    // Now resize to narrower (10 cols)
+    grid.resize(10, 3);
+
+    // The stored line survives at its original width
+    assert_eq!(grid.scrollback_len(), 1);
+    assert!(!grid.is_scrollback_wrapped(0));
+
+    let line0 = grid.scrollback_line(0).unwrap();
+    assert_eq!(line0.len(), 20); // original scroll-off width
+    assert_eq!(line0[0].c, 'A');
+    assert_eq!(line0[9].c, 'J');
+    assert_eq!(line0[14].c, 'O');
+}
+
+#[test]
+fn test_scrollback_reflow_preserves_colors() {
+    use crate::color::Color;
+
+    let mut grid = Grid::new(10, 3, 100);
+
+    // Create a colored cell
+    let mut cell = Cell::new('X');
+    cell.set_fg(Color::Rgb(255, 0, 0));
+    cell.set_bg(Color::Rgb(0, 255, 0));
+    cell.flags.set_bold(true);
+    grid.set(0, 0, cell);
+
+    // Scroll into scrollback
+    grid.scroll_up(1);
+
+    // Resize (triggers reflow)
+    grid.resize(20, 3);
+
+    // Verify colors and attributes preserved
+    let line = grid.scrollback_line(0).unwrap();
+    assert_eq!(line[0].c, 'X');
+    assert_eq!(line[0].fg(), Color::Rgb(255, 0, 0));
+    assert_eq!(line[0].bg(), Color::Rgb(0, 255, 0));
+    assert!(line[0].flags.bold());
+}
+
+#[test]
+fn test_scrollback_reflow_wide_chars() {
+    // Test that wide characters are handled correctly during reflow
+    let mut grid = Grid::new(10, 3, 100);
+
+    // Create a wide character at position 8 (needs 2 cells)
+    let mut wide_cell = Cell::new('中');
+    wide_cell.flags.set_wide_char(true);
+    grid.set(8, 0, wide_cell);
+
+    let mut spacer = Cell::default();
+    spacer.flags.set_wide_char_spacer(true);
+    grid.set(9, 0, spacer);
+
+    // Scroll into scrollback
+    grid.scroll_up(1);
+
+    // Resize to 5 cols - wide char should wrap properly
+    grid.resize(5, 3);
+
+    // The wide char should be on its own row or properly wrapped
+    // (can't split a wide char across lines)
+    assert!(grid.scrollback_len() >= 1);
+
+    // Verify the wide char is preserved
+    let mut found_wide = false;
+    for i in 0..grid.scrollback_len() {
+        if let Some(line) = grid.scrollback_line(i) {
+            for cell in line {
+                if cell.c == '中' {
+                    found_wide = true;
+                    assert!(cell.flags.wide_char());
+                    break;
+                }
+            }
+        }
+    }
+    assert!(
+        found_wide,
+        "Wide character should be preserved after reflow"
+    );
+}
+
+#[test]
+fn test_scrollback_reflow_multiple_logical_lines() {
+    // Test reflow with multiple separate logical lines (non-wrapped)
+    let mut grid = Grid::new(10, 5, 100);
+
+    // Create 3 separate lines
+    for (i, ch) in "LINE1".chars().enumerate() {
+        grid.set(i, 0, Cell::new(ch));
+    }
+    for (i, ch) in "LINE2".chars().enumerate() {
+        grid.set(i, 1, Cell::new(ch));
+    }
+    for (i, ch) in "LINE3".chars().enumerate() {
+        grid.set(i, 2, Cell::new(ch));
+    }
+
+    // Scroll all into scrollback
+    grid.scroll_up(3);
+    assert_eq!(grid.scrollback_len(), 3);
+
+    // Resize wider
+    grid.resize(20, 5);
+
+    // Should still have 3 separate lines
+    assert_eq!(grid.scrollback_len(), 3);
+
+    let line0 = grid.scrollback_line(0).unwrap();
+    let line1 = grid.scrollback_line(1).unwrap();
+    let line2 = grid.scrollback_line(2).unwrap();
+
+    assert_eq!(line0[0].c, 'L');
+    assert_eq!(line0[4].c, '1');
+    assert_eq!(line1[4].c, '2');
+    assert_eq!(line2[4].c, '3');
+}
+
+#[test]
+fn test_scrollback_reflow_max_scrollback_limit() {
+    // Test that reflow respects max_scrollback limit
+    let mut grid = Grid::new(20, 5, 3); // Only 3 lines max
+
+    // Create a long line that will need 4 rows when reflowed to 5 cols
+    for (i, ch) in "ABCDEFGHIJKLMNOPQRST".chars().enumerate() {
+        grid.set(i, 0, Cell::new(ch));
+    }
+
+    grid.scroll_up(1);
+    assert_eq!(grid.scrollback_len(), 1);
+
+    // Resize to 5 cols - would need 4 lines, but max is 3
+    grid.resize(5, 5);
+
+    // Should be capped at 3 lines
+    assert!(grid.scrollback_len() <= 3);
+}
+
+#[test]
+fn test_scrollback_reflow_empty_scrollback() {
+    // Test that reflow handles empty scrollback gracefully
+    let mut grid = Grid::new(10, 3, 100);
+
+    assert_eq!(grid.scrollback_len(), 0);
+
+    // Resize - should not panic
+    grid.resize(20, 3);
+
+    assert_eq!(grid.scrollback_len(), 0);
+}
+
+#[test]
+fn test_scrollback_reflow_same_width() {
+    // Test that same width doesn't trigger unnecessary reflow
+    let mut grid = Grid::new(10, 3, 100);
+
+    for (i, ch) in "HELLO".chars().enumerate() {
+        grid.set(i, 0, Cell::new(ch));
+    }
+    grid.scroll_up(1);
+
+    let orig_len = grid.scrollback_len();
+
+    // Resize with same width but different height
+    grid.resize(10, 5);
+
+    // Scrollback should be unchanged (no width change, no reflow)
+    assert_eq!(grid.scrollback_len(), orig_len);
+}
+
+#[test]
+fn test_scrollback_reflow_circular_buffer() {
+    // Test reflow when scrollback is using circular buffer
+    let mut grid = Grid::new(10, 2, 3); // Small max for quick circular
+
+    // Fill scrollback past capacity (4 scrolls with max 3)
+    for i in 0..4 {
+        grid.set(0, 0, Cell::new((b'A' + i as u8) as char));
+        grid.scroll_up(1);
+    }
+
+    // Scrollback should have 3 lines (circular, oldest dropped)
+    assert_eq!(grid.scrollback_len(), 3);
+
+    // The oldest line should be 'B' (A was dropped)
+    let line0 = grid.scrollback_line(0).unwrap();
+    assert_eq!(line0[0].c, 'B');
+
+    // Resize - reflow should handle circular buffer correctly
+    grid.resize(20, 2);
+
+    // Content should still be B, C, D
+    assert_eq!(grid.scrollback_len(), 3);
+    let line0 = grid.scrollback_line(0).unwrap();
+    let line1 = grid.scrollback_line(1).unwrap();
+    let line2 = grid.scrollback_line(2).unwrap();
+    assert_eq!(line0[0].c, 'B');
+    assert_eq!(line1[0].c, 'C');
+    assert_eq!(line2[0].c, 'D');
+}
+
+#[test]
+fn test_scrollback_wrapped_chain_survives_resize() {
+    // Per-line storage keeps every wrapped chain row at its original width
+    // through a resize; the chain content must survive untouched.
+    let mut grid = Grid::new(5, 5, 100);
+
+    // Create a 15-char line that spans 3 rows at width 5
+    for (i, ch) in "ABCDEFGHIJKLMNO".chars().enumerate() {
+        let row = i / 5;
+        let col = i % 5;
+        grid.set(col, row, Cell::new(ch));
+    }
+    grid.set_line_wrapped(0, true);
+    grid.set_line_wrapped(1, true);
+    grid.set_line_wrapped(2, false); // End of logical line
+
+    // Scroll all 3 rows into scrollback
+    grid.scroll_up(3);
+    assert_eq!(grid.scrollback_len(), 3);
+
+    // Resize to 15 cols - the 3 stored rows keep their 5-col widths
+    grid.resize(15, 5);
+
+    assert_eq!(grid.scrollback_len(), 3);
+    let line0 = grid.scrollback_line(0).unwrap();
+    let line2 = grid.scrollback_line(2).unwrap();
+    assert_eq!(line0[0].c, 'A');
+    assert_eq!(line2[4].c, 'O');
+}
+
+#[cfg(test)]
+mod zone_tests {
+    use super::*;
+    use crate::zone::{Zone, ZoneType};
+
+    /// Build a 10x3 grid whose scrollback holds `zones` one-row zones (zone
+    /// `i` marked with `'a' + i` in column 0), then fill every visible cell so
+    /// a resize to 5 columns rewraps the 3 visible rows into 6 and pushes 3
+    /// excess rows into scrollback.
+    fn grid_with_scrollback_zones(max_scrollback: usize, zones: usize) -> Grid {
+        let mut grid = Grid::new(10, 3, max_scrollback);
+        for id in 0..zones {
+            let abs_row = grid.total_lines_scrolled();
+            grid.set(0, 0, Cell::new((b'a' + id as u8) as char));
+            let mut zone = Zone::new(id, ZoneType::Output, abs_row, None);
+            zone.close(abs_row);
+            grid.push_zone(zone);
+            grid.scroll_up(1);
+        }
+        for row in 0..grid.rows() {
+            for col in 0..grid.cols() {
+                grid.set(col, row, Cell::new('x'));
+            }
+        }
+        grid
+    }
+
+    /// Every surviving zone must still address the scrollback row it was
+    /// created on: abs row `r` lives at scrollback index
+    /// `r - (total_lines_scrolled - scrollback_len)`.
+    fn assert_zone_rows_consistent(grid: &Grid) {
+        let oldest_abs = grid.total_lines_scrolled() - grid.scrollback_len();
+        for zone in grid.zones() {
+            let idx = zone.abs_row_start - oldest_abs;
+            let line = grid.scrollback_line(idx).expect("zone row in scrollback");
+            assert_eq!(
+                line[0].c,
+                (b'a' + zone.id as u8) as char,
+                "zone {} drifted off its row",
+                zone.id
+            );
+        }
+    }
+
+    #[test]
+    fn test_reflow_drop_evicts_zones_and_advances_total_full_scrollback() {
+        let mut grid = grid_with_scrollback_zones(4, 4);
+        assert_eq!(grid.scrollback_len(), 4);
+        assert_eq!(grid.total_lines_scrolled(), 4);
+
+        grid.resize(5, 3);
+
+        // 3 rows pushed into a full scrollback: 3 oldest rows dropped.
+        assert_eq!(grid.scrollback_len(), 4);
+        assert_eq!(grid.total_lines_scrolled(), 7);
+        let evicted: Vec<usize> = grid.drain_evicted_zones().iter().map(|z| z.id).collect();
+        assert_eq!(evicted, vec![0, 1, 2]);
+        let live: Vec<usize> = grid.zones().iter().map(|z| z.id).collect();
+        assert_eq!(live, vec![3]);
+        assert_zone_rows_consistent(&grid);
+
+        // Narrowing again pushes more rows; the last scrollback zone drops.
+        grid.resize(2, 3);
+        let evicted: Vec<usize> = grid.drain_evicted_zones().iter().map(|z| z.id).collect();
+        assert_eq!(evicted, vec![3]);
+        assert!(grid.zones().is_empty());
+        // 3 visible rows (5, then a wrapped 5+5) rewrap to 8 rows at 2 cols.
+        assert_eq!(grid.total_lines_scrolled(), 12);
+        assert_eq!(grid.scrollback_len(), 4);
+    }
+
+    #[test]
+    fn test_reflow_push_advances_total_partial_scrollback() {
+        // Room for every pushed row: nothing dropped, nothing evicted, but
+        // the absolute row counter still advances by every pushed row.
+        let mut grid = grid_with_scrollback_zones(10, 2);
+        grid.resize(5, 3);
+        assert_eq!(grid.scrollback_len(), 5);
+        assert_eq!(grid.total_lines_scrolled(), 5);
+        assert!(grid.drain_evicted_zones().is_empty());
+        assert_eq!(grid.zones().len(), 2);
+        assert_zone_rows_consistent(&grid);
+
+        // Push crosses the cap mid-batch: 2 + 3 rows into 4 slots drops 1.
+        let mut grid = grid_with_scrollback_zones(4, 2);
+        grid.resize(5, 3);
+        assert_eq!(grid.scrollback_len(), 4);
+        assert_eq!(grid.total_lines_scrolled(), 5);
+        let evicted: Vec<usize> = grid.drain_evicted_zones().iter().map(|z| z.id).collect();
+        assert_eq!(evicted, vec![0]);
+        assert_eq!(grid.zones().len(), 1);
+        assert_zone_rows_consistent(&grid);
+    }
+
+    #[test]
+    fn test_scroll_up_batch_crossing_cap_evicts_zones_immediately() {
+        // 2 zone rows in a 4-row scrollback, then one 3-row scroll: the
+        // batch crosses the cap and drops abs row 0, so zone 0 must land in
+        // the evicted buffer now, not at the next scroll.
+        let mut grid = grid_with_scrollback_zones(4, 2);
+        assert_eq!(grid.scrollback_len(), 2);
+        grid.scroll_up(3);
+        assert_eq!(grid.scrollback_len(), 4);
+        assert_eq!(grid.total_lines_scrolled(), 5);
+        let evicted: Vec<usize> = grid.drain_evicted_zones().iter().map(|z| z.id).collect();
+        assert_eq!(evicted, vec![0]);
+        let live: Vec<usize> = grid.zones().iter().map(|z| z.id).collect();
+        assert_eq!(live, vec![1]);
+        assert_zone_rows_consistent(&grid);
+    }
+
+    #[test]
+    fn test_scroll_region_up_batch_crossing_cap_evicts_zones_immediately() {
+        // Same crossing through push_rows_to_scrollback: a top-anchored
+        // region that stops short of the bottom row (2 rows into 3 slots
+        // holding 2 drops abs row 0).
+        let mut grid = grid_with_scrollback_zones(3, 2);
+        assert!(grid.scroll_region_up(2, 0, 1));
+        assert_eq!(grid.scrollback_len(), 3);
+        assert_eq!(grid.total_lines_scrolled(), 4);
+        let evicted: Vec<usize> = grid.drain_evicted_zones().iter().map(|z| z.id).collect();
+        assert_eq!(evicted, vec![0]);
+        let live: Vec<usize> = grid.zones().iter().map(|z| z.id).collect();
+        assert_eq!(live, vec![1]);
+        assert_zone_rows_consistent(&grid);
+    }
+
+    #[test]
+    fn test_grid_zones_empty() {
+        let grid = Grid::new(80, 24, 100);
+        assert!(grid.zones().is_empty());
+    }
+
+    #[test]
+    fn test_grid_push_zone() {
+        let mut grid = Grid::new(80, 24, 100);
+        grid.push_zone(Zone::new(0, ZoneType::Prompt, 0, Some(1000)));
+        assert_eq!(grid.zones().len(), 1);
+        assert_eq!(grid.zones()[0].zone_type, ZoneType::Prompt);
+    }
+
+    #[test]
+    fn test_grid_close_current_zone() {
+        let mut grid = Grid::new(80, 24, 100);
+        grid.push_zone(Zone::new(0, ZoneType::Prompt, 0, Some(1000)));
+        grid.close_current_zone(5);
+        assert_eq!(grid.zones()[0].abs_row_end, 5);
+    }
+
+    #[test]
+    fn test_grid_zone_at() {
+        let mut grid = Grid::new(80, 24, 100);
+        let mut z1 = Zone::new(0, ZoneType::Prompt, 0, None);
+        z1.close(4);
+        grid.push_zone(z1);
+
+        let mut z2 = Zone::new(1, ZoneType::Command, 5, None);
+        z2.close(6);
+        grid.push_zone(z2);
+
+        let mut z3 = Zone::new(2, ZoneType::Output, 7, None);
+        z3.close(20);
+        grid.push_zone(z3);
+
+        assert_eq!(grid.zone_at(0).unwrap().zone_type, ZoneType::Prompt);
+        assert_eq!(grid.zone_at(4).unwrap().zone_type, ZoneType::Prompt);
+        assert_eq!(grid.zone_at(5).unwrap().zone_type, ZoneType::Command);
+        assert_eq!(grid.zone_at(10).unwrap().zone_type, ZoneType::Output);
+        assert!(grid.zone_at(21).is_none());
+    }
+
+    #[test]
+    fn test_grid_evict_zones() {
+        let mut grid = Grid::new(80, 24, 100);
+        let mut z1 = Zone::new(0, ZoneType::Prompt, 0, None);
+        z1.close(4);
+        grid.push_zone(z1);
+
+        let mut z2 = Zone::new(1, ZoneType::Output, 5, None);
+        z2.close(20);
+        grid.push_zone(z2);
+
+        grid.evict_zones(5);
+        assert_eq!(grid.zones().len(), 1);
+        assert_eq!(grid.zones()[0].zone_type, ZoneType::Output);
+    }
+
+    #[test]
+    fn test_grid_evict_zones_partial() {
+        let mut grid = Grid::new(80, 24, 100);
+        let mut z1 = Zone::new(0, ZoneType::Output, 0, None);
+        z1.close(20);
+        grid.push_zone(z1);
+
+        grid.evict_zones(10);
+        assert_eq!(grid.zones().len(), 1);
+        assert_eq!(grid.zones()[0].abs_row_start, 10);
+    }
+
+    #[test]
+    fn test_grid_clear_zones() {
+        let mut grid = Grid::new(80, 24, 100);
+        grid.push_zone(Zone::new(0, ZoneType::Prompt, 0, None));
+        grid.clear_zones();
+        assert!(grid.zones().is_empty());
+    }
+
+    #[test]
+    fn test_evicted_zone_buffer_is_capped_fifo() {
+        use crate::grid::zone::MAX_EVICTED_ZONES;
+
+        // One row, one line of scrollback: each scroll pushes the previous
+        // row's zone below the floor. Nothing drains the evicted buffer.
+        let mut grid = Grid::new(1, 1, 1);
+        let total = MAX_EVICTED_ZONES + 50;
+        for id in 0..total {
+            let abs_row = grid.total_lines_scrolled;
+            let mut zone = Zone::new(id, ZoneType::Output, abs_row, None);
+            zone.close(abs_row);
+            grid.push_zone(zone);
+            grid.scroll_up(1);
+        }
+        // Two more scrolls move the last zone below the floor too.
+        grid.scroll_up(1);
+        grid.scroll_up(1);
+
+        assert!(
+            grid.zones().is_empty(),
+            "every zone should have been evicted"
+        );
+        assert_eq!(grid.evicted_zones.len(), MAX_EVICTED_ZONES);
+        assert_eq!(grid.evicted_zones[0].id, total - MAX_EVICTED_ZONES);
+        assert_eq!(grid.evicted_zones.last().unwrap().id, total - 1);
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use crate::color::{Color, NamedColor};
+    use crate::zone::{Zone, ZoneType};
+
+    #[test]
+    fn test_capture_basic_content() {
+        let mut grid = Grid::new(10, 5, 100);
+        // Write some characters into the grid
+        grid.get_mut(0, 0).unwrap().c = 'H';
+        grid.get_mut(1, 0).unwrap().c = 'i';
+        grid.get_mut(0, 1).unwrap().c = '!';
+
+        let snap = grid.capture_snapshot();
+        assert_eq!(snap.cols, 10);
+        assert_eq!(snap.rows, 5);
+        assert_eq!(snap.cells.len(), 10 * 5);
+        assert_eq!(snap.cells[0].c, 'H');
+        assert_eq!(snap.cells[1].c, 'i');
+        assert_eq!(snap.cells[10].c, '!');
+        assert_eq!(snap.scrollback_lines, 0);
+        assert_eq!(snap.total_lines_scrolled, 0);
+    }
+
+    #[test]
+    fn test_roundtrip_restore() {
+        let mut grid = Grid::new(10, 5, 100);
+        // Write content
+        grid.get_mut(0, 0).unwrap().c = 'A';
+        grid.get_mut(1, 0).unwrap().c = 'B';
+        grid.get_mut(2, 0).unwrap().set_fg(Color::Rgb(255, 0, 0));
+        grid.set_line_wrapped(0, true);
+
+        // Push a zone
+        grid.push_zone(Zone::new(1, ZoneType::Prompt, 0, Some(1_000)));
+
+        let snap = grid.capture_snapshot();
+
+        // Modify the grid after snapshot
+        grid.get_mut(0, 0).unwrap().c = 'X';
+        grid.get_mut(1, 0).unwrap().c = 'Y';
+        grid.get_mut(2, 0)
+            .unwrap()
+            .set_fg(Color::Named(NamedColor::White));
+        grid.set_line_wrapped(0, false);
+        grid.clear_zones();
+
+        assert_eq!(grid.get(0, 0).unwrap().c, 'X');
+        assert!(grid.zones().is_empty());
+
+        // Restore from snapshot
+        grid.restore_from_snapshot(&snap);
+
+        assert_eq!(grid.get(0, 0).unwrap().c, 'A');
+        assert_eq!(grid.get(1, 0).unwrap().c, 'B');
+        assert_eq!(grid.get(2, 0).unwrap().fg(), Color::Rgb(255, 0, 0));
+        assert!(grid.is_line_wrapped(0));
+        assert_eq!(grid.zones().len(), 1);
+        assert_eq!(grid.zones()[0].id, 1);
+    }
+
+    #[test]
+    fn test_scrollback_roundtrip() {
+        let mut grid = Grid::new(5, 3, 10);
+
+        // Fill the grid with content
+        for row in 0..3 {
+            for col in 0..5 {
+                grid.get_mut(col, row).unwrap().c = char::from(b'A' + (row * 5 + col) as u8);
+            }
+        }
+
+        // Scroll some lines up into scrollback
+        grid.scroll_up(2);
+
+        let sb_lines = grid.scrollback_len();
+        assert!(sb_lines > 0, "scrollback should have lines after scroll_up");
+
+        let snap = grid.capture_snapshot();
+        assert_eq!(snap.scrollback_lines, sb_lines);
+
+        // Modify grid
+        grid.get_mut(0, 0).unwrap().c = 'Z';
+        // Scroll more lines to change scrollback state
+        grid.scroll_up(1);
+
+        let sb_after = grid.scrollback_len();
+        assert_ne!(sb_after, sb_lines, "scrollback should have changed");
+
+        // Restore
+        grid.restore_from_snapshot(&snap);
+
+        // Scrollback should be restored to original state
+        assert_eq!(grid.scrollback_len(), sb_lines);
+    }
+}
+
+#[test]
+fn scroll_up_preserves_inline_and_spilled_combining() {
+    let mut grid = Grid::new(10, 4, 100);
+    let inline_grapheme = "e\u{0301}\u{0302}";
+    // Six combining marks exceeds SmallVec<[char; 4]>'s inline capacity, so
+    // this cell's cluster lives on the heap and exercises move-not-clone.
+    let spilled_grapheme = "f\u{0301}\u{0302}\u{0303}\u{0304}\u{0305}\u{0306}";
+    grid.set(0, 0, Cell::from_grapheme(inline_grapheme));
+    grid.set(1, 1, Cell::from_grapheme(spilled_grapheme));
+    grid.set_line_wrapped(0, true);
+    grid.set_line_wrapped(2, true);
+
+    grid.scroll_up(1);
+
+    assert_eq!(grid.get(0, 0).unwrap().c, ' ');
+    assert_eq!(grid.get(1, 0).unwrap().get_grapheme(), spilled_grapheme);
+    assert_eq!(grid.get(0, 3).unwrap().c, ' ');
+    // Wrapped flags shift up with the rows; the vacated bottom row is false.
+    assert!(!grid.is_line_wrapped(0));
+    assert!(grid.is_line_wrapped(1));
+    assert!(!grid.is_line_wrapped(3));
+    // The drained row moved into scrollback with its wrapped flag intact.
+    assert_eq!(grid.scrollback_len(), 1);
+    assert_eq!(
+        grid.scrollback_line(0).unwrap()[0].get_grapheme(),
+        inline_grapheme
+    );
+    assert!(grid.is_scrollback_wrapped(0));
+}
+
+#[test]
+fn scroll_up_ring_scrollback_swaps_spilled_combining_intact() {
+    let mut grid = Grid::new(10, 4, 2); // scrollback full after 2 lines
+    let spilled_grapheme = "s\u{0301}\u{0302}\u{0303}\u{0304}\u{0305}\u{0306}";
+    grid.set(0, 0, Cell::new('1'));
+    grid.scroll_up(1); // append: scrollback = [1]
+    grid.set(0, 0, Cell::new('2'));
+    grid.scroll_up(1); // append: scrollback = [1, 2], now full
+    grid.set(0, 0, Cell::from_grapheme(spilled_grapheme));
+    grid.scroll_up(1); // ring overwrite at the oldest slot
+
+    assert_eq!(grid.scrollback_len(), 2);
+    // Oldest surviving line is '2'; the spilled grapheme took the ring slot.
+    assert_eq!(grid.scrollback_line(0).unwrap()[0].c, '2');
+    assert_eq!(
+        grid.scrollback_line(1).unwrap()[0].get_grapheme(),
+        spilled_grapheme
+    );
+}
+
+#[test]
+fn scroll_region_up_rotate_preserves_spilled_combining() {
+    let mut grid = Grid::new(10, 8, 100);
+    let spilled_grapheme = "c\u{0301}\u{0302}\u{0303}\u{0304}\u{0305}\u{0306}";
+    grid.set(0, 1, Cell::new('W')); // above the region — must not move
+    grid.set(0, 2, Cell::from_grapheme("a\u{0301}"));
+    grid.set(0, 3, Cell::from_grapheme("b\u{0301}"));
+    grid.set(0, 4, Cell::from_grapheme(spilled_grapheme));
+    grid.set(0, 5, Cell::new('d'));
+    grid.set(0, 7, Cell::new('X')); // below the region — must not move
+
+    assert!(grid.scroll_region_up(2, 2, 5));
+
+    assert_eq!(grid.get(0, 1).unwrap().c, 'W');
+    assert_eq!(grid.get(0, 2).unwrap().get_grapheme(), spilled_grapheme);
+    assert_eq!(grid.get(0, 3).unwrap().c, 'd');
+    assert_eq!(grid.get(0, 4).unwrap().c, ' ');
+    assert_eq!(grid.get(0, 5).unwrap().c, ' ');
+    assert_eq!(grid.get(0, 7).unwrap().c, 'X');
+}
+
+#[test]
+fn scroll_up_by_full_screen_moves_every_row_to_scrollback() {
+    let mut grid = Grid::new(10, 3, 10);
+    grid.set(0, 0, Cell::new('a'));
+    grid.set(0, 1, Cell::new('b'));
+    grid.set(0, 2, Cell::new('c'));
+
+    grid.scroll_up(3);
+
+    assert_eq!(grid.scrollback_len(), 3);
+    assert_eq!(grid.scrollback_line(0).unwrap()[0].c, 'a');
+    assert_eq!(grid.scrollback_line(2).unwrap()[0].c, 'c');
+    for row in 0..3 {
+        assert_eq!(grid.get(0, row).unwrap().c, ' ');
+    }
+}
+
+#[test]
+fn scroll_down_preserves_inline_and_spilled_combining() {
+    let mut grid = Grid::new(10, 4, 100);
+    let inline_grapheme = "e\u{0301}\u{0302}";
+    // Six combining marks exceeds SmallVec<[char; 4]>'s inline capacity, so
+    // this cell's cluster lives on the heap and exercises move-not-clone.
+    let spilled_grapheme = "f\u{0301}\u{0302}\u{0303}\u{0304}\u{0305}\u{0306}";
+    grid.set(0, 0, Cell::from_grapheme(inline_grapheme));
+    grid.set(1, 1, Cell::from_grapheme(spilled_grapheme));
+    grid.set_line_wrapped(0, true);
+    grid.set_line_wrapped(2, true);
+
+    grid.scroll_down(1);
+
+    assert_eq!(grid.get(0, 0).unwrap().c, ' ');
+    assert_eq!(grid.get(0, 1).unwrap().get_grapheme(), inline_grapheme);
+    assert_eq!(grid.get(1, 2).unwrap().get_grapheme(), spilled_grapheme);
+    // Wrapped flags shift down with the rows; the vacated top row is false.
+    assert!(!grid.is_line_wrapped(0));
+    assert!(grid.is_line_wrapped(1));
+    assert!(grid.is_line_wrapped(3));
+    // Scrolling down never feeds scrollback.
+    assert_eq!(grid.scrollback_len(), 0);
+}
+
+#[test]
+fn scroll_down_by_full_screen_clears_every_row() {
+    let mut grid = Grid::new(10, 3, 10);
+    let spilled_grapheme = "z\u{0301}\u{0302}\u{0303}\u{0304}\u{0305}\u{0306}";
+    grid.set(0, 0, Cell::from_grapheme(spilled_grapheme));
+    grid.set(1, 1, Cell::new('b'));
+
+    grid.scroll_down(3);
+
+    for row in 0..3 {
+        assert_eq!(grid.get(0, row).unwrap().c, ' ');
+        assert_eq!(grid.get(1, row).unwrap().c, ' ');
+    }
+    assert_eq!(grid.scrollback_len(), 0);
+}
+
+#[test]
+fn scroll_region_down_rotate_preserves_spilled_combining() {
+    let mut grid = Grid::new(10, 8, 100);
+    let spilled_grapheme = "c\u{0301}\u{0302}\u{0303}\u{0304}\u{0305}\u{0306}";
+    grid.set(0, 1, Cell::new('W')); // above the region — must not move
+    grid.set(0, 2, Cell::from_grapheme(spilled_grapheme));
+    grid.set(0, 3, Cell::from_grapheme("a\u{0301}"));
+    grid.set(0, 5, Cell::new('d')); // falls off the region bottom
+    grid.set(0, 7, Cell::new('X')); // below the region — must not move
+
+    assert!(grid.scroll_region_down(2, 2, 5));
+
+    assert_eq!(grid.get(0, 1).unwrap().c, 'W');
+    assert_eq!(grid.get(0, 2).unwrap().c, ' ');
+    assert_eq!(grid.get(0, 3).unwrap().c, ' ');
+    assert_eq!(grid.get(0, 4).unwrap().get_grapheme(), spilled_grapheme);
+    assert_eq!(grid.get(0, 5).unwrap().get_grapheme(), "a\u{0301}");
+    assert_eq!(grid.get(0, 7).unwrap().c, 'X');
+}
+
+#[test]
+fn insert_lines_with_n_past_region_size_empties_region_not_panics() {
+    // Found by the ENH-014 terminal_process fuzz target: the copy range was
+    // `row..=effective_bottom - n`, and n was clamped against the *unclamped*
+    // scroll_bottom — so CSI 24 L (n = region size + 1) at row 0 underflowed.
+    let mut grid = Grid::new(10, 5, 100);
+    for i in 0..5 {
+        grid.set(0, i, Cell::new((b'A' + i as u8) as char));
+    }
+
+    grid.insert_lines(6, 0, 4);
+
+    for i in 0..5 {
+        assert_eq!(grid.get(0, i).unwrap().c, ' ');
+    }
+}
+
+#[test]
+fn insert_lines_with_runaway_scroll_bottom_stays_on_screen() {
+    // A scroll_bottom past rows - 1 must clamp before n is clamped, or the
+    // same underflow fires with any large n.
+    let mut grid = Grid::new(10, 5, 100);
+    grid.set(0, 2, Cell::new('X'));
+
+    grid.insert_lines(usize::MAX / 2, 0, 999);
+
+    for i in 0..5 {
+        assert_eq!(grid.get(0, i).unwrap().c, ' ');
+    }
+}
+
+#[test]
+fn delete_lines_with_n_past_region_size_empties_region_not_panics() {
+    // Twin of the insert underflow: the shift read i + n one row past the
+    // region when n = region size + 1 at row 0.
+    let mut grid = Grid::new(10, 5, 100);
+    for i in 0..5 {
+        grid.set(0, i, Cell::new((b'A' + i as u8) as char));
+    }
+
+    grid.delete_lines(9, 0, 4);
+
+    for i in 0..5 {
+        assert_eq!(grid.get(0, i).unwrap().c, ' ');
+    }
+}

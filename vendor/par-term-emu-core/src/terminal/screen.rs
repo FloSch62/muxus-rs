@@ -1,0 +1,705 @@
+//! Screen and rendering types
+//!
+//! Provides types for selections, rendering hints, and line operations.
+
+/// Selection mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionMode {
+    /// Character-by-character selection
+    Character,
+    /// Line-by-line selection
+    Line,
+    /// Rectangular block selection
+    Block,
+}
+
+/// Selection state
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Selection {
+    /// Start position (col, row)
+    pub start: (usize, usize),
+    /// End position (col, row)
+    pub end: (usize, usize),
+    /// Selection mode
+    pub mode: SelectionMode,
+}
+
+/// Damage region for incremental rendering
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DamageRegion {
+    /// Top-left column
+    pub left: usize,
+    /// Top-left row
+    pub top: usize,
+    /// Bottom-right column (exclusive)
+    pub right: usize,
+    /// Bottom-right row (exclusive)
+    pub bottom: usize,
+}
+
+/// Z-order layer for rendering
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ZLayer {
+    /// Background layer
+    Background = 0,
+    /// Normal content
+    Normal = 1,
+    /// Overlays (e.g., selections)
+    Overlay = 2,
+    /// Cursor and UI elements
+    Cursor = 3,
+}
+
+/// Animation hint for smooth transitions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimationHint {
+    /// No animation
+    None,
+    /// Smooth scroll
+    SmoothScroll,
+    /// Fade in/out
+    Fade,
+    /// Cursor blink
+    CursorBlink,
+}
+
+/// Priority for partial updates
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum UpdatePriority {
+    /// Lowest priority.
+    Low = 0,
+    /// Default priority.
+    Normal = 1,
+    /// Elevated priority.
+    High = 2,
+    /// Highest priority.
+    Critical = 3,
+}
+
+/// Rendering hint for optimization
+#[derive(Debug, Clone)]
+pub struct RenderingHint {
+    /// Damaged region that needs redrawing
+    pub damage: DamageRegion,
+    /// Z-order layer
+    pub layer: ZLayer,
+    /// Animation hint
+    pub animation: AnimationHint,
+    /// Update priority
+    pub priority: UpdatePriority,
+}
+
+/// Line join result
+#[derive(Debug, Clone)]
+pub struct JoinedLines {
+    /// The joined text
+    pub text: String,
+    /// Start row of joined section
+    pub start_row: usize,
+    /// End row of joined section (inclusive)
+    pub end_row: usize,
+    /// Number of lines joined
+    pub lines_joined: usize,
+}
+
+/// Reflow statistics
+#[derive(Debug, Clone)]
+pub struct ReflowStats {
+    /// Number of lines before reflow
+    pub lines_before: usize,
+    /// Number of lines after reflow
+    pub lines_after: usize,
+    /// Number of wrap points changed
+    pub wraps_changed: usize,
+}
+
+/// HSV color representation
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColorHSV {
+    /// Hue (0-360 degrees)
+    pub h: f32,
+    /// Saturation (0.0-1.0)
+    pub s: f32,
+    /// Value/Brightness (0.0-1.0)
+    pub v: f32,
+}
+
+/// HSL color representation
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColorHSL {
+    /// Hue (0-360 degrees)
+    pub h: f32,
+    /// Saturation (0.0-1.0)
+    pub s: f32,
+    /// Lightness (0.0-1.0)
+    pub l: f32,
+}
+
+/// Color theme generation mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeMode {
+    /// Complementary color (opposite on color wheel)
+    Complementary,
+    /// Analogous colors (adjacent on color wheel)
+    Analogous,
+    /// Triadic colors (evenly spaced on color wheel)
+    Triadic,
+    /// Tetradic/square colors
+    Tetradic,
+    /// Split complementary
+    SplitComplementary,
+    /// Monochromatic (varying lightness)
+    Monochromatic,
+}
+
+/// Generated color palette
+#[derive(Debug, Clone)]
+pub struct ColorPalette {
+    /// Base color
+    pub base: (u8, u8, u8),
+    /// Generated colors based on theme mode
+    pub colors: Vec<(u8, u8, u8)>,
+    /// Theme mode used
+    pub mode: ThemeMode,
+}
+
+/// Convert RGB to HSV
+pub fn rgb_to_hsv(r: u8, g: u8, b: u8) -> ColorHSV {
+    let r = r as f32 / 255.0;
+    let g = g as f32 / 255.0;
+    let b = b as f32 / 255.0;
+
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let delta = max - min;
+
+    let h = if delta == 0.0 {
+        0.0
+    } else if (max - r).abs() < f32::EPSILON {
+        60.0 * (((g - b) / delta) % 6.0)
+    } else if (max - g).abs() < f32::EPSILON {
+        60.0 * (((b - r) / delta) + 2.0)
+    } else {
+        60.0 * (((r - g) / delta) + 4.0)
+    };
+
+    let h = if h < 0.0 { h + 360.0 } else { h };
+    let s = if max == 0.0 { 0.0 } else { delta / max };
+    let v = max;
+
+    ColorHSV { h, s, v }
+}
+
+/// Convert HSV to RGB
+pub fn hsv_to_rgb(hsv: ColorHSV) -> (u8, u8, u8) {
+    let c = hsv.v * hsv.s;
+    let x = c * (1.0 - ((hsv.h / 60.0) % 2.0 - 1.0).abs());
+    let m = hsv.v - c;
+
+    let (r, g, b) = match hsv.h as u32 {
+        0..=59 => (c, x, 0.0),
+        60..=119 => (x, c, 0.0),
+        120..=179 => (0.0, c, x),
+        180..=239 => (0.0, x, c),
+        240..=299 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+
+    (
+        ((r + m) * 255.0).round() as u8,
+        ((g + m) * 255.0).round() as u8,
+        ((b + m) * 255.0).round() as u8,
+    )
+}
+
+/// Convert RGB to HSL
+///
+/// Thin adapter over the canonical `color_utils::Color::to_hsl` (QA-009):
+/// rescales its 0-100 saturation/lightness to this type's 0-1 convention.
+pub fn rgb_to_hsl(r: u8, g: u8, b: u8) -> ColorHSL {
+    let (h, s, l) = crate::color::Color::Rgb(r, g, b).to_hsl();
+    ColorHSL {
+        h,
+        s: s / 100.0,
+        l: l / 100.0,
+    }
+}
+
+/// Convert HSL to RGB
+///
+/// Thin adapter over the canonical `color_utils::Color::from_hsl` (QA-009).
+pub fn hsl_to_rgb(hsl: ColorHSL) -> (u8, u8, u8) {
+    crate::color::Color::from_hsl(hsl.h, hsl.s * 100.0, hsl.l * 100.0).to_rgb()
+}
+
+use crate::terminal::Terminal;
+
+impl Terminal {
+    // === Feature 9: Line Wrapping Utilities ===
+
+    /// Join wrapped lines starting from a given row
+    ///
+    /// Unwraps soft-wrapped lines into a single logical line.
+    pub fn join_wrapped_lines(&self, start_row: usize) -> Option<JoinedLines> {
+        let grid = self.active_grid();
+        if start_row >= grid.rows() {
+            return None;
+        }
+
+        let mut lines = Vec::new();
+        let mut current_row = start_row;
+
+        // Collect the first line
+        {
+            let line = grid.row(current_row)?;
+            lines.push(crate::text_utils::cells_to_text(line));
+        }
+
+        // Follow wrapped lines
+        while current_row < grid.rows() - 1 && grid.is_line_wrapped(current_row) {
+            current_row += 1;
+            if let Some(line) = grid.row(current_row) {
+                lines.push(crate::text_utils::cells_to_text(line));
+            } else {
+                break;
+            }
+        }
+
+        Some(JoinedLines {
+            text: lines.join(""),
+            start_row,
+            end_row: current_row,
+            lines_joined: lines.len(),
+        })
+    }
+
+    /// Get all logical lines (unwrapped) in the visible screen
+    pub fn get_logical_lines(&self) -> Vec<String> {
+        let grid = self.active_grid();
+        let mut logical_lines = Vec::new();
+        let mut row = 0;
+
+        while row < grid.rows() {
+            if let Some(joined) = self.join_wrapped_lines(row) {
+                logical_lines.push(joined.text.trim_end().to_string());
+                row = joined.end_row + 1;
+            } else {
+                row += 1;
+            }
+        }
+
+        logical_lines
+    }
+
+    /// Check if a row starts a new logical line (not a continuation)
+    pub fn is_line_start(&self, row: usize) -> bool {
+        if row == 0 {
+            return true;
+        }
+        let grid = self.active_grid();
+        !grid.is_line_wrapped(row.saturating_sub(1))
+    }
+
+    /// Get a logical line by its row index
+    ///
+    /// Walks backwards to find the start of the logical line, then forward
+    /// to collect the entire unwrapped content. This means calling with any
+    /// physical row within a wrapped line returns the same full text.
+    pub fn get_line_unwrapped(&self, row: usize) -> Option<String> {
+        let grid = self.active_grid();
+        // Walk backwards to find the start of the logical line
+        let mut start = row;
+        while start > 0 && grid.is_line_wrapped(start - 1) {
+            start -= 1;
+        }
+        self.join_wrapped_lines(start).map(|j| j.text)
+    }
+
+    /// Get the word at the given position
+    ///
+    /// `col` is a display column. A column covered by a wide character —
+    /// including its trailing spacer column — resolves to that character;
+    /// multi-char grapheme clusters (emoji + ZWJ, combining marks) are kept
+    /// whole. Defaults to the iTerm2 word set (`DEFAULT_WORD_CHARS`).
+    pub fn get_word_at(&self, col: usize, row: usize, word_chars: Option<&str>) -> Option<String> {
+        crate::text_utils::get_word_at(self.active_grid(), col, row, word_chars)
+    }
+
+    // === Feature 19: Custom Rendering Hints ===
+
+    /// Add a rendering hint for the frontend
+    pub fn add_rendering_hint(&mut self, hint: RenderingHint) {
+        self.rendering.rendering_hints.push(hint);
+    }
+
+    /// Get all pending rendering hints and clear the list
+    pub fn poll_rendering_hints(&mut self) -> Vec<RenderingHint> {
+        std::mem::take(&mut self.rendering.rendering_hints)
+    }
+
+    /// Add a damage region
+    pub fn add_damage_region(&mut self, left: usize, top: usize, right: usize, bottom: usize) {
+        self.rendering.damage_regions.push(DamageRegion {
+            left,
+            top,
+            right,
+            bottom,
+        });
+    }
+
+    /// Get all accumulated damage regions and clear the list
+    pub fn poll_damage_regions(&mut self) -> Vec<DamageRegion> {
+        std::mem::take(&mut self.rendering.damage_regions)
+    }
+
+    /// Get all damage regions without clearing
+    pub fn get_damage_regions(&self) -> &[DamageRegion] {
+        &self.rendering.damage_regions
+    }
+
+    /// Merge all damage regions into a single bounding box
+    pub fn merge_damage_regions(&mut self) {
+        if self.rendering.damage_regions.is_empty() {
+            return;
+        }
+        let mut min_left = usize::MAX;
+        let mut min_top = usize::MAX;
+        let mut max_right = 0;
+        let mut max_bottom = 0;
+
+        for region in &self.rendering.damage_regions {
+            min_left = min_left.min(region.left);
+            min_top = min_top.min(region.top);
+            max_right = max_right.max(region.right);
+            max_bottom = max_bottom.max(region.bottom);
+        }
+
+        self.rendering.damage_regions = vec![DamageRegion {
+            left: min_left,
+            top: min_top,
+            right: max_right,
+            bottom: max_bottom,
+        }];
+    }
+
+    /// Clear all damage regions
+    pub fn clear_damage_regions(&mut self) {
+        self.rendering.damage_regions.clear();
+    }
+
+    /// Get all rendering hints without clearing
+    pub fn get_rendering_hints(&self, sort_by_priority: bool) -> Vec<RenderingHint> {
+        let mut hints = self.rendering.rendering_hints.clone();
+        if sort_by_priority {
+            hints.sort_by_key(|hint| std::cmp::Reverse(hint.priority));
+        }
+        hints
+    }
+
+    /// Clear all rendering hints
+    pub fn clear_rendering_hints(&mut self) {
+        self.rendering.rendering_hints.clear();
+    }
+
+    // === Selection Management ===
+
+    /// Set the current selection
+    ///
+    /// Coordinates are clamped to the grid: client-supplied columns and rows
+    /// arrive unvalidated. `end.0` may equal `cols` (word selections report an
+    /// exclusive end column).
+    pub fn set_selection(
+        &mut self,
+        start: (usize, usize),
+        end: (usize, usize),
+        mode: SelectionMode,
+    ) {
+        let grid = self.active_grid();
+        let (cols, rows) = (grid.cols(), grid.rows());
+        let max_row = rows.saturating_sub(1);
+        let start = (start.0.min(cols.saturating_sub(1)), start.1.min(max_row));
+        let end = (end.0.min(cols), end.1.min(max_row));
+        self.selection = Some(Selection { start, end, mode });
+    }
+
+    /// Get the current selection
+    pub fn get_selection(&self) -> Option<Selection> {
+        self.selection.clone()
+    }
+
+    /// Get the text content of the current selection
+    pub fn get_selected_text(&self) -> Option<String> {
+        let sel = self.selection.as_ref()?;
+        let grid = self.active_grid();
+
+        let (start_row, start_col) = (sel.start.1.min(sel.end.1), sel.start.0.min(sel.end.0));
+        let (end_row, end_col) = (sel.start.1.max(sel.end.1), sel.start.0.max(sel.end.0));
+
+        match sel.mode {
+            SelectionMode::Character => {
+                let mut text = String::new();
+                for row in start_row..=end_row {
+                    if let Some(line) = grid.row(row) {
+                        let line_text = crate::text_utils::cells_to_text(line);
+                        let row_start = if row == start_row { start_col } else { 0 };
+                        let row_end = if row == end_row { end_col } else { usize::MAX };
+
+                        let (start_byte, end_byte) =
+                            cols_to_byte_range(&line_text, row_start, row_end);
+                        if start_byte < line_text.len() {
+                            text.push_str(&line_text[start_byte..end_byte]);
+                            if row < end_row {
+                                text.push('\n');
+                            }
+                        }
+                    }
+                }
+                Some(text)
+            }
+            SelectionMode::Line => {
+                let mut text = String::new();
+                for row in start_row..=end_row {
+                    if let Some(line) = grid.row(row) {
+                        text.push_str(&crate::text_utils::cells_to_text(line));
+                        if row < end_row {
+                            text.push('\n');
+                        }
+                    }
+                }
+                Some(text)
+            }
+            SelectionMode::Block => {
+                let mut text = String::new();
+                for row in start_row..=end_row {
+                    if let Some(line) = grid.row(row) {
+                        let line_text = crate::text_utils::cells_to_text(line);
+                        let (start_byte, end_byte) =
+                            cols_to_byte_range(&line_text, start_col, end_col);
+                        let row_text = if start_byte < line_text.len() {
+                            &line_text[start_byte..end_byte]
+                        } else {
+                            ""
+                        };
+                        text.push_str(row_text);
+                        if row < end_row {
+                            text.push('\n');
+                        }
+                    }
+                }
+                Some(text)
+            }
+        }
+    }
+
+    /// Select the word at the given position
+    pub fn select_word_at(&mut self, col: usize, row: usize) {
+        if let Some((start, end)) =
+            crate::text_utils::select_word(self.active_grid(), col, row, None)
+        {
+            self.selection = Some(Selection {
+                start,
+                end,
+                mode: SelectionMode::Character,
+            });
+        }
+    }
+
+    /// Select the word at the given position
+    ///
+    /// Returns the selection bounds as display columns
+    /// `((start_col, start_row), (end_col, end_row))`, with `end_col`
+    /// exclusive.
+    pub fn select_word(
+        &mut self,
+        col: usize,
+        row: usize,
+        word_chars: Option<&str>,
+    ) -> Option<((usize, usize), (usize, usize))> {
+        let bounds = crate::text_utils::select_word(self.active_grid(), col, row, word_chars)?;
+        self.selection = Some(Selection {
+            start: bounds.0,
+            end: bounds.1,
+            mode: SelectionMode::Character,
+        });
+        Some(bounds)
+    }
+
+    /// Select the entire line at the given row
+    pub fn select_line(&mut self, row: usize) {
+        let grid = self.active_grid();
+        let cols = grid.cols();
+        self.selection = Some(Selection {
+            start: (0, row),
+            end: (cols, row),
+            mode: SelectionMode::Line,
+        });
+    }
+
+    /// Clear the current selection
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
+    /// Select a semantic region based on delimiters
+    pub fn select_semantic_region(
+        &mut self,
+        col: usize,
+        row: usize,
+        delimiters: Option<&str>,
+    ) -> Option<String> {
+        if let Some(delims) = delimiters {
+            // Use the proper delimiter-aware implementation from text_utils
+            let grid = self.active_grid();
+            if let Some(content) = crate::text_utils::select_semantic_region(grid, col, row, delims)
+            {
+                return Some(content);
+            }
+        }
+        // Fallback to word selection when no delimiters provided
+        if let Some(word) = self.get_word_at(col, row, delimiters) {
+            if let Some((start, end)) =
+                crate::text_utils::select_word(self.active_grid(), col, row, delimiters)
+            {
+                self.selection = Some(Selection {
+                    start,
+                    end,
+                    mode: SelectionMode::Character,
+                });
+                return Some(word);
+            }
+        }
+        None
+    }
+
+    // === Text Extraction ===
+
+    /// Get text lines around a specific row (with context)
+    ///
+    /// # Arguments
+    /// * `row` - The center row (0-based)
+    /// * `context_before` - Number of lines before the row
+    /// * `context_after` - Number of lines after the row
+    ///
+    /// Returns a vector of text lines.
+    pub fn get_line_context(
+        &self,
+        row: usize,
+        context_before: usize,
+        context_after: usize,
+    ) -> Vec<String> {
+        let grid = self.active_grid();
+        let mut lines = Vec::new();
+
+        let start_row = row.saturating_sub(context_before);
+        let end_row = (row + context_after).min(grid.rows() - 1);
+
+        for r in start_row..=end_row {
+            if let Some(line) = grid.row(r) {
+                lines.push(crate::text_utils::cells_to_text(line));
+            }
+        }
+
+        lines
+    }
+
+    /// Get the paragraph at the given position
+    ///
+    /// A paragraph is defined as consecutive non-empty lines.
+    pub fn get_paragraph_at(&self, row: usize) -> String {
+        let grid = self.active_grid();
+        let mut lines = Vec::new();
+
+        // Find start of paragraph (search backwards)
+        let mut start_row = row;
+        while start_row > 0 {
+            if let Some(line) = grid.row(start_row - 1) {
+                let text = crate::text_utils::cells_to_text(line).trim().to_string();
+                if text.is_empty() {
+                    break;
+                }
+                start_row -= 1;
+            } else {
+                break;
+            }
+        }
+
+        // Find end of paragraph (search forwards)
+        let mut end_row = row;
+        while end_row < grid.rows() - 1 {
+            if let Some(line) = grid.row(end_row + 1) {
+                let text = crate::text_utils::cells_to_text(line).trim().to_string();
+                if text.is_empty() {
+                    break;
+                }
+                end_row += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Collect paragraph lines
+        for r in start_row..=end_row {
+            if let Some(line) = grid.row(r) {
+                lines.push(crate::text_utils::cells_to_text(line));
+            }
+        }
+
+        lines.join("\n")
+    }
+}
+
+/// Map display-column bounds to UTF-8 byte offsets that land on char
+/// boundaries.
+///
+/// Columns count `char`s of the `cells_to_text` output, not bytes: a column
+/// landing inside a multi-byte grapheme must never become a slice index
+/// (SEC-002). Bounds past the end of the text clamp to its length; callers
+/// pass `usize::MAX` for a whole-line remainder.
+fn cols_to_byte_range(line_text: &str, start_col: usize, end_col: usize) -> (usize, usize) {
+    let mut start_byte = line_text.len();
+    let mut end_byte = line_text.len();
+    for (idx, (byte, _)) in line_text.char_indices().enumerate() {
+        if idx == start_col {
+            start_byte = byte;
+        }
+        if idx == end_col {
+            end_byte = byte;
+            break;
+        }
+    }
+    // Callers normalize start <= end, but client-supplied coordinates reach
+    // this function: never hand back an inverted range.
+    if start_byte > end_byte {
+        return (end_byte, end_byte);
+    }
+    (start_byte, end_byte)
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    #[test]
+    fn selection_coordinates_clamp_to_grid_bounds() {
+        let mut term = Terminal::new(4, 2);
+        term.set_selection((10, 5), (99, 9), SelectionMode::Character);
+        let sel = term.get_selection().expect("selection stored");
+        assert_eq!(sel.start, (3, 1));
+        assert_eq!(sel.end, (4, 1));
+    }
+
+    #[test]
+    fn wide_char_column_never_splits_a_char_boundary() {
+        // 日 occupies two display columns but is one char / three bytes.
+        let line = "日x";
+        // Selecting display columns 0..1 lands inside 日: the whole char is
+        // returned, never a byte index that would panic on slicing.
+        assert_eq!(cols_to_byte_range(line, 0, 1), (0, 3));
+        // Column 1..2 covers x only.
+        assert_eq!(cols_to_byte_range(line, 1, 2), (3, 4));
+        // Past-the-end columns clamp to the text length.
+        assert_eq!(cols_to_byte_range(line, 5, 9), (4, 4));
+        // An inverted client-supplied range comes back non-inverted.
+        assert_eq!(cols_to_byte_range(line, 2, 1), (3, 3));
+    }
+}

@@ -1,0 +1,60 @@
+[package]
+name = "muxus-session"
+description = "The in-process backend: runs transports, routes, session logging, login sequences, diagnostics, host stats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+muxus-core.workspace = true
+muxus-store.workspace = true
+muxus-ssh.workspace = true
+muxus-local.workspace = true
+muxus-mgmt.workspace = true
+muxus-telnet.workspace = true
+muxus-serial.workspace = true
+muxus-rdp.workspace = true
+muxus-vnc.workspace = true
+async-channel = "2"
+async-trait = "0.1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+dns-lookup = "3"
+fancy-regex = "0.16"
+# Shared futures for the updater's single in-flight check and download.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+regex = "1"
+russh = "0.64"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Verifying update downloads (the feeds carry base64 SHA-512 checksums).
+sha2 = "0.10"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+uuid = { version = "1", features = ["v4"] }
+webpki-roots = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+muxus-ssh = { workspace = true, features = ["testing"] }
+russh = "0.64"
+serialport = { version = "4.7", default-features = false }
+# The remote desktop tests run IronRDP's own server in process (same revision as muxus-rdp).
+ironrdp-server = { git = "https://github.com/Devolutions/IronRDP", rev = "d90284f5f28dc24bb39c78883521721de76bf52f", default-features = false }
+bytes = "1"
+futures-lite = "2"
+rusqlite = { version = "0.40", features = ["bundled"] }
+tempfile = "3"
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "test-util", "time"] }
+
+[lints]
+workspace = true

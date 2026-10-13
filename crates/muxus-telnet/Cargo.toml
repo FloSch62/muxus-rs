@@ -1,0 +1,19 @@
+[package]
+name = "muxus-telnet"
+description = "Telnet transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+muxus-core.workspace = true
+async-channel = "2"
+socket2 = { version = "0.6", features = ["all"] }
+tokio = { version = "1", features = ["io-util", "net", "rt", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

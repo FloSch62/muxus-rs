@@ -1,0 +1,7 @@
+[build]
+# Several builds run side by side on one machine; keep each one modest.
+jobs = 3
+
+[alias]
+# Workspace checks: `cargo xtask ci|layering|style` (see xtask/src/main.rs).
+xtask = "run --quiet --package xtask --"

@@ -1,0 +1,48 @@
+[package]
+name = "muxus-rdp"
+description = "RDP transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+muxus-core.workspace = true
+async-channel = "2"
+# IronRDP from git: the crates.io release (0.17.0) predates the bitmap-stride,
+# RDP6-orientation and bulk-decompression fixes that xrdp and Windows servers
+# depend on. The TypeScript build compiles 9b151c4c to WebAssembly
+# (client/scripts/build-ironrdp.mjs); that commit pins picky =7.0.0-rc.25,
+# whose curve25519-dalek =5.0.0-rc.1 cannot resolve next to russh. d90284f5 is
+# the head of IronRDP PR #2080 (sspi 0.23, picky rc.26 on the final RustCrypto
+# releases): 50 commits ahead of 9b151c4c and none behind, so it keeps those
+# fixes. Do not move back to a revision that pins picky =7.0.0-rc.25.
+ironrdp = { git = "https://github.com/Devolutions/IronRDP", rev = "d90284f5f28dc24bb39c78883521721de76bf52f", features = [
+    "cliprdr",
+    "connector",
+    "displaycontrol",
+    "dvc",
+    "graphics",
+    "input",
+    "session",
+    "svc",
+] }
+ironrdp-tokio = { git = "https://github.com/Devolutions/IronRDP", rev = "d90284f5f28dc24bb39c78883521721de76bf52f" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+tracing = "0.1"
+webpki-roots = "1"
+x509-parser = "0.18"
+
+[dev-dependencies]
+async-trait = "0.1"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
+ironrdp-server = { git = "https://github.com/Devolutions/IronRDP", rev = "d90284f5f28dc24bb39c78883521721de76bf52f", default-features = false }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true

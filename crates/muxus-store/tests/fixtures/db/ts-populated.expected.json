@@ -1,0 +1,976 @@
+{
+ "appliedMigrations": [
+  {
+   "version": 1,
+   "name": "foundation"
+  },
+  {
+   "version": 2,
+   "name": "tunnels"
+  },
+  {
+   "version": 3,
+   "name": "host-sort-order"
+  },
+  {
+   "version": 4,
+   "name": "tunnel-ssh-options"
+  },
+  {
+   "version": 5,
+   "name": "host-keyword-highlights"
+  },
+  {
+   "version": 6,
+   "name": "persistent-session-history"
+  },
+  {
+   "version": 7,
+   "name": "bounded-session-history-settings"
+  },
+  {
+   "version": 8,
+   "name": "named-workspace-session-sets"
+  },
+  {
+   "version": 9,
+   "name": "drop-favorites"
+  },
+  {
+   "version": 10,
+   "name": "terminal-scrollback-snapshots"
+  },
+  {
+   "version": 11,
+   "name": "version-terminal-scrollback-snapshots"
+  },
+  {
+   "version": 12,
+   "name": "password-vault"
+  },
+  {
+   "version": 13,
+   "name": "automatic-password-vault"
+  },
+  {
+   "version": 14,
+   "name": "password-vault-os-keystore"
+  },
+  {
+   "version": 15,
+   "name": "password-vault-key-check"
+  },
+  {
+   "version": 16,
+   "name": "password-vault-key-cleanup"
+  },
+  {
+   "version": 17,
+   "name": "folder-settings"
+  },
+  {
+   "version": 18,
+   "name": "lock-workspaces"
+  },
+  {
+   "version": 19,
+   "name": "host-disable-sftp"
+  },
+  {
+   "version": 20,
+   "name": "host-console-compatibility"
+  },
+  {
+   "version": 21,
+   "name": "host-terminal-appearance"
+  },
+  {
+   "version": 22,
+   "name": "remote-desktop-hosts"
+  },
+  {
+   "version": 23,
+   "name": "session-log-files"
+  },
+  {
+   "version": 24,
+   "name": "host-command-button-group"
+  },
+  {
+   "version": 25,
+   "name": "tunnel-autostart-reconnect"
+  },
+  {
+   "version": 26,
+   "name": "credential-usernames"
+  },
+  {
+   "version": 27,
+   "name": "login-sequences"
+  },
+  {
+   "version": 28,
+   "name": "host-paste-pacing"
+  },
+  {
+   "version": 29,
+   "name": "management-hosts"
+  }
+ ],
+ "openSshMetadata": {
+  "production": {
+   "profileId": "228i0m1AAVn1SGV_XF9N0",
+   "sortOrder": 2,
+   "displayName": "Production",
+   "group": "Work/EU",
+   "color": "#3b82f6",
+   "icon": "server",
+   "terminalScheme": "nord",
+   "terminalFontColor": "#f8f8f2",
+   "terminalBackgroundColor": "#282a36",
+   "keywordHighlights": {
+    "inheritGlobal": false,
+    "profileId": "builtin-cisco",
+    "rules": [
+     {
+      "id": "r1",
+      "name": "Errors",
+      "keyword": "ERROR",
+      "foreground": "#ffffff",
+      "background": "#b91c1c",
+      "caseSensitive": false,
+      "wholeWord": true,
+      "regex": false
+     }
+    ]
+   },
+   "commandButtonGroup": "command-group-juniper",
+   "pasteLineDelayMs": 250,
+   "pasteCharDelayMs": 0,
+   "disableSftp": true,
+   "consoleCompatibility": true,
+   "loginSequence": {
+    "steps": [
+     {
+      "id": "w1",
+      "kind": "wait",
+      "pattern": "Password:",
+      "timeoutSeconds": 10
+     },
+     {
+      "id": "s1",
+      "kind": "secret",
+      "secretId": "secret-1",
+      "enter": true
+     },
+     {
+      "id": "t1",
+      "kind": "send",
+      "text": "terminal length 0",
+      "enter": true
+     }
+    ]
+   },
+   "lastConnectedAt": "2026-10-12 13:25:23",
+   "connectCount": 1
+  },
+  "bastion": {
+   "profileId": "3OxAztypJpYxQEzXLmWI0",
+   "sortOrder": 0,
+   "group": "Work/EU",
+   "connectCount": 0
+  },
+  "new-name": {
+   "profileId": "wXl2mJbz1uMzaT9dNZ6gl",
+   "color": "#ef4444",
+   "connectCount": 0
+  }
+ },
+ "groupForAlias": "Work/EU",
+ "groupForSavedHost": "Work/EU",
+ "sftpDisabledForAlias": true,
+ "consoleCompatibilityForSavedHost": false,
+ "savedHosts": [
+  {
+   "id": "MJHJGURQLXLSKwO_dzpUK",
+   "kind": "rdp",
+   "name": "Build server",
+   "profile": {
+    "kind": "rdp",
+    "host": "win-build",
+    "port": 3389,
+    "username": "ci",
+    "domain": "LAB",
+    "sshGateway": {
+     "target": "bastion"
+    },
+    "shareClipboard": false,
+    "profileId": "MJHJGURQLXLSKwO_dzpUK"
+   },
+   "metadata": {
+    "profileId": "MJHJGURQLXLSKwO_dzpUK",
+    "connectCount": 0
+   },
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  },
+  {
+   "id": "5RU7Npzy9nA32Hx5krQGF",
+   "kind": "serial",
+   "name": "Console",
+   "profile": {
+    "kind": "serial",
+    "path": "/dev/ttyUSB0",
+    "baudRate": 9600,
+    "dataBits": 7,
+    "stopBits": 1.5,
+    "parity": "even",
+    "flowControl": "hardware",
+    "breakDurationMs": 500,
+    "profileId": "5RU7Npzy9nA32Hx5krQGF"
+   },
+   "metadata": {
+    "profileId": "5RU7Npzy9nA32Hx5krQGF",
+    "connectCount": 0
+   },
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  },
+  {
+   "id": "fBOydvqsag0eFhpNZRR8m",
+   "kind": "vnc",
+   "name": "Lab VM",
+   "profile": {
+    "kind": "vnc",
+    "host": "lab-vm",
+    "port": 5901,
+    "sshGateway": {
+     "target": "router.lab",
+     "profileId": "saved-ssh"
+    },
+    "viewOnly": true,
+    "profileId": "fBOydvqsag0eFhpNZRR8m"
+   },
+   "metadata": {
+    "profileId": "fBOydvqsag0eFhpNZRR8m",
+    "connectCount": 0
+   },
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  },
+  {
+   "id": "BXZmnrOOIWd_SCZD_IMqY",
+   "kind": "gnmi",
+   "name": "leaf1",
+   "profile": {
+    "kind": "gnmi",
+    "host": "leaf1",
+    "port": 57400,
+    "username": "admin",
+    "tls": "skip-verify",
+    "caFile": "/lab/ca.pem",
+    "encoding": "json_ietf",
+    "profileId": "BXZmnrOOIWd_SCZD_IMqY"
+   },
+   "metadata": {
+    "profileId": "BXZmnrOOIWd_SCZD_IMqY",
+    "connectCount": 0
+   },
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  },
+  {
+   "id": "qeiZwsEJMmKbWWzwXoPDM",
+   "kind": "netconf",
+   "name": "leaf1 netconf",
+   "profile": {
+    "kind": "netconf",
+    "host": "leaf1",
+    "port": 830,
+    "profileId": "qeiZwsEJMmKbWWzwXoPDM"
+   },
+   "metadata": {
+    "profileId": "qeiZwsEJMmKbWWzwXoPDM",
+    "connectCount": 0
+   },
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  },
+  {
+   "id": "s4DUozrv36--10VUN3Y6t",
+   "kind": "telnet",
+   "name": "Switch",
+   "profile": {
+    "kind": "telnet",
+    "host": "switch.lab",
+    "port": 23,
+    "profileId": "s4DUozrv36--10VUN3Y6t"
+   },
+   "metadata": {
+    "profileId": "s4DUozrv36--10VUN3Y6t",
+    "group": "Lab",
+    "pasteCharDelayMs": 5,
+    "connectCount": 0
+   },
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  },
+  {
+   "id": "saved-ssh",
+   "kind": "ssh",
+   "name": "Core router",
+   "profile": {
+    "kind": "ssh",
+    "target": "router.lab",
+    "useConfig": false,
+    "user": "admin",
+    "port": 2222,
+    "identityFiles": [
+     "~/.ssh/id_ed25519"
+    ],
+    "identitiesOnly": true,
+    "proxyJump": [
+     "bastion"
+    ],
+    "forwards": [
+     {
+      "type": "local",
+      "bindPort": 8080,
+      "targetHost": "localhost",
+      "targetPort": 80
+     },
+     {
+      "type": "dynamic",
+      "bindPort": 1080
+     }
+    ],
+    "passwordOnly": true,
+    "requestTty": "force",
+    "strictHostKeyChecking": "accept-new",
+    "profileId": "saved-ssh"
+   },
+   "metadata": {
+    "profileId": "saved-ssh",
+    "sortOrder": 1,
+    "group": "Work/EU",
+    "loginSequence": {
+     "steps": []
+    },
+    "lastConnectedAt": "2026-10-12 13:25:23",
+    "connectCount": 1
+   },
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  }
+ ],
+ "savedHost": {
+  "id": "fBOydvqsag0eFhpNZRR8m",
+  "kind": "vnc",
+  "name": "Lab VM",
+  "profile": {
+   "kind": "vnc",
+   "host": "lab-vm",
+   "port": 5901,
+   "sshGateway": {
+    "target": "router.lab",
+    "profileId": "saved-ssh"
+   },
+   "viewOnly": true,
+   "profileId": "fBOydvqsag0eFhpNZRR8m"
+  },
+  "metadata": {
+   "profileId": "fBOydvqsag0eFhpNZRR8m",
+   "connectCount": 0
+  },
+  "createdAt": "2026-10-12 13:25:23",
+  "updatedAt": "2026-10-12 13:25:23"
+ },
+ "workspaceSummaries": [
+  {
+   "id": "ws-daily",
+   "name": "Daily",
+   "isLocked": false,
+   "isStartup": true,
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23",
+   "lastOpenedAt": "2026-10-12 13:25:23"
+  },
+  {
+   "id": "ws-empty",
+   "name": "Empty",
+   "isLocked": true,
+   "isStartup": false,
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  }
+ ],
+ "workspaces": [
+  {
+   "id": "ws-daily",
+   "name": "Daily",
+   "layout": {
+    "version": 1,
+    "root": {
+     "id": "split-1",
+     "type": "split",
+     "direction": "horizontal",
+     "ratio": 0.5,
+     "children": [
+      {
+       "id": "pane-1",
+       "type": "pane",
+       "tabs": [
+        {
+         "id": "tab-1",
+         "kind": "terminal",
+         "title": "Router",
+         "profile": {
+          "kind": "ssh",
+          "target": "router"
+         },
+         "color": "red",
+         "pinned": true,
+         "offerReconnect": true
+        }
+       ],
+       "activeTabId": "tab-1"
+      },
+      {
+       "id": "pane-2",
+       "type": "pane",
+       "tabs": [
+        {
+         "id": "tab-2",
+         "kind": "terminal",
+         "title": "Local",
+         "profile": {
+          "kind": "local",
+          "cwd": "/tmp"
+         },
+         "cwdHint": "/tmp",
+         "offerReconnect": true
+        },
+        {
+         "id": "tab-3",
+         "kind": "sftp",
+         "title": "Files",
+         "connection": {
+          "source": "openssh",
+          "id": "router"
+         },
+         "path": "/var/log"
+        }
+       ]
+      }
+     ]
+    },
+    "activePaneId": "pane-1"
+   },
+   "multiExecGroups": [
+    {
+     "id": "g1",
+     "name": "Both",
+     "tabIds": [
+      "tab-1",
+      "tab-2"
+     ]
+    }
+   ],
+   "isLocked": false,
+   "isStartup": true,
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23",
+   "lastOpenedAt": "2026-10-12 13:25:23"
+  },
+  {
+   "id": "ws-empty",
+   "name": "Empty",
+   "layout": {
+    "version": 1,
+    "root": null
+   },
+   "multiExecGroups": [],
+   "isLocked": true,
+   "isStartup": false,
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  }
+ ],
+ "latestWorkspace": {
+  "id": "ws-daily",
+  "name": "Daily",
+  "layout": {
+   "version": 1,
+   "root": {
+    "id": "split-1",
+    "type": "split",
+    "direction": "horizontal",
+    "ratio": 0.5,
+    "children": [
+     {
+      "id": "pane-1",
+      "type": "pane",
+      "tabs": [
+       {
+        "id": "tab-1",
+        "kind": "terminal",
+        "title": "Router",
+        "profile": {
+         "kind": "ssh",
+         "target": "router"
+        },
+        "color": "red",
+        "pinned": true,
+        "offerReconnect": true
+       }
+      ],
+      "activeTabId": "tab-1"
+     },
+     {
+      "id": "pane-2",
+      "type": "pane",
+      "tabs": [
+       {
+        "id": "tab-2",
+        "kind": "terminal",
+        "title": "Local",
+        "profile": {
+         "kind": "local",
+         "cwd": "/tmp"
+        },
+        "cwdHint": "/tmp",
+        "offerReconnect": true
+       },
+       {
+        "id": "tab-3",
+        "kind": "sftp",
+        "title": "Files",
+        "connection": {
+         "source": "openssh",
+         "id": "router"
+        },
+        "path": "/var/log"
+       }
+      ]
+     }
+    ]
+   },
+   "activePaneId": "pane-1"
+  },
+  "multiExecGroups": [
+   {
+    "id": "g1",
+    "name": "Both",
+    "tabIds": [
+     "tab-1",
+     "tab-2"
+    ]
+   }
+  ],
+  "isLocked": false,
+  "isStartup": true,
+  "createdAt": "2026-10-12 13:25:23",
+  "updatedAt": "2026-10-12 13:25:23",
+  "lastOpenedAt": "2026-10-12 13:25:23"
+ },
+ "startupWorkspace": {
+  "id": "ws-daily",
+  "name": "Daily",
+  "layout": {
+   "version": 1,
+   "root": {
+    "id": "split-1",
+    "type": "split",
+    "direction": "horizontal",
+    "ratio": 0.5,
+    "children": [
+     {
+      "id": "pane-1",
+      "type": "pane",
+      "tabs": [
+       {
+        "id": "tab-1",
+        "kind": "terminal",
+        "title": "Router",
+        "profile": {
+         "kind": "ssh",
+         "target": "router"
+        },
+        "color": "red",
+        "pinned": true,
+        "offerReconnect": true
+       }
+      ],
+      "activeTabId": "tab-1"
+     },
+     {
+      "id": "pane-2",
+      "type": "pane",
+      "tabs": [
+       {
+        "id": "tab-2",
+        "kind": "terminal",
+        "title": "Local",
+        "profile": {
+         "kind": "local",
+         "cwd": "/tmp"
+        },
+        "cwdHint": "/tmp",
+        "offerReconnect": true
+       },
+       {
+        "id": "tab-3",
+        "kind": "sftp",
+        "title": "Files",
+        "connection": {
+         "source": "openssh",
+         "id": "router"
+        },
+        "path": "/var/log"
+       }
+      ]
+     }
+    ]
+   },
+   "activePaneId": "pane-1"
+  },
+  "multiExecGroups": [
+   {
+    "id": "g1",
+    "name": "Both",
+    "tabIds": [
+     "tab-1",
+     "tab-2"
+    ]
+   }
+  ],
+  "isLocked": false,
+  "isStartup": true,
+  "createdAt": "2026-10-12 13:25:23",
+  "updatedAt": "2026-10-12 13:25:23",
+  "lastOpenedAt": "2026-10-12 13:25:23"
+ },
+ "snapshot": {
+  "tabId": "tab-1",
+  "data": "\u001b[1mbold\u001b[0m\r\n",
+  "formatVersion": 2,
+  "updatedAt": "2026-10-12 13:25:23"
+ },
+ "tunnels": [
+  {
+   "id": "tunnel-socks",
+   "target": "bastion",
+   "type": "dynamic",
+   "bindPort": 1080,
+   "autoStart": false,
+   "autoReconnect": true,
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  },
+  {
+   "id": "tunnel-db",
+   "name": "DB",
+   "target": "db.internal",
+   "sshOptions": {
+    "user": "deploy",
+    "port": 2222,
+    "identityFiles": [
+     "~/.ssh/work"
+    ],
+    "proxyJump": [
+     "bastion"
+    ]
+   },
+   "type": "local",
+   "bindPort": 5432,
+   "targetHost": "localhost",
+   "targetPort": 5432,
+   "autoStart": true,
+   "autoReconnect": false,
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  }
+ ],
+ "tunnel": {
+  "id": "tunnel-socks",
+  "target": "bastion",
+  "type": "dynamic",
+  "bindPort": 1080,
+  "autoStart": false,
+  "autoReconnect": true,
+  "createdAt": "2026-10-12 13:25:23",
+  "updatedAt": "2026-10-12 13:25:23"
+ },
+ "policyExact": {
+  "profileKey": "ssh:production",
+  "enabled": false,
+  "captureInput": true,
+  "maxPartBytes": 2097152,
+  "maxParts": 2,
+  "logToFile": false,
+  "overridden": true
+ },
+ "policyInherited": {
+  "profileKey": "ssh:other",
+  "enabled": true,
+  "captureInput": false,
+  "maxPartBytes": 1048576,
+  "maxParts": 4,
+  "logToFile": true,
+  "overridden": false
+ },
+ "policyDefaults": {
+  "profileKey": "*",
+  "enabled": true,
+  "captureInput": false,
+  "maxPartBytes": 1048576,
+  "maxParts": 4,
+  "logToFile": true,
+  "overridden": true
+ },
+ "historySettings": {
+  "storageLocation": "/srv/history",
+  "maxTotalBytes": 134217728,
+  "minFreeBytes": 0,
+  "minFreePercent": 2.5,
+  "maxAgeDays": 30
+ },
+ "logFileSettings": {
+  "directory": "/srv/logs",
+  "filenamePattern": "{kind}/{host}_{date}.log",
+  "timestamps": true
+ },
+ "folders": [
+  {
+   "id": "RKjuKEvkeNWfJI1l2wbZg",
+   "path": "Lab",
+   "pathKey": "lab",
+   "auth": {
+    "user": "root"
+   },
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  },
+  {
+   "id": "MauX4YAAAGJoxxoofPqop",
+   "path": "Work/EU",
+   "pathKey": "work/eu",
+   "auth": {
+    "user": "ops",
+    "port": 2200,
+    "identityFiles": [
+     "~/.ssh/eu"
+    ],
+    "identitiesOnly": true,
+    "identityAgent": "none",
+    "forwardAgent": false
+   },
+   "loginSequence": {
+    "steps": [
+     {
+      "id": "w1",
+      "kind": "wait",
+      "pattern": "Password:",
+      "timeoutSeconds": 10
+     },
+     {
+      "id": "s1",
+      "kind": "secret",
+      "secretId": "secret-1",
+      "enter": true
+     },
+     {
+      "id": "t1",
+      "kind": "send",
+      "text": "terminal length 0",
+      "enter": true
+     }
+    ]
+   },
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  }
+ ],
+ "folder": {
+  "id": "MauX4YAAAGJoxxoofPqop",
+  "path": "Work/EU",
+  "pathKey": "work/eu",
+  "auth": {
+   "user": "ops",
+   "port": 2200,
+   "identityFiles": [
+    "~/.ssh/eu"
+   ],
+   "identitiesOnly": true,
+   "identityAgent": "none",
+   "forwardAgent": false
+  },
+  "loginSequence": {
+   "steps": [
+    {
+     "id": "w1",
+     "kind": "wait",
+     "pattern": "Password:",
+     "timeoutSeconds": 10
+    },
+    {
+     "id": "s1",
+     "kind": "secret",
+     "secretId": "secret-1",
+     "enter": true
+    },
+    {
+     "id": "t1",
+     "kind": "send",
+     "text": "terminal length 0",
+     "enter": true
+    }
+   ]
+  },
+  "createdAt": "2026-10-12 13:25:23",
+  "updatedAt": "2026-10-12 13:25:23"
+ },
+ "hostLoginSequenceAlias": {
+  "loginSequence": {
+   "steps": [
+    {
+     "id": "w1",
+     "kind": "wait",
+     "pattern": "Password:",
+     "timeoutSeconds": 10
+    },
+    {
+     "id": "s1",
+     "kind": "secret",
+     "secretId": "secret-1",
+     "enter": true
+    },
+    {
+     "id": "t1",
+     "kind": "send",
+     "text": "terminal length 0",
+     "enter": true
+    }
+   ]
+  },
+  "group": "Work/EU"
+ },
+ "hostLoginSequenceSaved": {
+  "loginSequence": {
+   "steps": []
+  },
+  "group": "Work/EU"
+ },
+ "vaultConfig": {
+  "formatVersion": 3,
+  "vaultId": "vault-id-0123456789",
+  "unlockPolicy": "startup",
+  "kdfAlgorithm": "scrypt",
+  "kdfSalt": "AQEBAQEBAQEBAQEBAQEBAQ==",
+  "kdfCost": 1024,
+  "kdfBlockSize": 8,
+  "kdfParallelism": 1,
+  "masterKeyNonce": "AgICAgICAgICAgIC",
+  "masterKeyCiphertext": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+  "masterKeyTag": "BAQEBAQEBAQEBAQEBAQEBA==",
+  "keyCheck": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
+  "createdAt": "2026-10-12 13:25:23",
+  "updatedAt": "2026-10-12 13:25:23"
+ },
+ "sshPasswords": [
+  {
+   "id": "85cDVJ6BO1KJrt-7juY5U",
+   "provider": "muxus-master-vault",
+   "service": "muxus/ssh-password/v1",
+   "account": "acct-1",
+   "label": "admin@router:22",
+   "formatVersion": 1,
+   "nonce": "BgYGBgYGBgYGBgYG",
+   "ciphertext": "Y2lwaGVy",
+   "authTag": "BwcHBwcHBwcHBwcHBwcHBw==",
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  }
+ ],
+ "namedSecrets": [
+  {
+   "id": "dssOrzjgtEq52TBXqMY2J",
+   "provider": "muxus-master-vault",
+   "service": "muxus/named-secret/v1",
+   "account": "acct-2",
+   "label": "enable",
+   "username": "admin",
+   "formatVersion": 1,
+   "nonce": "CAgICAgICAgICAgI",
+   "ciphertext": "ZW5hYmxlLWNpcGhlcg==",
+   "authTag": "CQkJCQkJCQkJCQkJCQkJCQ==",
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  }
+ ],
+ "pendingCleanup": [
+  "cleanup-vault-id-12"
+ ],
+ "desktopIdentity": {
+  "fingerprint": "AA:BB",
+  "subject": "CN=win-build"
+ },
+ "managementRequests": [
+  {
+   "id": "req-own",
+   "protocol": "gnmi",
+   "profileId": "BXZmnrOOIWd_SCZD_IMqY",
+   "name": "Counters",
+   "request": {
+    "operation": "subscribe",
+    "paths": [
+     "/interface[name=*]/statistics"
+    ],
+    "options": {
+     "mode": "stream",
+     "sample": 10
+    }
+   },
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  },
+  {
+   "id": "req-shared",
+   "protocol": "gnmi",
+   "name": "System",
+   "request": {
+    "operation": "get",
+    "paths": [
+     "/system"
+    ]
+   },
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  }
+ ],
+ "managementShared": [
+  {
+   "id": "req-shared",
+   "protocol": "gnmi",
+   "name": "System",
+   "request": {
+    "operation": "get",
+    "paths": [
+     "/system"
+    ]
+   },
+   "createdAt": "2026-10-12 13:25:23",
+   "updatedAt": "2026-10-12 13:25:23"
+  }
+ ],
+ "ids": {
+  "ssh": "saved-ssh",
+  "telnet": "s4DUozrv36--10VUN3Y6t",
+  "serial": "5RU7Npzy9nA32Hx5krQGF",
+  "rdp": "MJHJGURQLXLSKwO_dzpUK",
+  "vnc": "fBOydvqsag0eFhpNZRR8m",
+  "gnmi": "BXZmnrOOIWd_SCZD_IMqY",
+  "netconf": "qeiZwsEJMmKbWWzwXoPDM",
+  "tunnel": "tunnel-db"
+ }
+}

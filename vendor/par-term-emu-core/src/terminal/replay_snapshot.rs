@@ -1,0 +1,542 @@
+//! Terminal snapshot types for the Instant Replay feature.
+//!
+//! These structs capture a complete, clonable snapshot of terminal state
+//! at a point in time, enabling efficient restore for replay navigation.
+
+use crate::cell::{Cell, CellFlags};
+use crate::color::Color;
+use crate::cursor::Cursor;
+use crate::mouse::{MouseEncoding, MouseMode};
+use crate::zone::Zone;
+
+pub use crate::grid::GridSnapshot;
+
+/// Complete snapshot of terminal state at a point in time.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TerminalSnapshot {
+    /// Timestamp in Unix milliseconds when this snapshot was captured
+    pub timestamp: u64,
+    /// Terminal width in columns
+    pub cols: usize,
+    /// Terminal height in rows
+    pub rows: usize,
+
+    // --- Grids ---
+    /// Primary screen grid snapshot
+    pub grid: GridSnapshot,
+    /// Alternate screen grid snapshot
+    pub alt_grid: GridSnapshot,
+    /// Whether the alternate screen is currently active
+    pub alt_screen_active: bool,
+
+    // --- Cursors ---
+    /// Primary cursor state
+    pub cursor: Cursor,
+    /// Alternate screen cursor state
+    pub alt_cursor: Cursor,
+    /// Saved cursor (DECSC/DECRC)
+    pub saved_cursor: Option<Cursor>,
+
+    // --- Current colors and attributes ---
+    /// Current foreground color
+    pub fg: Color,
+    /// Current background color
+    pub bg: Color,
+    /// Current underline color (None = use foreground)
+    pub underline_color: Option<Color>,
+    /// Current cell attribute flags
+    pub flags: CellFlags,
+
+    // --- Saved colors and attributes ---
+    /// Saved foreground color
+    pub saved_fg: Color,
+    /// Saved background color
+    pub saved_bg: Color,
+    /// Saved underline color
+    pub saved_underline_color: Option<Color>,
+    /// Saved cell attribute flags
+    pub saved_flags: CellFlags,
+
+    // --- Terminal modes and state ---
+    /// Terminal title
+    pub title: String,
+    /// Auto-wrap mode (DECAWM)
+    pub auto_wrap: bool,
+    /// Origin mode (DECOM)
+    pub origin_mode: bool,
+    /// Insert mode (IRM)
+    pub insert_mode: bool,
+    /// Reverse video mode (DECSCNM)
+    pub reverse_video: bool,
+    /// Line feed / new line mode (LNM)
+    pub line_feed_new_line_mode: bool,
+    /// Application cursor keys mode
+    pub application_cursor: bool,
+    /// Application keypad mode (DECPAM/DECPNM)
+    pub application_keypad: bool,
+    /// Bracketed paste mode
+    pub bracketed_paste: bool,
+    /// Focus tracking mode
+    pub focus_tracking: bool,
+    /// Mouse tracking mode
+    pub mouse_mode: MouseMode,
+    /// Mouse encoding format
+    pub mouse_encoding: MouseEncoding,
+    /// Whether left/right margins are enabled (DECLRMM)
+    pub use_lr_margins: bool,
+    /// Left margin column (0-indexed)
+    pub left_margin: usize,
+    /// Right margin column (0-indexed)
+    pub right_margin: usize,
+    /// Keyboard flags (kitty keyboard protocol)
+    pub keyboard_flags: u16,
+    /// modifyOtherKeys mode level
+    pub modify_other_keys_mode: u8,
+    /// Character protection attribute (DECSCA)
+    pub char_protected: bool,
+    /// Whether bold text uses bright colors
+    pub bold_brightening: bool,
+
+    // --- Scroll region ---
+    /// Scroll region top row (0-indexed)
+    pub scroll_region_top: usize,
+    /// Scroll region bottom row (0-indexed)
+    pub scroll_region_bottom: usize,
+
+    // --- Misc ---
+    /// Tab stop positions (one bool per column)
+    pub tab_stops: Vec<bool>,
+    /// Pending wrap flag (DECAWM delayed wrap)
+    pub pending_wrap: bool,
+    /// Estimated memory footprint of this snapshot in bytes
+    pub estimated_size_bytes: usize,
+}
+
+impl TerminalSnapshot {
+    /// Estimate the memory footprint of this snapshot in bytes.
+    ///
+    /// This is a rough estimate covering the dominant cost centres
+    /// (cell Vecs, scrollback, wrapped flags, tab stops, and zones).
+    /// Small fixed-size fields are approximated by `size_of::<Self>()`.
+    pub fn estimate_size(&self) -> usize {
+        let base = std::mem::size_of::<Self>();
+
+        // Grid cells: size_of::<Cell>() covers the packed color words and the
+        // Option pointer for combining marks (most cells carry none, so their
+        // Arc payload is not counted; combining-bearing cells add one small
+        // heap allocation each, which this estimate omits).
+        let cell_size = std::mem::size_of::<Cell>();
+        let grid_cells = (self.grid.cells.len() + self.grid.scrollback_cells.len()) * cell_size;
+        let alt_grid_cells =
+            (self.alt_grid.cells.len() + self.alt_grid.scrollback_cells.len()) * cell_size;
+
+        let wrapped_size = self.grid.wrapped.len()
+            + self.grid.scrollback_wrapped.len()
+            + self.alt_grid.wrapped.len()
+            + self.alt_grid.scrollback_wrapped.len();
+
+        let zone_size =
+            (self.grid.zones.len() + self.alt_grid.zones.len()) * std::mem::size_of::<Zone>();
+
+        let tab_stops_size = self.tab_stops.len();
+        let title_size = self.title.len();
+
+        base + grid_cells + alt_grid_cells + wrapped_size + zone_size + tab_stops_size + title_size
+    }
+}
+
+use crate::terminal::Terminal;
+
+impl Terminal {
+    /// Capture a complete snapshot of the current terminal state.
+    pub fn capture_snapshot(&self) -> TerminalSnapshot {
+        let (cols, rows) = self.size();
+        let grid = self.grid.capture_snapshot();
+        let alt_grid = self.alt_grid.capture_snapshot();
+
+        let mut snap = TerminalSnapshot {
+            timestamp: crate::text_utils::unix_millis(),
+            cols,
+            rows,
+            grid,
+            alt_grid,
+            alt_screen_active: self.alt_screen_active,
+            cursor: self.cursor,
+            alt_cursor: self.alt_cursor,
+            saved_cursor: self.saved_state.saved_cursor,
+            fg: self.attrs.fg,
+            bg: self.attrs.bg,
+            underline_color: self.attrs.underline_color,
+            flags: self.attrs.flags,
+            saved_fg: self.saved_state.saved_fg,
+            saved_bg: self.saved_state.saved_bg,
+            saved_underline_color: self.saved_state.saved_underline_color,
+            saved_flags: self.saved_state.saved_flags,
+            title: self.title_state.title.clone(),
+            auto_wrap: self.modes.auto_wrap,
+            origin_mode: self.modes.origin_mode,
+            insert_mode: self.modes.insert_mode,
+            reverse_video: self.modes.reverse_video,
+            line_feed_new_line_mode: self.modes.line_feed_new_line_mode,
+            application_cursor: self.modes.application_cursor,
+            application_keypad: self.modes.application_keypad,
+            bracketed_paste: self.modes.bracketed_paste,
+            focus_tracking: self.modes.focus_tracking,
+            mouse_mode: self.modes.mouse_mode,
+            mouse_encoding: self.modes.mouse_encoding,
+            use_lr_margins: self.margins.use_lr_margins,
+            left_margin: self.margins.left_margin,
+            right_margin: self.margins.right_margin,
+            keyboard_flags: self.keyboard_state.keyboard_flags,
+            modify_other_keys_mode: self.keyboard_state.modify_other_keys_mode,
+            char_protected: self.modes.char_protected,
+            bold_brightening: self.host.bold_brightening,
+            scroll_region_top: self.margins.scroll_region_top,
+            scroll_region_bottom: self.margins.scroll_region_bottom,
+            tab_stops: self.tab_stops.clone(),
+            pending_wrap: self.pending_wrap,
+            estimated_size_bytes: 0,
+        };
+        snap.estimated_size_bytes = snap.estimate_size();
+        snap
+    }
+
+    /// Restore the terminal state from a previously captured snapshot.
+    pub fn restore_from_snapshot(&mut self, snap: TerminalSnapshot) {
+        // Restored rows replace the screen wholesale; pending trigger
+        // indices from before the restore point at different text (ARC-064).
+        self.triggers.clear_pending();
+        self.grid.restore_from_snapshot(&snap.grid);
+        self.alt_grid.restore_from_snapshot(&snap.alt_grid);
+        self.alt_screen_active = snap.alt_screen_active;
+        self.cursor = snap.cursor;
+        self.alt_cursor = snap.alt_cursor;
+        self.saved_state.saved_cursor = snap.saved_cursor;
+        self.attrs.fg = snap.fg;
+        self.attrs.bg = snap.bg;
+        self.attrs.underline_color = snap.underline_color;
+        self.attrs.flags = snap.flags;
+        self.saved_state.saved_fg = snap.saved_fg;
+        self.saved_state.saved_bg = snap.saved_bg;
+        self.saved_state.saved_underline_color = snap.saved_underline_color;
+        self.saved_state.saved_flags = snap.saved_flags;
+        self.title_state.title = snap.title;
+        self.modes.auto_wrap = snap.auto_wrap;
+        self.modes.origin_mode = snap.origin_mode;
+        self.modes.insert_mode = snap.insert_mode;
+        self.modes.reverse_video = snap.reverse_video;
+        self.modes.line_feed_new_line_mode = snap.line_feed_new_line_mode;
+        self.modes.application_cursor = snap.application_cursor;
+        self.modes.application_keypad = snap.application_keypad;
+        self.modes.bracketed_paste = snap.bracketed_paste;
+        self.modes.focus_tracking = snap.focus_tracking;
+        self.modes.mouse_mode = snap.mouse_mode;
+        self.modes.mouse_encoding = snap.mouse_encoding;
+        self.margins.use_lr_margins = snap.use_lr_margins;
+        self.margins.left_margin = snap.left_margin;
+        self.margins.right_margin = snap.right_margin;
+        self.keyboard_state.keyboard_flags = snap.keyboard_flags;
+        self.keyboard_state.modify_other_keys_mode = snap.modify_other_keys_mode;
+        self.modes.char_protected = snap.char_protected;
+        self.host.bold_brightening = snap.bold_brightening;
+        self.margins.scroll_region_top = snap.scroll_region_top;
+        self.margins.scroll_region_bottom = snap.scroll_region_bottom;
+        self.tab_stops = snap.tab_stops;
+        self.pending_wrap = snap.pending_wrap;
+
+        // The whole screen just changed under any damage-driven renderer
+        // (QA-150), and the snapshot's alt-screen flag may have made the
+        // lower-generation grid visible (ARC-092).
+        self.invalidate_visible_screen();
+    }
+
+    /// Restore a snapshot under a process that did not produce it (a pane
+    /// respawned after a daemon restart): the screen content and scrollback
+    /// come back, but the state the old process set up for itself does not.
+    /// A full-screen app's alternate screen and input modes would otherwise
+    /// capture the new shell, whose output then never reaches the main
+    /// screen's scrollback.
+    pub fn restore_for_new_process(&mut self, snap: TerminalSnapshot) {
+        self.restore_from_snapshot(snap);
+        self.use_primary_screen();
+        self.alt_grid.clear();
+        self.margins.scroll_region_top = 0;
+        self.margins.scroll_region_bottom = self.grid.rows().saturating_sub(1);
+        self.margins.use_lr_margins = false;
+        self.modes.origin_mode = false;
+        self.modes.insert_mode = false;
+        self.modes.application_cursor = false;
+        self.modes.application_keypad = false;
+        self.modes.focus_tracking = false;
+        self.modes.mouse_mode = crate::mouse::MouseMode::Off;
+        self.modes.mouse_encoding = crate::mouse::MouseEncoding::Default;
+        self.keyboard_state.keyboard_flags = 0;
+        self.keyboard_state.modify_other_keys_mode = 0;
+        self.cursor.visible = true;
+        self.pending_wrap = false;
+
+        // Same damage contract as the plain restore (QA-150), re-asserted
+        // after the screen switch: the primary screen is what a renderer
+        // now sees.
+        self.invalidate_visible_screen();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cell::CellFlags;
+    use crate::color::{Color, NamedColor};
+    use crate::cursor::Cursor;
+
+    fn make_grid_snapshot(cols: usize, rows: usize) -> GridSnapshot {
+        GridSnapshot {
+            cells: vec![Cell::default(); cols * rows],
+            scrollback_cells: Vec::new(),
+            scrollback_lines: 0,
+            max_scrollback: 1000,
+            cols,
+            rows,
+            wrapped: vec![false; rows],
+            scrollback_wrapped: Vec::new(),
+            zones: Vec::new(),
+            total_lines_scrolled: 0,
+        }
+    }
+
+    fn make_replay_snapshot(cols: usize, rows: usize) -> TerminalSnapshot {
+        let grid = make_grid_snapshot(cols, rows);
+        let alt_grid = make_grid_snapshot(cols, rows);
+
+        let mut snap = TerminalSnapshot {
+            timestamp: 1_700_000_000_000,
+            cols,
+            rows,
+            grid,
+            alt_grid,
+            alt_screen_active: false,
+            cursor: Cursor::default(),
+            alt_cursor: Cursor::default(),
+            saved_cursor: None,
+            fg: Color::Named(NamedColor::White),
+            bg: Color::Named(NamedColor::Black),
+            underline_color: None,
+            flags: CellFlags::default(),
+            saved_fg: Color::Named(NamedColor::White),
+            saved_bg: Color::Named(NamedColor::Black),
+            saved_underline_color: None,
+            saved_flags: CellFlags::default(),
+            title: String::new(),
+            auto_wrap: true,
+            origin_mode: false,
+            insert_mode: false,
+            reverse_video: false,
+            line_feed_new_line_mode: false,
+            application_cursor: false,
+            application_keypad: false,
+            bracketed_paste: false,
+            focus_tracking: false,
+            mouse_mode: MouseMode::Off,
+            mouse_encoding: MouseEncoding::Default,
+            use_lr_margins: false,
+            left_margin: 0,
+            right_margin: cols.saturating_sub(1),
+            keyboard_flags: 0,
+            modify_other_keys_mode: 0,
+            char_protected: false,
+            bold_brightening: true,
+            scroll_region_top: 0,
+            scroll_region_bottom: rows.saturating_sub(1),
+            tab_stops: vec![false; cols],
+            pending_wrap: false,
+            estimated_size_bytes: 0,
+        };
+        snap.estimated_size_bytes = snap.estimate_size();
+        snap
+    }
+
+    #[test]
+    fn test_replay_snapshot_creation() {
+        let snap = make_replay_snapshot(80, 24);
+        assert_eq!(snap.cols, 80);
+        assert_eq!(snap.rows, 24);
+        assert_eq!(snap.grid.cells.len(), 80 * 24);
+        assert_eq!(snap.alt_grid.cells.len(), 80 * 24);
+        assert!(!snap.alt_screen_active);
+        assert_eq!(snap.cursor, Cursor::default());
+        assert_eq!(snap.fg, Color::Named(NamedColor::White));
+        assert_eq!(snap.bg, Color::Named(NamedColor::Black));
+    }
+
+    #[test]
+    fn test_replay_snapshot_clone() {
+        let snap = make_replay_snapshot(80, 24);
+        let cloned = snap.clone();
+        assert_eq!(cloned.cols, snap.cols);
+        assert_eq!(cloned.rows, snap.rows);
+        assert_eq!(cloned.timestamp, snap.timestamp);
+        assert_eq!(cloned.grid.cells.len(), snap.grid.cells.len());
+        assert_eq!(cloned.alt_grid.cells.len(), snap.alt_grid.cells.len());
+        assert_eq!(cloned.cursor, snap.cursor);
+        assert_eq!(cloned.fg, snap.fg);
+        assert_eq!(cloned.bg, snap.bg);
+    }
+
+    #[test]
+    fn test_replay_snapshot_size_estimation() {
+        let snap = make_replay_snapshot(80, 24);
+        let size = snap.estimate_size();
+        // Should be at least the size of the cell data
+        let min_cells = 80 * 24 * 2 * std::mem::size_of::<Cell>();
+        assert!(
+            size >= min_cells,
+            "estimated size {size} should be >= cell data size {min_cells}"
+        );
+        assert_eq!(snap.estimated_size_bytes, size);
+    }
+
+    #[test]
+    fn test_replay_snapshot_with_scrollback() {
+        let mut grid = make_grid_snapshot(80, 24);
+        grid.scrollback_cells = vec![Cell::default(); 80 * 100];
+        grid.scrollback_lines = 100;
+
+        let mut snap = make_replay_snapshot(80, 24);
+        snap.grid = grid;
+        snap.estimated_size_bytes = snap.estimate_size();
+
+        // Scrollback should increase the estimated size
+        let no_scrollback_snap = make_replay_snapshot(80, 24);
+        assert!(
+            snap.estimated_size_bytes > no_scrollback_snap.estimated_size_bytes,
+            "snapshot with scrollback should be larger"
+        );
+    }
+
+    #[test]
+    fn test_replay_snapshot_with_colored_cells() {
+        let mut snap = make_replay_snapshot(10, 5);
+        // Set some cells to have non-default colors
+        snap.grid.cells[0] = Cell::with_colors('A', Color::Rgb(255, 0, 0), Color::Rgb(0, 0, 255));
+        snap.grid.cells[1] =
+            Cell::with_colors('B', Color::Indexed(196), Color::Named(NamedColor::Green));
+
+        let cloned = snap.clone();
+        assert_eq!(cloned.grid.cells[0].c, 'A');
+        assert_eq!(cloned.grid.cells[0].fg(), Color::Rgb(255, 0, 0));
+        assert_eq!(cloned.grid.cells[0].bg(), Color::Rgb(0, 0, 255));
+        assert_eq!(cloned.grid.cells[1].c, 'B');
+        assert_eq!(cloned.grid.cells[1].fg(), Color::Indexed(196));
+        assert_eq!(cloned.grid.cells[1].bg(), Color::Named(NamedColor::Green));
+    }
+
+    #[test]
+    fn test_snapshot_round_trips_application_keypad() {
+        let mut src = Terminal::new(80, 24);
+        src.process(b"\x1b=");
+        assert!(src.modes.application_keypad);
+
+        let snap = src.capture_snapshot();
+        assert!(snap.application_keypad);
+
+        let mut dst = Terminal::new(80, 24);
+        dst.restore_from_snapshot(snap);
+        assert!(dst.modes.application_keypad);
+    }
+
+    #[test]
+    fn test_grid_snapshot_creation() {
+        let gs = make_grid_snapshot(120, 40);
+        assert_eq!(gs.cols, 120);
+        assert_eq!(gs.rows, 40);
+        assert_eq!(gs.cells.len(), 120 * 40);
+        assert_eq!(gs.wrapped.len(), 40);
+        assert_eq!(gs.scrollback_cells.len(), 0);
+        assert_eq!(gs.scrollback_lines, 0);
+        assert_eq!(gs.max_scrollback, 1000);
+        assert_eq!(gs.total_lines_scrolled, 0);
+    }
+
+    #[test]
+    fn test_grid_snapshot_with_zones() {
+        let mut gs = make_grid_snapshot(80, 24);
+        gs.zones.push(Zone::new(
+            1,
+            crate::zone::ZoneType::Prompt,
+            0,
+            Some(1_700_000_000_000),
+        ));
+        gs.zones.push(Zone::new(
+            2,
+            crate::zone::ZoneType::Command,
+            1,
+            Some(1_700_000_000_001),
+        ));
+        assert_eq!(gs.zones.len(), 2);
+
+        let cloned = gs.clone();
+        assert_eq!(cloned.zones.len(), 2);
+        assert_eq!(cloned.zones[0].id, 1);
+        assert_eq!(cloned.zones[1].id, 2);
+    }
+}
+
+/// Round-trip coverage for the `serde` feature's snapshot derives (par-mux.md
+/// D3.1): a capture → serialize → deserialize → restore sequence must land in
+/// exactly the state a direct restore produces.
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::*;
+
+    /// Serialize with the capture timestamp zeroed so two captures taken at
+    /// different times still compare equal.
+    fn normalized_json(snap: &TerminalSnapshot) -> String {
+        let mut s = snap.clone();
+        s.timestamp = 0;
+        serde_json::to_string(&s).expect("snapshot must serialize")
+    }
+
+    #[test]
+    fn test_snapshot_serde_round_trip_equals_direct_restore() {
+        let mut term = Terminal::new(20, 6);
+        // Colors, 256-color fg, curly underline, bold — Cell/Color/CellFlags leaves.
+        term.process(b"\x1b[1;4:3;38;5;196mred curly\x1b[0m plain");
+        // Explicit underline color (Option<Color>) and RGB background.
+        term.process(b"\x1b[58;2;10;20;30;48;2;1;2;3mstyled\x1b[0m");
+        // Title, mouse tracking + SGR encoding.
+        term.process(b"\x1b]0;Replay Title\x07");
+        term.process(b"\x1b[?1000h\x1b[?1006h");
+        // OSC 133 semantic zones and an OSC 8 hyperlink (NonZeroU32 hyperlink_id).
+        term.process(b"\x1b]133;A\x07$ \x1b]133;B\x07cargo build\x1b]133;C\x07");
+        term.process(b"\x1b]8;id=3;https://example.com\x07link\x1b]8;;\x07");
+        // Wide characters (WIDE_CHAR flag) and enough lines to populate scrollback.
+        term.process("日本語 wide\r\n".as_bytes());
+        for i in 0..12 {
+            term.process(format!("scroll line {i}\r\n").as_bytes());
+        }
+
+        let snap = term.capture_snapshot();
+        assert!(
+            snap.grid.scrollback_cells.len() >= 20 * 6,
+            "test setup must push real content into scrollback, got {} cells",
+            snap.grid.scrollback_cells.len()
+        );
+
+        // Serialize → deserialize reproduces the snapshot exactly.
+        let json = serde_json::to_string(&snap).expect("serialize");
+        let revived: TerminalSnapshot = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(normalized_json(&snap), normalized_json(&revived));
+
+        // Restoring through the revived snapshot equals a direct restore.
+        let mut direct = Terminal::new(20, 6);
+        direct.restore_from_snapshot(snap);
+        let mut via_serde = Terminal::new(20, 6);
+        via_serde.restore_from_snapshot(revived);
+        assert_eq!(
+            normalized_json(&direct.capture_snapshot()),
+            normalized_json(&via_serde.capture_snapshot()),
+            "restore via serde round-trip must equal direct restore"
+        );
+    }
+}

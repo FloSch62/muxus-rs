@@ -1,0 +1,471 @@
+{
+ "userVersion": 29,
+ "migrations": [
+  {
+   "version": 1,
+   "name": "foundation"
+  },
+  {
+   "version": 2,
+   "name": "tunnels"
+  },
+  {
+   "version": 3,
+   "name": "host-sort-order"
+  },
+  {
+   "version": 4,
+   "name": "tunnel-ssh-options"
+  },
+  {
+   "version": 5,
+   "name": "host-keyword-highlights"
+  },
+  {
+   "version": 6,
+   "name": "persistent-session-history"
+  },
+  {
+   "version": 7,
+   "name": "bounded-session-history-settings"
+  },
+  {
+   "version": 8,
+   "name": "named-workspace-session-sets"
+  },
+  {
+   "version": 9,
+   "name": "drop-favorites"
+  },
+  {
+   "version": 10,
+   "name": "terminal-scrollback-snapshots"
+  },
+  {
+   "version": 11,
+   "name": "version-terminal-scrollback-snapshots"
+  },
+  {
+   "version": 12,
+   "name": "password-vault"
+  },
+  {
+   "version": 13,
+   "name": "automatic-password-vault"
+  },
+  {
+   "version": 14,
+   "name": "password-vault-os-keystore"
+  },
+  {
+   "version": 15,
+   "name": "password-vault-key-check"
+  },
+  {
+   "version": 16,
+   "name": "password-vault-key-cleanup"
+  },
+  {
+   "version": 17,
+   "name": "folder-settings"
+  },
+  {
+   "version": 18,
+   "name": "lock-workspaces"
+  },
+  {
+   "version": 19,
+   "name": "host-disable-sftp"
+  },
+  {
+   "version": 20,
+   "name": "host-console-compatibility"
+  },
+  {
+   "version": 21,
+   "name": "host-terminal-appearance"
+  },
+  {
+   "version": 22,
+   "name": "remote-desktop-hosts"
+  },
+  {
+   "version": 23,
+   "name": "session-log-files"
+  },
+  {
+   "version": 24,
+   "name": "host-command-button-group"
+  },
+  {
+   "version": 25,
+   "name": "tunnel-autostart-reconnect"
+  },
+  {
+   "version": 26,
+   "name": "credential-usernames"
+  },
+  {
+   "version": 27,
+   "name": "login-sequences"
+  },
+  {
+   "version": 28,
+   "name": "host-paste-pacing"
+  },
+  {
+   "version": 29,
+   "name": "management-hosts"
+  }
+ ],
+ "objects": [
+  {
+   "type": "table",
+   "name": "schema_migrations",
+   "tbl_name": "schema_migrations",
+   "sql": "CREATE TABLE schema_migrations (\n        version INTEGER PRIMARY KEY,\n        name TEXT NOT NULL UNIQUE,\n        applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n      ) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_schema_migrations_1",
+   "tbl_name": "schema_migrations",
+   "sql": null
+  },
+  {
+   "type": "table",
+   "name": "credential_refs",
+   "tbl_name": "credential_refs",
+   "sql": "CREATE TABLE credential_refs (\n        id TEXT PRIMARY KEY,\n        provider TEXT NOT NULL,\n        service TEXT NOT NULL,\n        account TEXT NOT NULL,\n        label TEXT,\n        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, username TEXT,\n        UNIQUE(provider, service, account)\n      ) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_credential_refs_1",
+   "tbl_name": "credential_refs",
+   "sql": null
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_credential_refs_2",
+   "tbl_name": "credential_refs",
+   "sql": null
+  },
+  {
+   "type": "table",
+   "name": "connection_groups",
+   "tbl_name": "connection_groups",
+   "sql": "CREATE TABLE connection_groups (\n        id TEXT PRIMARY KEY,\n        parent_id TEXT REFERENCES connection_groups(id) ON DELETE CASCADE,\n        name TEXT NOT NULL,\n        sort_order INTEGER NOT NULL DEFAULT 0,\n        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n      ) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_connection_groups_1",
+   "tbl_name": "connection_groups",
+   "sql": null
+  },
+  {
+   "type": "table",
+   "name": "tags",
+   "tbl_name": "tags",
+   "sql": "CREATE TABLE tags (\n        id TEXT PRIMARY KEY,\n        name TEXT NOT NULL COLLATE NOCASE UNIQUE,\n        color TEXT,\n        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n      ) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_tags_1",
+   "tbl_name": "tags",
+   "sql": null
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_tags_2",
+   "tbl_name": "tags",
+   "sql": null
+  },
+  {
+   "type": "table",
+   "name": "connection_tags",
+   "tbl_name": "connection_tags",
+   "sql": "CREATE TABLE connection_tags (\n        connection_id TEXT NOT NULL REFERENCES connection_profiles(id) ON DELETE CASCADE,\n        tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,\n        PRIMARY KEY(connection_id, tag_id)\n      ) STRICT, WITHOUT ROWID"
+  },
+  {
+   "type": "table",
+   "name": "workspaces",
+   "tbl_name": "workspaces",
+   "sql": "CREATE TABLE workspaces (\n        id TEXT PRIMARY KEY,\n        name TEXT NOT NULL,\n        layout_json TEXT NOT NULL CHECK(json_valid(layout_json)),\n        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n        last_opened_at TEXT\n      , multi_exec_groups_json TEXT NOT NULL DEFAULT '[]'\n        CHECK(json_valid(multi_exec_groups_json)), is_startup INTEGER NOT NULL DEFAULT 0\n        CHECK(is_startup IN (0, 1)), is_locked INTEGER NOT NULL DEFAULT 0\n        CHECK(is_locked IN (0, 1))) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_workspaces_1",
+   "tbl_name": "workspaces",
+   "sql": null
+  },
+  {
+   "type": "table",
+   "name": "tunnels",
+   "tbl_name": "tunnels",
+   "sql": "CREATE TABLE tunnels (\n        id TEXT PRIMARY KEY,\n        name TEXT,\n        target TEXT NOT NULL,\n        type TEXT NOT NULL CHECK(type IN ('local', 'remote', 'dynamic')),\n        bind_port INTEGER NOT NULL CHECK(bind_port BETWEEN 1 AND 65535),\n        target_host TEXT,\n        target_port INTEGER CHECK(target_port BETWEEN 1 AND 65535),\n        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, ssh_options_json TEXT CHECK(ssh_options_json IS NULL OR json_valid(ssh_options_json)), auto_start INTEGER NOT NULL DEFAULT 0 CHECK(auto_start IN (0, 1)), auto_reconnect INTEGER NOT NULL DEFAULT 0 CHECK(auto_reconnect IN (0, 1)),\n        CHECK(\n          (type = 'dynamic' AND target_host IS NULL AND target_port IS NULL)\n          OR (type <> 'dynamic' AND target_host IS NOT NULL AND target_port IS NOT NULL)\n        )\n      ) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_tunnels_1",
+   "tbl_name": "tunnels",
+   "sql": null
+  },
+  {
+   "type": "table",
+   "name": "session_logging_policies",
+   "tbl_name": "session_logging_policies",
+   "sql": "CREATE TABLE session_logging_policies (\n        profile_key TEXT PRIMARY KEY,\n        enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),\n        capture_input INTEGER NOT NULL CHECK(capture_input IN (0, 1)),\n        max_part_bytes INTEGER NOT NULL CHECK(max_part_bytes BETWEEN 65536 AND 1073741824),\n        max_parts INTEGER NOT NULL CHECK(max_parts BETWEEN 1 AND 1000),\n        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n      , log_to_file INTEGER NOT NULL DEFAULT 0\n        CHECK(log_to_file IN (0, 1))) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_session_logging_policies_1",
+   "tbl_name": "session_logging_policies",
+   "sql": null
+  },
+  {
+   "type": "table",
+   "name": "session_logs",
+   "tbl_name": "session_logs",
+   "sql": "CREATE TABLE session_logs (\n        id TEXT PRIMARY KEY,\n        profile_key TEXT NOT NULL,\n        title TEXT NOT NULL,\n        kind TEXT NOT NULL CHECK(kind IN ('openssh', 'ssh', 'local', 'serial', 'telnet')),\n        host TEXT NOT NULL,\n        started_at TEXT NOT NULL,\n        ended_at TEXT,\n        status TEXT NOT NULL CHECK(status IN ('active', 'completed', 'disconnected', 'failed')),\n        paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN (0, 1)),\n        capture_input INTEGER NOT NULL CHECK(capture_input IN (0, 1)),\n        event_count INTEGER NOT NULL DEFAULT 0 CHECK(event_count >= 0),\n        raw_bytes INTEGER NOT NULL DEFAULT 0 CHECK(raw_bytes >= 0),\n        normalized_bytes INTEGER NOT NULL DEFAULT 0 CHECK(normalized_bytes >= 0),\n        current_part INTEGER NOT NULL DEFAULT 1 CHECK(current_part >= 1),\n        current_part_bytes INTEGER NOT NULL DEFAULT 0 CHECK(current_part_bytes >= 0)\n      ) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_session_logs_1",
+   "tbl_name": "session_logs",
+   "sql": null
+  },
+  {
+   "type": "table",
+   "name": "session_log_events",
+   "tbl_name": "session_log_events",
+   "sql": "CREATE TABLE session_log_events (\n        id INTEGER PRIMARY KEY AUTOINCREMENT,\n        session_id TEXT NOT NULL REFERENCES session_logs(id) ON DELETE CASCADE,\n        part_number INTEGER NOT NULL CHECK(part_number >= 1),\n        sequence INTEGER NOT NULL CHECK(sequence >= 1),\n        recorded_at TEXT NOT NULL,\n        elapsed_ms INTEGER NOT NULL CHECK(elapsed_ms >= 0),\n        direction TEXT NOT NULL CHECK(direction IN ('input', 'output', 'system')),\n        raw_data BLOB NOT NULL,\n        normalized_text TEXT NOT NULL,\n        UNIQUE(session_id, sequence)\n      ) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_session_log_events_1",
+   "tbl_name": "session_log_events",
+   "sql": null
+  },
+  {
+   "type": "table",
+   "name": "sqlite_sequence",
+   "tbl_name": "sqlite_sequence",
+   "sql": "CREATE TABLE sqlite_sequence(name,seq)"
+  },
+  {
+   "type": "index",
+   "name": "session_logs_started",
+   "tbl_name": "session_logs",
+   "sql": "CREATE INDEX session_logs_started ON session_logs(started_at DESC)"
+  },
+  {
+   "type": "index",
+   "name": "session_logs_profile_started",
+   "tbl_name": "session_logs",
+   "sql": "CREATE INDEX session_logs_profile_started ON session_logs(profile_key, started_at DESC)"
+  },
+  {
+   "type": "index",
+   "name": "session_log_events_session_sequence",
+   "tbl_name": "session_log_events",
+   "sql": "CREATE INDEX session_log_events_session_sequence\n        ON session_log_events(session_id, sequence)"
+  },
+  {
+   "type": "index",
+   "name": "session_log_events_session_part",
+   "tbl_name": "session_log_events",
+   "sql": "CREATE INDEX session_log_events_session_part\n        ON session_log_events(session_id, part_number)"
+  },
+  {
+   "type": "table",
+   "name": "session_log_events_fts",
+   "tbl_name": "session_log_events_fts",
+   "sql": "CREATE VIRTUAL TABLE session_log_events_fts USING fts5(\n        normalized_text,\n        content = 'session_log_events',\n        content_rowid = 'id',\n        tokenize = 'unicode61'\n      )"
+  },
+  {
+   "type": "table",
+   "name": "session_log_events_fts_data",
+   "tbl_name": "session_log_events_fts_data",
+   "sql": "CREATE TABLE 'session_log_events_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"
+  },
+  {
+   "type": "table",
+   "name": "session_log_events_fts_idx",
+   "tbl_name": "session_log_events_fts_idx",
+   "sql": "CREATE TABLE 'session_log_events_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+  },
+  {
+   "type": "table",
+   "name": "session_log_events_fts_docsize",
+   "tbl_name": "session_log_events_fts_docsize",
+   "sql": "CREATE TABLE 'session_log_events_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"
+  },
+  {
+   "type": "table",
+   "name": "session_log_events_fts_config",
+   "tbl_name": "session_log_events_fts_config",
+   "sql": "CREATE TABLE 'session_log_events_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+  },
+  {
+   "type": "trigger",
+   "name": "session_log_events_fts_insert",
+   "tbl_name": "session_log_events",
+   "sql": "CREATE TRIGGER session_log_events_fts_insert AFTER INSERT ON session_log_events BEGIN\n        INSERT INTO session_log_events_fts(rowid, normalized_text)\n        VALUES (new.id, new.normalized_text);\n      END"
+  },
+  {
+   "type": "trigger",
+   "name": "session_log_events_fts_delete",
+   "tbl_name": "session_log_events",
+   "sql": "CREATE TRIGGER session_log_events_fts_delete AFTER DELETE ON session_log_events BEGIN\n        INSERT INTO session_log_events_fts(session_log_events_fts, rowid, normalized_text)\n        VALUES ('delete', old.id, old.normalized_text);\n      END"
+  },
+  {
+   "type": "trigger",
+   "name": "session_log_events_fts_update",
+   "tbl_name": "session_log_events",
+   "sql": "CREATE TRIGGER session_log_events_fts_update AFTER UPDATE ON session_log_events BEGIN\n        INSERT INTO session_log_events_fts(session_log_events_fts, rowid, normalized_text)\n        VALUES ('delete', old.id, old.normalized_text);\n        INSERT INTO session_log_events_fts(rowid, normalized_text)\n        VALUES (new.id, new.normalized_text);\n      END"
+  },
+  {
+   "type": "table",
+   "name": "session_history_settings",
+   "tbl_name": "session_history_settings",
+   "sql": "CREATE TABLE session_history_settings (\n        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),\n        storage_location TEXT,\n        max_total_bytes INTEGER NOT NULL CHECK(max_total_bytes >= 67108864),\n        min_free_bytes INTEGER NOT NULL CHECK(min_free_bytes >= 0),\n        min_free_percent REAL NOT NULL CHECK(min_free_percent BETWEEN 0 AND 100),\n        max_age_days INTEGER CHECK(max_age_days IS NULL OR max_age_days >= 1),\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n      ) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "workspaces_single_startup",
+   "tbl_name": "workspaces",
+   "sql": "CREATE UNIQUE INDEX workspaces_single_startup\n        ON workspaces(is_startup)\n        WHERE is_startup = 1"
+  },
+  {
+   "type": "table",
+   "name": "terminal_snapshots",
+   "tbl_name": "terminal_snapshots",
+   "sql": "CREATE TABLE terminal_snapshots (\n        tab_id TEXT PRIMARY KEY,\n        data TEXT NOT NULL,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n      , format_version INTEGER NOT NULL DEFAULT 1\n        CHECK(format_version >= 1))"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_terminal_snapshots_1",
+   "tbl_name": "terminal_snapshots",
+   "sql": null
+  },
+  {
+   "type": "table",
+   "name": "password_vault",
+   "tbl_name": "password_vault",
+   "sql": "CREATE TABLE password_vault (\n        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),\n        format_version INTEGER NOT NULL CHECK(format_version IN (2, 3)),\n        vault_id TEXT NOT NULL UNIQUE CHECK(length(vault_id) BETWEEN 16 AND 64),\n        unlock_policy TEXT NOT NULL\n          CHECK(unlock_policy IN ('never', 'startup', 'credential')),\n        kdf_algorithm TEXT NOT NULL CHECK(kdf_algorithm = 'scrypt'),\n        kdf_salt BLOB NOT NULL CHECK(length(kdf_salt) = 16),\n        kdf_cost INTEGER NOT NULL CHECK(kdf_cost BETWEEN 1024 AND 1048576),\n        kdf_block_size INTEGER NOT NULL CHECK(kdf_block_size BETWEEN 1 AND 32),\n        kdf_parallelism INTEGER NOT NULL CHECK(kdf_parallelism BETWEEN 1 AND 16),\n        master_key_nonce BLOB NOT NULL CHECK(length(master_key_nonce) = 12),\n        master_key_ciphertext BLOB NOT NULL CHECK(length(master_key_ciphertext) = 32),\n        master_key_tag BLOB NOT NULL CHECK(length(master_key_tag) = 16),\n        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n      , key_check BLOB\n      CHECK(key_check IS NULL OR length(key_check) = 32)) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_password_vault_1",
+   "tbl_name": "password_vault",
+   "sql": null
+  },
+  {
+   "type": "table",
+   "name": "credential_secrets",
+   "tbl_name": "credential_secrets",
+   "sql": "CREATE TABLE credential_secrets (\n        credential_ref_id TEXT PRIMARY KEY\n          REFERENCES credential_refs(id) ON DELETE CASCADE,\n        format_version INTEGER NOT NULL CHECK(format_version = 1),\n        nonce BLOB NOT NULL CHECK(length(nonce) = 12),\n        ciphertext BLOB NOT NULL,\n        auth_tag BLOB NOT NULL CHECK(length(auth_tag) = 16),\n        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n      ) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_credential_secrets_1",
+   "tbl_name": "credential_secrets",
+   "sql": null
+  },
+  {
+   "type": "table",
+   "name": "password_vault_key_cleanup",
+   "tbl_name": "password_vault_key_cleanup",
+   "sql": "CREATE TABLE password_vault_key_cleanup (\n        vault_id TEXT PRIMARY KEY CHECK(length(vault_id) BETWEEN 16 AND 64),\n        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n      ) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_password_vault_key_cleanup_1",
+   "tbl_name": "password_vault_key_cleanup",
+   "sql": null
+  },
+  {
+   "type": "table",
+   "name": "folder_settings",
+   "tbl_name": "folder_settings",
+   "sql": "CREATE TABLE folder_settings (\n        id TEXT PRIMARY KEY,\n        path_key TEXT NOT NULL UNIQUE,\n        path TEXT NOT NULL,\n        auth_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(auth_json)),\n        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n      , login_sequence_json TEXT\n        CHECK(login_sequence_json IS NULL OR json_valid(login_sequence_json))) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_folder_settings_1",
+   "tbl_name": "folder_settings",
+   "sql": null
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_folder_settings_2",
+   "tbl_name": "folder_settings",
+   "sql": null
+  },
+  {
+   "type": "table",
+   "name": "remote_desktop_certificates",
+   "tbl_name": "remote_desktop_certificates",
+   "sql": "CREATE TABLE remote_desktop_certificates (\n      host TEXT NOT NULL,\n      port INTEGER NOT NULL CHECK(port BETWEEN 1 AND 65535),\n      gateway TEXT NOT NULL DEFAULT '',\n      fingerprint TEXT NOT NULL,\n      subject TEXT NOT NULL DEFAULT '',\n      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n      PRIMARY KEY(host, port, gateway)\n    ) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_remote_desktop_certificates_1",
+   "tbl_name": "remote_desktop_certificates",
+   "sql": null
+  },
+  {
+   "type": "table",
+   "name": "session_log_file_settings",
+   "tbl_name": "session_log_file_settings",
+   "sql": "CREATE TABLE session_log_file_settings (\n        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),\n        directory TEXT,\n        filename_pattern TEXT NOT NULL CHECK(length(filename_pattern) BETWEEN 1 AND 200),\n        timestamps INTEGER NOT NULL CHECK(timestamps IN (0, 1)),\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n      ) STRICT"
+  },
+  {
+   "type": "table",
+   "name": "connection_profiles",
+   "tbl_name": "connection_profiles",
+   "sql": "CREATE TABLE \"connection_profiles\" (\n        id TEXT PRIMARY KEY,\n        kind TEXT NOT NULL CHECK(kind IN ('openssh', 'ssh', 'local', 'serial', 'telnet', 'rdp', 'vnc', 'gnmi', 'netconf')),\n        name TEXT NOT NULL,\n        ssh_alias TEXT UNIQUE,\n        native_config_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(native_config_json)),\n        credential_ref_id TEXT REFERENCES credential_refs(id) ON DELETE SET NULL,\n        group_id TEXT REFERENCES connection_groups(id) ON DELETE SET NULL,\n        color TEXT,\n        icon TEXT,\n        last_connected_at TEXT,\n        connect_count INTEGER NOT NULL DEFAULT 0 CHECK(connect_count >= 0),\n        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, sort_order INTEGER, keyword_highlights_json TEXT\n        CHECK(keyword_highlights_json IS NULL OR json_valid(keyword_highlights_json)), disable_sftp INTEGER NOT NULL DEFAULT 0\n        CHECK(disable_sftp IN (0, 1)), console_compatibility INTEGER NOT NULL DEFAULT 0\n        CHECK(console_compatibility IN (0, 1)), terminal_scheme TEXT, terminal_font_color TEXT, terminal_background_color TEXT, command_button_group TEXT, login_sequence_json TEXT\n        CHECK(login_sequence_json IS NULL OR json_valid(login_sequence_json)), paste_line_delay_ms INTEGER\n        CHECK(paste_line_delay_ms IS NULL OR paste_line_delay_ms >= 0), paste_char_delay_ms INTEGER\n        CHECK(paste_char_delay_ms IS NULL OR paste_char_delay_ms >= 0),\n        CHECK(\n          (kind = 'openssh' AND ssh_alias IS NOT NULL AND native_config_json = '{}')\n          OR (kind <> 'openssh' AND ssh_alias IS NULL)\n        )\n      ) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_connection_profiles_1",
+   "tbl_name": "connection_profiles",
+   "sql": null
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_connection_profiles_2",
+   "tbl_name": "connection_profiles",
+   "sql": null
+  },
+  {
+   "type": "index",
+   "name": "connection_profiles_recent",
+   "tbl_name": "connection_profiles",
+   "sql": "CREATE INDEX connection_profiles_recent\n        ON connection_profiles(last_connected_at DESC)\n        WHERE last_connected_at IS NOT NULL"
+  },
+  {
+   "type": "index",
+   "name": "connection_profiles_group",
+   "tbl_name": "connection_profiles",
+   "sql": "CREATE INDEX connection_profiles_group\n        ON connection_profiles(group_id, name COLLATE NOCASE)"
+  },
+  {
+   "type": "table",
+   "name": "management_requests",
+   "tbl_name": "management_requests",
+   "sql": "CREATE TABLE management_requests (\n      id TEXT PRIMARY KEY,\n      protocol TEXT NOT NULL CHECK(protocol IN ('gnmi', 'netconf')),\n      -- NULL: offered for every host of the protocol.\n      profile_id TEXT,\n      name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 200),\n      request_json TEXT NOT NULL CHECK(json_valid(request_json)),\n      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n    ) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_management_requests_1",
+   "tbl_name": "management_requests",
+   "sql": null
+  },
+  {
+   "type": "index",
+   "name": "management_requests_scope",
+   "tbl_name": "management_requests",
+   "sql": "CREATE INDEX management_requests_scope ON management_requests(protocol, profile_id)"
+  }
+ ]
+}

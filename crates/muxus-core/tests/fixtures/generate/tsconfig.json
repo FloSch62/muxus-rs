@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@muxus/shared/ws-protocol": ["../../../../../../muxus/shared/src/ws-protocol.ts"],
+      "@muxus/shared": ["../../../../../../muxus/shared/src/index.ts"]
+    }
+  }
+}

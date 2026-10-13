@@ -1,0 +1,674 @@
+//! Terminal recording and replay support
+//!
+//! Provides types for recording terminal sessions in various formats.
+
+use base64::Engine as _;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// Recording format type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecordingFormat {
+    /// Asciicast v2 format (asciinema)
+    Asciicast,
+    /// JSON with timing data
+    Json,
+    /// Raw TTY data
+    Tty,
+}
+
+/// Recording event type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecordingEventType {
+    /// Input to the terminal (from user/PTY)
+    Input,
+    /// Output from the terminal
+    Output,
+    /// Terminal resize event
+    Resize,
+    /// Metadata change
+    Metadata,
+    /// Marker/bookmark
+    Marker,
+}
+
+/// A single event in a recording
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordingEvent {
+    /// Timestamp relative to recording start (milliseconds)
+    pub timestamp: u64,
+    /// Type of event
+    pub event_type: RecordingEventType,
+    /// Raw data associated with the event
+    pub data: Vec<u8>,
+    /// Metadata (for resize: cols, rows)
+    pub metadata: Option<(usize, usize)>,
+}
+
+/// A complete recording session
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordingSession {
+    /// Unique recording identifier
+    pub id: String,
+    /// Recording name/title
+    pub title: String,
+    /// Initial terminal size (cols, rows)
+    pub initial_size: (usize, usize),
+    /// All events in chronological order
+    pub events: Vec<RecordingEvent>,
+    /// Environment variables at start
+    pub env: HashMap<String, String>,
+    /// Total duration in milliseconds
+    pub duration: u64,
+    /// Creation timestamp
+    pub created_at: u64,
+}
+
+/// Export format for recordings
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordingExportFormat {
+    /// SVG animation
+    Svg,
+    /// Animated GIF
+    Gif,
+    /// Video (MP4)
+    Video,
+    /// HTML with embedded player
+    Html,
+}
+
+use crate::graphics::TerminalGraphic;
+use crate::terminal::Terminal;
+
+impl Terminal {
+    // === Feature 24: Terminal Replay/Recording ===
+
+    /// Start recording terminal session
+    ///
+    /// If `title` is provided, it overrides the terminal's current title.
+    pub fn start_recording(&mut self, title: Option<String>) {
+        let (cols, rows) = self.size();
+        let mut env = HashMap::new();
+        if let Some(cwd) = self.shell_state.shell_integration.cwd() {
+            env.insert("CWD".to_string(), cwd.to_string());
+        }
+
+        self.recording_state.recording_session = Some(RecordingSession {
+            id: uuid::Uuid::new_v4().to_string(),
+            title: title.unwrap_or_else(|| self.title().to_string()),
+            initial_size: (cols, rows),
+            events: Vec::new(),
+            env,
+            duration: 0,
+            created_at: crate::text_utils::unix_millis(),
+        });
+        self.recording_state.is_recording = true;
+        self.recording_state.recording_start_time = crate::text_utils::unix_millis();
+    }
+
+    /// Stop recording terminal session
+    pub fn stop_recording(&mut self) -> Option<RecordingSession> {
+        self.recording_state.is_recording = false;
+        let mut session = self.recording_state.recording_session.take()?;
+        session.duration =
+            crate::text_utils::unix_millis() - self.recording_state.recording_start_time;
+        Some(session)
+    }
+
+    /// Record an event
+    pub fn record_event(&mut self, event_type: RecordingEventType, data: Vec<u8>) {
+        if !self.recording_state.is_recording {
+            return;
+        }
+
+        if let Some(ref mut session) = self.recording_state.recording_session {
+            let timestamp =
+                crate::text_utils::unix_millis() - self.recording_state.recording_start_time;
+            session.events.push(RecordingEvent {
+                timestamp,
+                event_type,
+                data,
+                metadata: None,
+            });
+        }
+    }
+
+    /// Check if recording is active
+    pub fn is_recording(&self) -> bool {
+        self.recording_state.is_recording
+    }
+
+    /// Get current recording session (if any)
+    pub fn get_recording_session(&self) -> Option<&RecordingSession> {
+        self.recording_state.recording_session.as_ref()
+    }
+
+    /// Export a recording session to asciicast format
+    pub fn export_asciicast(&self, session: &RecordingSession) -> String {
+        let mut output = String::new();
+
+        // 1. Header line
+        let header = serde_json::json!({
+            "version": 2,
+            "width": session.initial_size.0,
+            "height": session.initial_size.1,
+            "timestamp": session.created_at / 1000,
+            "title": session.title,
+            "env": session.env,
+        });
+        output.push_str(&header.to_string());
+        output.push('\n');
+
+        // 2. Event lines
+        for event in &session.events {
+            let timestamp = event.timestamp as f64 / 1_000.0; // milliseconds to seconds
+
+            let event_json = match event.event_type {
+                RecordingEventType::Output => {
+                    let text = String::from_utf8_lossy(&event.data);
+                    serde_json::json!([timestamp, "o", text])
+                }
+                RecordingEventType::Input => {
+                    let text = String::from_utf8_lossy(&event.data);
+                    serde_json::json!([timestamp, "i", text])
+                }
+                RecordingEventType::Resize => {
+                    if let Some((cols, rows)) = event.metadata {
+                        serde_json::json!([timestamp, "r", cols, rows])
+                    } else {
+                        continue;
+                    }
+                }
+                _ => continue, // Ignore other events for asciicast
+            };
+
+            output.push_str(&event_json.to_string());
+            output.push('\n');
+        }
+
+        output
+    }
+
+    /// Export a recording session to asciicast v3 format
+    ///
+    /// v3 (asciinema 3.x) moves the terminal size into a nested `term` header
+    /// object, replaces absolute event times with per-event relative
+    /// intervals, and formats resize data as `"COLSxROWS"`. The v3 event-code
+    /// list is open and readers must skip unknown codes, so this export adds
+    /// a `g` event carrying a JSON object per graphic that entered the store
+    /// during the recording window (live placements plus scrollback
+    /// promotions), letting replay clients repaint graphics the text-only
+    /// stream cannot convey.
+    pub fn export_asciicast_v3(&self, session: &RecordingSession) -> String {
+        let mut output = String::new();
+
+        // 1. Header line — v3 requires a nested `term` object with cols/rows.
+        let header = serde_json::json!({
+            "version": 3,
+            "term": {
+                "cols": session.initial_size.0,
+                "rows": session.initial_size.1,
+            },
+            "timestamp": session.created_at / 1000,
+            "title": session.title,
+            "env": session.env,
+        });
+        output.push_str(&header.to_string());
+        output.push('\n');
+
+        // 2. Collect timed event lines: session events plus graphics events
+        //    mapped to their store add-time relative to the recording start.
+        struct Timed {
+            t_ms: u64,
+            line: serde_json::Value,
+        }
+        let mut timed: Vec<Timed> = Vec::new();
+
+        for event in &session.events {
+            let t_ms = event.timestamp;
+            let line = match event.event_type {
+                RecordingEventType::Output => {
+                    let text = String::from_utf8_lossy(&event.data);
+                    serde_json::json!([0.0, "o", text])
+                }
+                RecordingEventType::Input => {
+                    let text = String::from_utf8_lossy(&event.data);
+                    serde_json::json!([0.0, "i", text])
+                }
+                RecordingEventType::Resize => {
+                    if let Some((cols, rows)) = event.metadata {
+                        serde_json::json!([0.0, "r", format!("{}x{}", cols, rows)])
+                    } else {
+                        continue;
+                    }
+                }
+                _ => continue,
+            };
+            timed.push(Timed { t_ms, line });
+        }
+
+        // 3. Graphics events from the store. `added_at` is a unix-ms stamp
+        //    taken when the graphic entered the store; 0 means unknown
+        //    (graphic predates the recording or was restored from JSON) and
+        //    maps to time 0.
+        let mut graphics: Vec<&TerminalGraphic> = self
+            .graphics
+            .graphics_store
+            .all_graphics()
+            .iter()
+            .chain(self.graphics.graphics_store.scrollback_entries().iter())
+            .collect();
+        graphics.sort_by_key(|g| g.id);
+
+        for g in graphics {
+            let rel_ms = g.added_at.saturating_sub(session.created_at);
+            let payload = serde_json::json!({
+                "protocol": g.protocol.as_str(),
+                "image_id": g.kitty_image_id,
+                "placement_id": g.kitty_placement_id,
+                "position": [g.position.0, g.position.1],
+                "width": g.width,
+                "height": g.height,
+                "cell_dimensions": g.cell_dimensions,
+                "scrollback": g.scrollback_row.is_some(),
+                "data": base64::engine::general_purpose::STANDARD
+                    .encode(g.pixels.as_ref()),
+            });
+            timed.push(Timed {
+                t_ms: rel_ms,
+                line: serde_json::json!([0.0, "g", payload]),
+            });
+        }
+
+        // 4. Stable sort by time, then emit with relative intervals in
+        //    seconds (v3): each interval is time since the previous event.
+        timed.sort_by_key(|e| e.t_ms);
+        let mut prev_ms: u64 = 0;
+        for e in timed {
+            let interval = (e.t_ms - prev_ms) as f64 / 1_000.0;
+            let mut line = e.line;
+            line[0] = serde_json::json!(interval);
+            output.push_str(&line.to_string());
+            output.push('\n');
+            prev_ms = e.t_ms;
+        }
+
+        output
+    }
+
+    /// Export a recording session to JSON format
+    pub fn export_json(&self, session: &RecordingSession) -> String {
+        serde_json::to_string(session).unwrap_or_default()
+    }
+
+    /// Record input to the terminal
+    pub fn record_input(&mut self, data: &[u8]) {
+        self.record_event(RecordingEventType::Input, data.to_vec());
+    }
+
+    /// Record output from the terminal
+    pub fn record_output(&mut self, data: &[u8]) {
+        self.record_event(RecordingEventType::Output, data.to_vec());
+    }
+
+    /// Record a resize event
+    pub fn record_resize(&mut self, cols: usize, rows: usize) {
+        if !self.recording_state.is_recording {
+            return;
+        }
+
+        if let Some(ref mut session) = self.recording_state.recording_session {
+            let timestamp =
+                crate::text_utils::unix_millis() - self.recording_state.recording_start_time;
+            session.events.push(RecordingEvent {
+                timestamp,
+                event_type: RecordingEventType::Resize,
+                data: Vec::new(),
+                metadata: Some((cols, rows)),
+            });
+        }
+    }
+
+    /// Record a marker/bookmark
+    pub fn record_marker(&mut self, label: String) {
+        self.record_event(RecordingEventType::Marker, label.into_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_recording_lifecycle_basic() {
+        let mut term = Terminal::new(80, 24);
+
+        // Not recording initially
+        assert!(!term.is_recording());
+        assert!(term.get_recording_session().is_none());
+
+        // Start recording
+        term.start_recording(Some("Test Session".to_string()));
+        assert!(term.is_recording());
+
+        let session = term.get_recording_session().unwrap();
+        assert_eq!(session.title, "Test Session");
+        assert_eq!(session.initial_size, (80, 24));
+        assert!(session.events.is_empty());
+
+        // Record some events
+        term.record_input(b"ls -la\n");
+        term.record_output(b"total 42\n");
+
+        let session = term.get_recording_session().unwrap();
+        assert_eq!(session.events.len(), 2);
+        assert_eq!(session.events[0].event_type, RecordingEventType::Input);
+        assert_eq!(session.events[1].event_type, RecordingEventType::Output);
+
+        // Stop recording
+        let session = term.stop_recording().unwrap();
+        assert!(!term.is_recording());
+        assert!(term.get_recording_session().is_none());
+        assert_eq!(session.events.len(), 2);
+        // Duration is always set (may be 0 in fast test execution)
+        let _ = session.duration; // Just verify field exists
+    }
+
+    #[test]
+    fn test_recording_timestamps() {
+        let mut term = Terminal::new(80, 24);
+        term.start_recording(None);
+
+        let start_time = term.recording_state.recording_start_time;
+
+        // Record events with small delays
+        term.record_input(b"echo hello");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        term.record_output(b"hello\n");
+
+        let session = term.get_recording_session().unwrap();
+        assert_eq!(session.events.len(), 2);
+
+        // Timestamps should be relative to start and increasing
+        let ts1 = session.events[0].timestamp;
+        let ts2 = session.events[1].timestamp;
+        assert!(ts2 > ts1, "Second timestamp should be later than first");
+
+        // Timestamps are milliseconds since recording start
+        let now = crate::text_utils::unix_millis();
+        assert!(
+            ts1 < (now - start_time) + 1_000,
+            "Timestamp should be reasonable"
+        );
+    }
+
+    #[test]
+    fn test_record_input_output_resize_marker() {
+        let mut term = Terminal::new(80, 24);
+        term.start_recording(Some("Event Test".to_string()));
+
+        // Record different event types
+        term.record_input(b"pwd");
+        term.record_output(b"/home/user\n");
+        term.record_resize(100, 30);
+        term.record_marker("Important moment".to_string());
+
+        let session = term.get_recording_session().unwrap();
+        assert_eq!(session.events.len(), 4);
+
+        // Verify event types
+        assert_eq!(session.events[0].event_type, RecordingEventType::Input);
+        assert_eq!(session.events[0].data, b"pwd");
+
+        assert_eq!(session.events[1].event_type, RecordingEventType::Output);
+        assert_eq!(session.events[1].data, b"/home/user\n");
+
+        assert_eq!(session.events[2].event_type, RecordingEventType::Resize);
+        assert_eq!(session.events[2].metadata, Some((100, 30)));
+        assert!(session.events[2].data.is_empty());
+
+        assert_eq!(session.events[3].event_type, RecordingEventType::Marker);
+        assert_eq!(session.events[3].data, b"Important moment");
+    }
+
+    #[test]
+    fn test_stop_without_start() {
+        let mut term = Terminal::new(80, 24);
+
+        // Stop without starting should return None
+        let result = term.stop_recording();
+        assert!(result.is_none());
+        assert!(!term.is_recording());
+    }
+
+    #[test]
+    fn test_start_twice() {
+        let mut term = Terminal::new(80, 24);
+
+        // Start first recording
+        term.start_recording(Some("First".to_string()));
+        term.record_input(b"first command");
+
+        // Start second recording (should implicitly stop first)
+        term.start_recording(Some("Second".to_string()));
+
+        let session = term.get_recording_session().unwrap();
+        assert_eq!(session.title, "Second");
+        assert!(session.events.is_empty(), "New session should start fresh");
+        assert!(term.is_recording());
+    }
+
+    #[test]
+    fn test_is_recording_state_transitions() {
+        let mut term = Terminal::new(80, 24);
+
+        // Initial state
+        assert!(!term.is_recording());
+
+        // After start
+        term.start_recording(None);
+        assert!(term.is_recording());
+
+        // After stop
+        term.stop_recording();
+        assert!(!term.is_recording());
+
+        // Start again
+        term.start_recording(Some("Round 2".to_string()));
+        assert!(term.is_recording());
+
+        // Multiple stops (second should be no-op)
+        term.stop_recording();
+        assert!(!term.is_recording());
+        let result = term.stop_recording();
+        assert!(result.is_none());
+        assert!(!term.is_recording());
+    }
+
+    #[test]
+    fn test_export_asciicast_format() {
+        let mut term = Terminal::new(80, 24);
+        term.start_recording(Some("Asciicast Test".to_string()));
+
+        term.record_input(b"echo hello");
+        term.record_output(b"hello\n");
+        term.record_resize(100, 30);
+
+        let session = term.stop_recording().unwrap();
+        let asciicast = term.export_asciicast(&session);
+
+        // Split into lines
+        let lines: Vec<&str> = asciicast.lines().collect();
+        assert!(lines.len() >= 3, "Should have header + at least 2 events");
+
+        // Verify header line
+        let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(header["version"], 2);
+        assert_eq!(header["width"], 80);
+        assert_eq!(header["height"], 24);
+        assert_eq!(header["title"], "Asciicast Test");
+
+        // Verify event lines have [timestamp, type, data] format
+        let event1: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert!(event1.is_array());
+        let arr = event1.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert!(arr[0].is_f64(), "First element should be timestamp");
+        assert_eq!(arr[1], "i"); // Input event
+        assert_eq!(arr[2], "echo hello");
+
+        let event2: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+        let arr2 = event2.as_array().unwrap();
+        assert_eq!(arr2[1], "o"); // Output event
+        assert_eq!(arr2[2], "hello\n");
+
+        // Resize event should have 4 elements: [timestamp, "r", cols, rows]
+        let event3: serde_json::Value = serde_json::from_str(lines[3]).unwrap();
+        let arr3 = event3.as_array().unwrap();
+        assert_eq!(arr3.len(), 4);
+        assert_eq!(arr3[1], "r");
+        assert_eq!(arr3[2], 100);
+        assert_eq!(arr3[3], 30);
+    }
+
+    #[test]
+    fn test_export_asciicast_timestamp_scale() {
+        // Stored timestamps are milliseconds; exported ones must be seconds.
+        // Regression: export divided by 1_000_000, shrinking every delay 1000x.
+        let mut term = Terminal::new(80, 24);
+        term.start_recording(None);
+
+        term.record_input(b"first");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        term.record_output(b"second");
+
+        let session = term.stop_recording().unwrap();
+        let asciicast = term.export_asciicast(&session);
+        let lines: Vec<&str> = asciicast.lines().collect();
+
+        let first: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        let second: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+        let t1 = first[0].as_f64().unwrap();
+        let t2 = second[0].as_f64().unwrap();
+
+        // First event is ~0s after start; second is >= the 50ms delay.
+        // Upper bound is generous for slow CI, but must be seconds-scale,
+        // not the 0.00005 the old micros math produced.
+        assert!(t1 < 1.0, "first event should be near t=0, got {t1}");
+        assert!(
+            (0.045..5.0).contains(&t2),
+            "second event should be ~0.05s, got {t2}"
+        );
+    }
+
+    #[test]
+    fn test_export_json_format() {
+        let mut term = Terminal::new(80, 24);
+        term.start_recording(Some("JSON Test".to_string()));
+
+        term.record_input(b"test");
+        term.record_output(b"output");
+
+        let session = term.stop_recording().unwrap();
+        let json_str = term.export_json(&session);
+
+        // Verify it's valid JSON and can be deserialized
+        let deserialized: RecordingSession = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(deserialized.title, "JSON Test");
+        assert_eq!(deserialized.initial_size, (80, 24));
+        assert_eq!(deserialized.events.len(), 2);
+        assert_eq!(deserialized.events[0].event_type, RecordingEventType::Input);
+        assert_eq!(
+            deserialized.events[1].event_type,
+            RecordingEventType::Output
+        );
+        assert_eq!(deserialized.events[0].data, b"test");
+        assert_eq!(deserialized.events[1].data, b"output");
+    }
+
+    #[test]
+    fn test_recording_not_active_ignores_events() {
+        let mut term = Terminal::new(80, 24);
+
+        // Record events without starting recording
+        term.record_input(b"ignored");
+        term.record_output(b"also ignored");
+        term.record_resize(100, 30);
+
+        // Should have no session
+        assert!(term.get_recording_session().is_none());
+
+        // Start and stop without recording anything
+        term.start_recording(None);
+        let session = term.stop_recording().unwrap();
+        assert!(session.events.is_empty());
+    }
+
+    #[test]
+    fn test_recording_with_process() {
+        let mut term = Terminal::new(80, 24);
+        term.start_recording(Some("Process Test".to_string()));
+
+        // Process some data (should auto-record as output)
+        term.process(b"Hello, world!");
+
+        let session = term.get_recording_session().unwrap();
+
+        // Should have at least one output event
+        let output_events: Vec<_> = session
+            .events
+            .iter()
+            .filter(|e| e.event_type == RecordingEventType::Output)
+            .collect();
+
+        assert!(!output_events.is_empty());
+        assert_eq!(output_events[0].data, b"Hello, world!");
+    }
+
+    #[test]
+    fn test_recording_default_title() {
+        let mut term = Terminal::new(80, 24);
+        term.set_title("Custom Title".to_string());
+
+        // Start recording without providing title
+        term.start_recording(None);
+
+        let session = term.get_recording_session().unwrap();
+        assert_eq!(session.title, "Custom Title");
+    }
+
+    #[test]
+    fn test_recording_session_id_unique() {
+        let mut term = Terminal::new(80, 24);
+
+        term.start_recording(None);
+        let id1 = term.get_recording_session().unwrap().id.clone();
+        term.stop_recording();
+
+        term.start_recording(None);
+        let id2 = term.get_recording_session().unwrap().id.clone();
+        term.stop_recording();
+
+        // Each session should have a unique UUID
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_export_asciicast_ignores_marker_events() {
+        let mut term = Terminal::new(80, 24);
+        term.start_recording(None);
+
+        term.record_input(b"cmd");
+        term.record_marker("This should be ignored".to_string());
+        term.record_output(b"result");
+
+        let session = term.stop_recording().unwrap();
+        let asciicast = term.export_asciicast(&session);
+
+        let lines: Vec<&str> = asciicast.lines().collect();
+
+        // Should have header + 2 events (input + output, marker ignored)
+        assert_eq!(lines.len(), 3);
+    }
+}

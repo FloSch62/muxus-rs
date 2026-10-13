@@ -1,0 +1,551 @@
+// Unit tests for the observer system
+use crate::terminal::*;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+
+use crate::observer::TerminalObserver;
+
+/// Mock observer that records events for test assertions
+struct MockObserver {
+    zone_events: Mutex<Vec<String>>,
+    command_events: Mutex<Vec<String>>,
+    environment_events: Mutex<Vec<String>>,
+    screen_events: Mutex<Vec<String>>,
+    all_events: Mutex<Vec<String>>,
+    subscriptions: Option<HashSet<TerminalEventKind>>,
+}
+
+impl MockObserver {
+    fn new() -> Self {
+        Self {
+            zone_events: Mutex::new(Vec::new()),
+            command_events: Mutex::new(Vec::new()),
+            environment_events: Mutex::new(Vec::new()),
+            screen_events: Mutex::new(Vec::new()),
+            all_events: Mutex::new(Vec::new()),
+            subscriptions: None,
+        }
+    }
+
+    fn with_subscriptions(subs: HashSet<TerminalEventKind>) -> Self {
+        Self {
+            subscriptions: Some(subs),
+            ..Self::new()
+        }
+    }
+
+    fn event_type_str(event: &TerminalEvent) -> String {
+        match event {
+            TerminalEvent::BellRang(_) => "bell".to_string(),
+            TerminalEvent::TitleChanged(t) => format!("title:{t}"),
+            TerminalEvent::ZoneOpened { zone_id, .. } => format!("zone_opened:{zone_id}"),
+            TerminalEvent::ZoneClosed { zone_id, .. } => format!("zone_closed:{zone_id}"),
+            TerminalEvent::ZoneScrolledOut { zone_id, .. } => {
+                format!("zone_scrolled_out:{zone_id}")
+            }
+            TerminalEvent::ShellIntegrationEvent { event_type, .. } => {
+                format!("shell:{event_type}")
+            }
+            TerminalEvent::CwdChanged(c) => format!("cwd:{}", c.new_cwd),
+            TerminalEvent::EnvironmentChanged { key, value, .. } => format!("env:{key}={value}"),
+            TerminalEvent::SizeChanged(c, r) => format!("size:{c}x{r}"),
+            _ => "other".to_string(),
+        }
+    }
+
+    fn all_event_count(&self) -> usize {
+        self.all_events.lock().unwrap().len()
+    }
+
+    fn zone_event_count(&self) -> usize {
+        self.zone_events.lock().unwrap().len()
+    }
+
+    fn screen_event_count(&self) -> usize {
+        self.screen_events.lock().unwrap().len()
+    }
+
+    fn command_event_count(&self) -> usize {
+        self.command_events.lock().unwrap().len()
+    }
+
+    #[allow(dead_code)]
+    fn environment_event_count(&self) -> usize {
+        self.environment_events.lock().unwrap().len()
+    }
+}
+
+impl TerminalObserver for MockObserver {
+    fn on_zone_event(&self, event: &TerminalEvent) {
+        self.zone_events
+            .lock()
+            .unwrap()
+            .push(Self::event_type_str(event));
+    }
+
+    fn on_command_event(&self, event: &TerminalEvent) {
+        self.command_events
+            .lock()
+            .unwrap()
+            .push(Self::event_type_str(event));
+    }
+
+    fn on_environment_event(&self, event: &TerminalEvent) {
+        self.environment_events
+            .lock()
+            .unwrap()
+            .push(Self::event_type_str(event));
+    }
+
+    fn on_screen_event(&self, event: &TerminalEvent) {
+        self.screen_events
+            .lock()
+            .unwrap()
+            .push(Self::event_type_str(event));
+    }
+
+    fn on_event(&self, event: &TerminalEvent) {
+        self.all_events
+            .lock()
+            .unwrap()
+            .push(Self::event_type_str(event));
+    }
+
+    fn subscriptions(&self) -> Option<&HashSet<TerminalEventKind>> {
+        self.subscriptions.as_ref()
+    }
+}
+
+#[test]
+fn test_observer_registration() {
+    let mut term = Terminal::new(80, 24);
+    let observer = Arc::new(MockObserver::new());
+    let id = term.add_observer(observer);
+
+    assert!(id > 0, "Observer ID should be positive");
+    assert_eq!(term.observer_count(), 1, "Should have exactly 1 observer");
+}
+
+#[test]
+fn test_observer_removal() {
+    let mut term = Terminal::new(80, 24);
+    let observer = Arc::new(MockObserver::new());
+    let id = term.add_observer(observer);
+
+    assert_eq!(term.observer_count(), 1);
+
+    let removed = term.remove_observer(id);
+    assert!(removed, "remove_observer should return true for valid ID");
+    assert_eq!(
+        term.observer_count(),
+        0,
+        "Observer count should be 0 after removal"
+    );
+
+    let removed_again = term.remove_observer(id);
+    assert!(
+        !removed_again,
+        "remove_observer should return false for already-removed ID"
+    );
+}
+
+#[test]
+fn test_observer_unique_ids() {
+    let mut term = Terminal::new(80, 24);
+
+    let id1 = term.add_observer(Arc::new(MockObserver::new()));
+    let id2 = term.add_observer(Arc::new(MockObserver::new()));
+    let id3 = term.add_observer(Arc::new(MockObserver::new()));
+
+    assert_ne!(id1, id2, "Observer IDs must be unique");
+    assert_ne!(id2, id3, "Observer IDs must be unique");
+    assert_ne!(id1, id3, "Observer IDs must be unique");
+    assert_eq!(term.observer_count(), 3);
+}
+
+#[test]
+fn test_observer_receives_bell_event() {
+    let mut term = Terminal::new(80, 24);
+    let observer = Arc::new(MockObserver::new());
+    let obs_ref = Arc::clone(&observer);
+    term.add_observer(observer);
+
+    // Process a bell character
+    term.process(b"\x07");
+
+    assert!(
+        obs_ref.screen_event_count() > 0,
+        "on_screen_event should be called for bell"
+    );
+    assert!(
+        obs_ref.all_event_count() > 0,
+        "on_event should be called for bell"
+    );
+
+    let all = obs_ref.all_events.lock().unwrap();
+    assert!(
+        all.iter().any(|e| e == "bell"),
+        "Should contain bell event, got: {:?}",
+        *all
+    );
+}
+
+#[test]
+fn test_observer_receives_title_change() {
+    let mut term = Terminal::new(80, 24);
+    let observer = Arc::new(MockObserver::new());
+    let obs_ref = Arc::clone(&observer);
+    term.add_observer(observer);
+
+    // OSC 0 ; title BEL sets the terminal title
+    term.process(b"\x1b]0;Hello World\x07");
+
+    let all = obs_ref.all_events.lock().unwrap();
+    assert!(
+        all.iter().any(|e| e == "title:Hello World"),
+        "Should contain title change event, got: {:?}",
+        *all
+    );
+}
+
+#[test]
+fn test_observer_zone_routing() {
+    let mut term = Terminal::new(80, 24);
+    let observer = Arc::new(MockObserver::new());
+    let obs_ref = Arc::clone(&observer);
+    term.add_observer(observer);
+
+    // OSC 133;A is prompt_start which triggers zone events
+    term.process(b"\x1b]133;A\x07");
+
+    assert!(
+        obs_ref.zone_event_count() > 0,
+        "on_zone_event should be called for zone-related events"
+    );
+
+    let zone_events = obs_ref.zone_events.lock().unwrap();
+    assert!(
+        zone_events.iter().any(|e| e.starts_with("zone_opened:")),
+        "Should contain zone_opened event, got: {:?}",
+        *zone_events
+    );
+}
+
+#[test]
+fn test_observer_command_routing() {
+    let mut term = Terminal::new(80, 24);
+    let observer = Arc::new(MockObserver::new());
+    let obs_ref = Arc::clone(&observer);
+    term.add_observer(observer);
+
+    // Full shell integration cycle:
+    // A = prompt_start, B = command_start, C = command_executed, D = command_finished
+    term.process(b"\x1b]133;A\x07");
+    term.process(b"\x1b]133;B\x07");
+    term.process(b"\x1b]133;C\x07");
+    term.process(b"\x1b]133;D\x07");
+
+    assert!(
+        obs_ref.command_event_count() > 0,
+        "on_command_event should be called for shell integration events"
+    );
+
+    let cmd_events = obs_ref.command_events.lock().unwrap();
+    assert!(
+        cmd_events
+            .iter()
+            .any(|e| e.starts_with("shell:prompt_start")),
+        "Should contain prompt_start, got: {:?}",
+        *cmd_events
+    );
+    assert!(
+        cmd_events
+            .iter()
+            .any(|e| e.starts_with("shell:command_executed")),
+        "Should contain command_executed, got: {:?}",
+        *cmd_events
+    );
+}
+
+#[test]
+fn test_observer_subscription_filter() {
+    let mut term = Terminal::new(80, 24);
+
+    // Observer only subscribed to TitleChanged events
+    let subs = HashSet::from([TerminalEventKind::TitleChanged]);
+    let observer = Arc::new(MockObserver::with_subscriptions(subs));
+    let obs_ref = Arc::clone(&observer);
+    term.add_observer(observer);
+
+    // Process a bell -- should NOT reach the filtered observer
+    term.process(b"\x07");
+    assert_eq!(
+        obs_ref.all_event_count(),
+        0,
+        "Bell should be filtered out by subscription"
+    );
+
+    // Process a title change -- should reach the observer
+    term.process(b"\x1b]0;Filtered Title\x07");
+
+    let all = obs_ref.all_events.lock().unwrap();
+    assert!(
+        all.iter().any(|e| e == "title:Filtered Title"),
+        "Title change should pass through subscription filter, got: {:?}",
+        *all
+    );
+}
+
+#[test]
+fn test_multiple_observers() {
+    let mut term = Terminal::new(80, 24);
+
+    let observer1 = Arc::new(MockObserver::new());
+    let obs1_ref = Arc::clone(&observer1);
+    term.add_observer(observer1);
+
+    let observer2 = Arc::new(MockObserver::new());
+    let obs2_ref = Arc::clone(&observer2);
+    term.add_observer(observer2);
+
+    // Process a bell
+    term.process(b"\x07");
+
+    // Both observers should receive the bell event
+    let all1 = obs1_ref.all_events.lock().unwrap();
+    let all2 = obs2_ref.all_events.lock().unwrap();
+
+    assert!(
+        all1.iter().any(|e| e == "bell"),
+        "Observer 1 should receive bell, got: {:?}",
+        *all1
+    );
+    assert!(
+        all2.iter().any(|e| e == "bell"),
+        "Observer 2 should receive bell, got: {:?}",
+        *all2
+    );
+}
+
+#[test]
+fn test_poll_events_still_works_with_observers() {
+    let mut term = Terminal::new(80, 24);
+
+    let observer = Arc::new(MockObserver::new());
+    let obs_ref = Arc::clone(&observer);
+    term.add_observer(observer);
+
+    // Process a bell
+    term.process(b"\x07");
+
+    // Observer should have received the event
+    assert!(
+        obs_ref.all_event_count() > 0,
+        "Observer should receive events"
+    );
+
+    // poll_events should still return events for backward compatibility
+    let events = term.poll_events();
+    assert!(
+        !events.is_empty(),
+        "poll_events should still return events even with observers registered"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, TerminalEvent::BellRang(_))),
+        "poll_events should contain the bell event"
+    );
+}
+
+/// Observer that panics on every callback — used to verify ARC-007 isolation.
+struct PanickingObserver;
+impl TerminalObserver for PanickingObserver {
+    fn on_zone_event(&self, _: &TerminalEvent) {
+        panic!("ARC-007 isolation test (zone)");
+    }
+    fn on_command_event(&self, _: &TerminalEvent) {
+        panic!("ARC-007 isolation test (command)");
+    }
+    fn on_environment_event(&self, _: &TerminalEvent) {
+        panic!("ARC-007 isolation test (environment)");
+    }
+    fn on_screen_event(&self, _: &TerminalEvent) {
+        panic!("ARC-007 isolation test (screen)");
+    }
+    fn on_event(&self, _: &TerminalEvent) {
+        panic!("ARC-007 isolation test (on_event)");
+    }
+}
+
+#[test]
+fn test_panicking_observer_is_isolated() {
+    // ARC-007: a panicking observer must NOT unwind through `dispatch_events`
+    // and leave the Terminal inconsistent (`parking_lot` does not poison, so an
+    // unwound dispatch would silently corrupt state and re-fire events). The
+    // panic is caught inside `dispatch_events`; dispatch completes, the Terminal
+    // stays usable, and a healthy peer observer still receives its events.
+    let mut term = Terminal::new(80, 24);
+    term.add_observer(Arc::new(PanickingObserver));
+    let healthy = Arc::new(MockObserver::new());
+    let healthy_ref = Arc::clone(&healthy);
+    term.add_observer(healthy);
+
+    // A bell (\x07) queues an event that triggers observer dispatch at the end
+    // of `process()`. If isolation is broken, this call panics and the test fails.
+    term.process(b"\x07");
+
+    assert!(
+        healthy_ref.all_event_count() >= 1,
+        "a healthy observer should still receive events after a peer observer panicked"
+    );
+
+    // The Terminal must remain usable after the isolated panic.
+    term.process(b"still alive");
+}
+
+/// Close a prompt zone, then push enough lines through a 5-row terminal with
+/// a 10-line scrollback that the zone falls below the scrollback floor.
+fn zone_scroll_out_bytes() -> Vec<u8> {
+    let mut bytes = b"\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07".to_vec();
+    for i in 0..30 {
+        bytes.extend_from_slice(format!("line {i}\r\n").as_bytes());
+    }
+    bytes
+}
+
+fn zone_subscribed_observer() -> Arc<MockObserver> {
+    Arc::new(MockObserver::with_subscriptions(HashSet::from([
+        TerminalEventKind::ZoneOpened,
+        TerminalEventKind::ZoneClosed,
+        TerminalEventKind::ZoneScrolledOut,
+    ])))
+}
+
+fn scrolled_out_count(observer: &MockObserver) -> usize {
+    observer
+        .zone_events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| e.starts_with("zone_scrolled_out:"))
+        .count()
+}
+
+#[test]
+fn test_zone_scrolled_out_reaches_observers_via_process() {
+    let mut term = Terminal::with_scrollback(80, 5, 10);
+    let first = zone_subscribed_observer();
+    let second = zone_subscribed_observer();
+    term.add_observer(first.clone());
+    term.add_observer(second.clone());
+
+    term.process(&zone_scroll_out_bytes());
+
+    assert!(
+        scrolled_out_count(&first) >= 1,
+        "first observer missed ZoneScrolledOut"
+    );
+    assert!(
+        scrolled_out_count(&second) >= 1,
+        "second observer missed ZoneScrolledOut"
+    );
+}
+
+#[test]
+fn test_zone_scrolled_out_reaches_observers_via_process_deferred() {
+    let mut term = Terminal::with_scrollback(80, 5, 10);
+    let first = zone_subscribed_observer();
+    let second = zone_subscribed_observer();
+    term.add_observer(first.clone());
+    term.add_observer(second.clone());
+
+    term.process_deferred(&zone_scroll_out_bytes()).deliver();
+
+    assert!(
+        scrolled_out_count(&first) >= 1,
+        "first observer missed ZoneScrolledOut"
+    );
+    assert!(
+        scrolled_out_count(&second) >= 1,
+        "second observer missed ZoneScrolledOut"
+    );
+}
+
+#[test]
+fn test_zone_scrolled_out_reaches_observers_via_apply_actions() {
+    let mut term = Terminal::with_scrollback(80, 5, 10);
+    let observer = zone_subscribed_observer();
+    term.add_observer(observer.clone());
+
+    term.apply_actions(crate::terminal::action::parse_to_actions(
+        &zone_scroll_out_bytes(),
+    ));
+
+    assert!(
+        scrolled_out_count(&observer) >= 1,
+        "observer missed ZoneScrolledOut from apply_actions without process()"
+    );
+}
+
+#[test]
+fn test_zone_scrolled_out_reaches_observers_via_apply_action() {
+    let mut term = Terminal::with_scrollback(80, 5, 10);
+    let observer = zone_subscribed_observer();
+    term.add_observer(observer.clone());
+
+    for action in crate::terminal::action::parse_to_actions(&zone_scroll_out_bytes()) {
+        term.apply_action(action);
+    }
+
+    assert!(
+        scrolled_out_count(&observer) >= 1,
+        "observer missed ZoneScrolledOut from apply_action without process()"
+    );
+}
+
+#[test]
+fn test_zone_scrolled_out_reaches_observers_via_resize() {
+    // Zones scroll into a 4-line scrollback without leaving it, then a
+    // narrowing resize rewraps the full-width visible rows and pushes enough
+    // of them into scrollback to drop the zone rows. The observer must see
+    // ZoneScrolledOut from resize() alone, with no process() afterwards.
+    let mut term = Terminal::with_scrollback(20, 5, 4);
+    let observer = zone_subscribed_observer();
+    term.add_observer(observer.clone());
+
+    let mut bytes =
+        b"\x1b]133;A\x07$ \x1b]133;B\x07cmd\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07".to_vec();
+    for _ in 0..5 {
+        bytes.extend_from_slice(b"\r\nxxxxxxxxxxxxxxxxxxxx");
+    }
+    term.process(&bytes);
+    assert_eq!(
+        scrolled_out_count(&observer),
+        0,
+        "setup must leave the zones inside scrollback"
+    );
+
+    term.resize(5, 5);
+
+    assert!(
+        scrolled_out_count(&observer) >= 1,
+        "observer missed ZoneScrolledOut from resize without process()"
+    );
+}
+
+#[test]
+fn test_zone_scrolled_out_reaches_filtered_poll() {
+    let mut term = Terminal::with_scrollback(80, 5, 10);
+    term.set_event_subscription(HashSet::from([TerminalEventKind::ZoneScrolledOut]));
+
+    term.process(&zone_scroll_out_bytes());
+
+    let events = term.poll_subscribed_events();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, TerminalEvent::ZoneScrolledOut { .. })),
+        "filtered poll_subscribed_events missed ZoneScrolledOut: {events:?}"
+    );
+}

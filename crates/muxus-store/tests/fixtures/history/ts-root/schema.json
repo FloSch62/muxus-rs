@@ -1,0 +1,144 @@
+{
+ "schema": [
+  {
+   "type": "index",
+   "name": "session_logs_profile_started",
+   "tbl_name": "session_logs",
+   "sql": "CREATE INDEX session_logs_profile_started\n    ON session_logs(profile_key, started_at DESC)"
+  },
+  {
+   "type": "index",
+   "name": "session_logs_retention",
+   "tbl_name": "session_logs",
+   "sql": "CREATE INDEX session_logs_retention\n    ON session_logs(pinned, status, started_at)"
+  },
+  {
+   "type": "index",
+   "name": "session_logs_started",
+   "tbl_name": "session_logs",
+   "sql": "CREATE INDEX session_logs_started\n    ON session_logs(started_at DESC, id DESC)"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_history_schema_migrations_1",
+   "tbl_name": "history_schema_migrations",
+   "sql": null
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_session_logs_1",
+   "tbl_name": "session_logs",
+   "sql": null
+  },
+  {
+   "type": "index",
+   "name": "transcript_chunks_session_part",
+   "tbl_name": "transcript_chunks",
+   "sql": "CREATE INDEX transcript_chunks_session_part\n    ON transcript_chunks(session_id, part_number)"
+  },
+  {
+   "type": "index",
+   "name": "transcript_chunks_session_sequence",
+   "tbl_name": "transcript_chunks",
+   "sql": "CREATE INDEX transcript_chunks_session_sequence\n    ON transcript_chunks(session_id, first_sequence)"
+  },
+  {
+   "type": "table",
+   "name": "history_schema_migrations",
+   "tbl_name": "history_schema_migrations",
+   "sql": "CREATE TABLE history_schema_migrations (\n    version INTEGER PRIMARY KEY,\n    name TEXT NOT NULL UNIQUE,\n    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n  ) STRICT"
+  },
+  {
+   "type": "table",
+   "name": "session_logs",
+   "tbl_name": "session_logs",
+   "sql": "CREATE TABLE session_logs (\n    id TEXT PRIMARY KEY,\n    profile_key TEXT NOT NULL,\n    title TEXT NOT NULL,\n    kind TEXT NOT NULL CHECK(kind IN ('openssh', 'ssh', 'local', 'serial', 'telnet')),\n    host TEXT NOT NULL,\n    started_at TEXT NOT NULL,\n    ended_at TEXT,\n    status TEXT NOT NULL CHECK(status IN ('active', 'completed', 'disconnected', 'failed')),\n    paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN (0, 1)),\n    capture_input INTEGER NOT NULL CHECK(capture_input IN (0, 1)),\n    pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0, 1)),\n    event_count INTEGER NOT NULL DEFAULT 0 CHECK(event_count >= 0),\n    raw_bytes INTEGER NOT NULL DEFAULT 0 CHECK(raw_bytes >= 0),\n    normalized_bytes INTEGER NOT NULL DEFAULT 0 CHECK(normalized_bytes >= 0),\n    current_part INTEGER NOT NULL DEFAULT 1 CHECK(current_part >= 1),\n    current_part_bytes INTEGER NOT NULL DEFAULT 0 CHECK(current_part_bytes >= 0)\n  , label TEXT) STRICT"
+  },
+  {
+   "type": "table",
+   "name": "session_parts",
+   "tbl_name": "session_parts",
+   "sql": "CREATE TABLE session_parts (\n    session_id TEXT NOT NULL REFERENCES session_logs(id) ON DELETE CASCADE,\n    part_number INTEGER NOT NULL CHECK(part_number >= 1),\n    filename TEXT NOT NULL,\n    raw_bytes INTEGER NOT NULL CHECK(raw_bytes >= 0),\n    stored_bytes INTEGER NOT NULL CHECK(stored_bytes >= 0),\n    event_count INTEGER NOT NULL CHECK(event_count >= 0),\n    normalized_bytes INTEGER NOT NULL CHECK(normalized_bytes >= 0),\n    first_sequence INTEGER,\n    last_sequence INTEGER,\n    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n    PRIMARY KEY(session_id, part_number)\n  ) STRICT, WITHOUT ROWID"
+  },
+  {
+   "type": "table",
+   "name": "sqlite_sequence",
+   "tbl_name": "sqlite_sequence",
+   "sql": "CREATE TABLE sqlite_sequence(name,seq)"
+  },
+  {
+   "type": "table",
+   "name": "sqlite_stat1",
+   "tbl_name": "sqlite_stat1",
+   "sql": "CREATE TABLE sqlite_stat1(tbl,idx,stat)"
+  },
+  {
+   "type": "table",
+   "name": "transcript_chunks",
+   "tbl_name": "transcript_chunks",
+   "sql": "CREATE TABLE transcript_chunks (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    session_id TEXT NOT NULL REFERENCES session_logs(id) ON DELETE CASCADE,\n    part_number INTEGER NOT NULL CHECK(part_number >= 1),\n    first_sequence INTEGER NOT NULL CHECK(first_sequence >= 1),\n    last_sequence INTEGER NOT NULL CHECK(last_sequence >= first_sequence),\n    recorded_at TEXT NOT NULL,\n    elapsed_ms INTEGER NOT NULL CHECK(elapsed_ms >= 0),\n    direction TEXT NOT NULL CHECK(direction IN ('input', 'output', 'system')),\n    normalized_text TEXT NOT NULL\n  , line_timestamps TEXT) STRICT"
+  },
+  {
+   "type": "table",
+   "name": "transcript_chunks_fts",
+   "tbl_name": "transcript_chunks_fts",
+   "sql": "CREATE VIRTUAL TABLE transcript_chunks_fts USING fts5(\n    normalized_text,\n    content = 'transcript_chunks',\n    content_rowid = 'id',\n    tokenize = 'unicode61'\n  )"
+  },
+  {
+   "type": "table",
+   "name": "transcript_chunks_fts_config",
+   "tbl_name": "transcript_chunks_fts_config",
+   "sql": "CREATE TABLE 'transcript_chunks_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+  },
+  {
+   "type": "table",
+   "name": "transcript_chunks_fts_data",
+   "tbl_name": "transcript_chunks_fts_data",
+   "sql": "CREATE TABLE 'transcript_chunks_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"
+  },
+  {
+   "type": "table",
+   "name": "transcript_chunks_fts_docsize",
+   "tbl_name": "transcript_chunks_fts_docsize",
+   "sql": "CREATE TABLE 'transcript_chunks_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"
+  },
+  {
+   "type": "table",
+   "name": "transcript_chunks_fts_idx",
+   "tbl_name": "transcript_chunks_fts_idx",
+   "sql": "CREATE TABLE 'transcript_chunks_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+  },
+  {
+   "type": "trigger",
+   "name": "transcript_chunks_fts_delete",
+   "tbl_name": "transcript_chunks",
+   "sql": "CREATE TRIGGER transcript_chunks_fts_delete\n  AFTER DELETE ON transcript_chunks BEGIN\n    INSERT INTO transcript_chunks_fts(transcript_chunks_fts, rowid, normalized_text)\n    VALUES ('delete', old.id, old.normalized_text);\n  END"
+  },
+  {
+   "type": "trigger",
+   "name": "transcript_chunks_fts_insert",
+   "tbl_name": "transcript_chunks",
+   "sql": "CREATE TRIGGER transcript_chunks_fts_insert\n  AFTER INSERT ON transcript_chunks BEGIN\n    INSERT INTO transcript_chunks_fts(rowid, normalized_text)\n    VALUES (new.id, new.normalized_text);\n  END"
+  },
+  {
+   "type": "trigger",
+   "name": "transcript_chunks_fts_update",
+   "tbl_name": "transcript_chunks",
+   "sql": "CREATE TRIGGER transcript_chunks_fts_update\n  AFTER UPDATE ON transcript_chunks BEGIN\n    INSERT INTO transcript_chunks_fts(transcript_chunks_fts, rowid, normalized_text)\n    VALUES ('delete', old.id, old.normalized_text);\n    INSERT INTO transcript_chunks_fts(rowid, normalized_text)\n    VALUES (new.id, new.normalized_text);\n  END"
+  }
+ ],
+ "migrations": [
+  {
+   "version": 1,
+   "name": "hybrid-session-history"
+  },
+  {
+   "version": 2,
+   "name": "transcript-line-timestamps"
+  },
+  {
+   "version": 3,
+   "name": "session-labels"
+  }
+ ]
+}

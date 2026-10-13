@@ -1,0 +1,39 @@
+[package]
+name = "muxus-ssh"
+description = "SSH client: config, known_hosts, auth, jump hosts, shell integration, SFTP, forwards, X11"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+muxus-core.workspace = true
+async-channel = "2"
+base64 = "0.22"
+hex = "0.4"
+hmac = "0.12"
+libc = "0.2"
+md-5 = "0.10"
+rand = "0.8"
+russh = { version = "0.64", features = ["dsa", "des"] }
+russh-sftp = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+
+[features]
+# In-process SSH and SFTP servers on loopback for other crates' tests (`muxus_ssh::testing`).
+testing = []
+
+[dev-dependencies]
+futures = "0.3"
+tempfile = "3"
+tokio = { version = "1", features = ["full", "test-util"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+
+[lints]
+workspace = true

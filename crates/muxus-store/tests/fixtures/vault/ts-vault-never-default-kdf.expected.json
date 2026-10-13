@@ -1,0 +1,49 @@
+{
+ "masterPassword": "master-pass-12",
+ "policy": "never",
+ "vaultId": "1MFIdsre-3Z4o9FLT8fgTA",
+ "kdf": {
+  "cost": 131072,
+  "blockSize": 8,
+  "parallelism": 1
+ },
+ "osKey": "qFH0yQHlHjDMhKbRm36/NpRhbEMplmLGYyCUf4VIIXE=",
+ "sshAccount": "WyJhbGljZSIsInJvdXRlci5leGFtcGxlIiwyMl0",
+ "sshPassword": "remote-pässword-🔑",
+ "folderAccount": "WyJmb2xkZXIiLCJmb2xkZXItcm93LTEiXQ",
+ "folderPassword": "folder-secret",
+ "secretId": "vDIHmjjcaMxMdEj6RgJdv",
+ "secretName": "Core enable",
+ "secretUsername": "admin",
+ "secretValue": "enable-secret",
+ "status": {
+  "configured": true,
+  "unlockPolicy": "never",
+  "locked": false,
+  "osKeyStoreAvailable": true,
+  "credentialCount": 2,
+  "credentials": [
+   {
+    "id": "Q0NBYD5gqskJJV0aoXTJZ",
+    "label": "alice@router.example:22",
+    "createdAt": "2026-10-12 13:33:39",
+    "updatedAt": "2026-10-12 13:33:39"
+   },
+   {
+    "id": "k-ghD6WVXDjL5L9RbWfDZ",
+    "label": "Folder Prod",
+    "createdAt": "2026-10-12 13:33:40",
+    "updatedAt": "2026-10-12 13:33:40"
+   }
+  ],
+  "secrets": [
+   {
+    "id": "vDIHmjjcaMxMdEj6RgJdv",
+    "name": "Core enable",
+    "username": "admin",
+    "createdAt": "2026-10-12 13:33:40",
+    "updatedAt": "2026-10-12 13:33:40"
+   }
+  ]
+ }
+}

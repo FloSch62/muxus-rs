@@ -1,0 +1,49 @@
+{
+ "masterPassword": "master-pass-12",
+ "policy": "startup",
+ "vaultId": "UFDfa-q6tQ-gEqnWrOxjag",
+ "kdf": {
+  "cost": 1024,
+  "blockSize": 8,
+  "parallelism": 1
+ },
+ "osKey": null,
+ "sshAccount": "WyJhbGljZSIsInJvdXRlci5leGFtcGxlIiwyMl0",
+ "sshPassword": "remote-pässword-🔑",
+ "folderAccount": "WyJmb2xkZXIiLCJmb2xkZXItcm93LTEiXQ",
+ "folderPassword": "folder-secret",
+ "secretId": "Wp_gMl_C_vxtT9wyG1uEv",
+ "secretName": "Core enable",
+ "secretUsername": "admin",
+ "secretValue": "enable-secret",
+ "status": {
+  "configured": true,
+  "unlockPolicy": "startup",
+  "locked": false,
+  "osKeyStoreAvailable": true,
+  "credentialCount": 2,
+  "credentials": [
+   {
+    "id": "Q3PLlgaTf1lVFWSmcE1wW",
+    "label": "alice@router.example:22",
+    "createdAt": "2026-10-12 13:33:39",
+    "updatedAt": "2026-10-12 13:33:39"
+   },
+   {
+    "id": "sc3r-QL6g8hKDTYfJykCk",
+    "label": "Folder Prod",
+    "createdAt": "2026-10-12 13:33:39",
+    "updatedAt": "2026-10-12 13:33:39"
+   }
+  ],
+  "secrets": [
+   {
+    "id": "Wp_gMl_C_vxtT9wyG1uEv",
+    "name": "Core enable",
+    "username": "admin",
+    "createdAt": "2026-10-12 13:33:39",
+    "updatedAt": "2026-10-12 13:33:39"
+   }
+  ]
+ }
+}

@@ -1,0 +1,3874 @@
+{
+ "mobaxterm": [
+  {
+   "name": "fieldsFoldersAuth",
+   "input": "\n[Misc]\nLastSession=Do not import|#109#0%ignored.example.com%22%root%%rest\n\n[Bookmarks]\nSubRep=Production\\Europe\nProd SSH=#109#0%prod.example.com%2222%deploy%%rest\n\n[Bookmarks_1]\nSubRep=Lab\nKey box=#109#0%key.example.com%22%root%3%rest\n",
+   "ok": {
+    "sessions": [
+     {
+      "id": "mobaxterm-session-1a6s6a9g3f1rd",
+      "kind": "ssh",
+      "name": "Prod SSH",
+      "alias": "Prod-SSH",
+      "host": "prod.example.com",
+      "port": 2222,
+      "username": "deploy",
+      "folder": "Production/Europe",
+      "authMode": "password"
+     },
+     {
+      "id": "mobaxterm-session-4milg3t1wte7",
+      "kind": "ssh",
+      "name": "Key box",
+      "alias": "Key-box",
+      "host": "key.example.com",
+      "port": 22,
+      "username": "root",
+      "folder": "Lab",
+      "authMode": "key"
+     }
+    ],
+    "ignoredCount": 0,
+    "skippedSessions": []
+   },
+   "openssh": {
+    "sshHosts": [
+     {
+      "alias": "Prod-SSH",
+      "aliases": [
+       "Prod-SSH"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "prod.example.com",
+       "user": "deploy",
+       "port": 2222,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Prod SSH",
+       "group": "Production/Europe"
+      }
+     },
+     {
+      "alias": "Key-box",
+      "aliases": [
+       "Key-box"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "key.example.com",
+       "user": "root"
+      },
+      "metadata": {
+       "displayName": "Key box",
+       "group": "Lab"
+      }
+     }
+    ],
+    "savedHosts": [],
+    "hostOrder": []
+   },
+   "muxus": {
+    "sshHosts": [],
+    "savedHosts": [
+     {
+      "id": "mobaxterm-ssh-2rm3basc069p8",
+      "name": "Prod SSH",
+      "profile": {
+       "kind": "ssh",
+       "target": "prod.example.com",
+       "useConfig": false,
+       "user": "deploy",
+       "port": 2222,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Production/Europe"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-1wwrzvfggrh6u",
+      "name": "Key box",
+      "profile": {
+       "kind": "ssh",
+       "target": "key.example.com",
+       "useConfig": false,
+       "user": "root"
+      },
+      "metadata": {
+       "group": "Lab"
+      }
+     }
+    ],
+    "hostOrder": []
+   }
+  },
+  {
+   "name": "duplicateNames",
+   "input": "\n[Bookmarks]\nSubRep=\nMy host!=#109#0%one.example.com%not-a-port%%%rest\nMy host!=#109#0%two.example.com%22%%%rest\n",
+   "ok": {
+    "sessions": [
+     {
+      "id": "mobaxterm-session-2i829u2idxeua",
+      "kind": "ssh",
+      "name": "My host!",
+      "alias": "My-host",
+      "host": "one.example.com",
+      "port": 22,
+      "authMode": "password"
+     },
+     {
+      "id": "mobaxterm-session-1duk0fwh64h31",
+      "kind": "ssh",
+      "name": "My host!",
+      "alias": "My-host-2",
+      "host": "two.example.com",
+      "port": 22,
+      "authMode": "password"
+     }
+    ],
+    "ignoredCount": 0,
+    "skippedSessions": []
+   },
+   "openssh": {
+    "sshHosts": [
+     {
+      "alias": "My-host",
+      "aliases": [
+       "My-host"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "one.example.com",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "My host!"
+      }
+     },
+     {
+      "alias": "My-host-2",
+      "aliases": [
+       "My-host-2"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "two.example.com",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "My host!"
+      }
+     }
+    ],
+    "savedHosts": [],
+    "hostOrder": []
+   },
+   "muxus": {
+    "sshHosts": [],
+    "savedHosts": [
+     {
+      "id": "mobaxterm-ssh-3euz27277ihhr",
+      "name": "My host!",
+      "profile": {
+       "kind": "ssh",
+       "target": "one.example.com",
+       "useConfig": false,
+       "passwordOnly": true
+      },
+      "metadata": {}
+     },
+     {
+      "id": "mobaxterm-ssh-17b3ik3e9cr4s",
+      "name": "My host!",
+      "profile": {
+       "kind": "ssh",
+       "target": "two.example.com",
+       "useConfig": false,
+       "passwordOnly": true
+      },
+      "metadata": {}
+     }
+    ],
+    "hostOrder": []
+   }
+  },
+  {
+   "name": "unsupported",
+   "input": "\n[Bookmarks]\nTelnet=#98#1%switch.example.com%23%%%2%%22%%%0#MobaFont%10\nWSL=#105#14%Ubuntu%\nBroken SSH=#109#0%%22%root%%\nBroken RDP=#91#4%%3389%admin%0\nValid=#109#0%valid.example.com%22%root%%\n",
+   "ok": {
+    "sessions": [
+     {
+      "id": "mobaxterm-session-1tg2wr1q61x8r",
+      "kind": "ssh",
+      "name": "Valid",
+      "alias": "Valid",
+      "host": "valid.example.com",
+      "port": 22,
+      "username": "root",
+      "authMode": "password"
+     }
+    ],
+    "ignoredCount": 4,
+    "skippedSessions": [
+     {
+      "id": "mobaxterm-skipped-2",
+      "name": "Telnet",
+      "reason": "Only SSH, RDP and VNC sessions can be imported"
+     },
+     {
+      "id": "mobaxterm-skipped-3",
+      "name": "WSL",
+      "reason": "Only SSH, RDP and VNC sessions can be imported"
+     },
+     {
+      "id": "mobaxterm-skipped-4",
+      "name": "Broken SSH",
+      "reason": "SSH session has no hostname"
+     },
+     {
+      "id": "mobaxterm-skipped-5",
+      "name": "Broken RDP",
+      "reason": "RDP session has no hostname"
+     }
+    ]
+   },
+   "openssh": {
+    "sshHosts": [
+     {
+      "alias": "Valid",
+      "aliases": [
+       "Valid"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "valid.example.com",
+       "user": "root",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Valid"
+      }
+     }
+    ],
+    "savedHosts": [],
+    "hostOrder": []
+   },
+   "muxus": {
+    "sshHosts": [],
+    "savedHosts": [
+     {
+      "id": "mobaxterm-ssh-2mlofg7aynezq",
+      "name": "Valid",
+      "profile": {
+       "kind": "ssh",
+       "target": "valid.example.com",
+       "useConfig": false,
+       "user": "root",
+       "passwordOnly": true
+      },
+      "metadata": {}
+     }
+    ],
+    "hostOrder": []
+   }
+  },
+  {
+   "name": "nothingImportable",
+   "input": "\n[Bookmarks]\nSubRep=\nTelnet=#98#1%switch.example.com%23%%%2%%22%%%0\n",
+   "error": "No SSH, RDP or VNC sessions were found in this MobaXterm file."
+  },
+  {
+   "name": "keysAndGateways",
+   "input": "\n[Bookmarks]\nSubRep=Lab\nDirect key=#109#0%direct.example.com%22%admin%%-1%-1%%%%%0%0%0%_ProfileDir_\\ssh_keys\\id_ecdsa%%-1%0%0%0%%1080%%0%0%1#MobaFont%10%0%0%-1%15%236,236,236\nVia bastion=#109#0%10.0.0.5%22%root%%-1%-1%%bastion.example.com%2222%jump%0%0%0%%_CurrentDrive_:\\keys\\bastion.ppk%-1%0%0%0%%1080%%0%0%1#MobaFont%10\nTwo hops=#109#0%10.0.1.5%22%root%%-1%-1%%bastion.example.com__PIPE__inner.example.com%2222__PIPE__22%jump__PIPE__ops%0%0%0%%_CurrentDrive_:\\keys\\bastion.ppk__PIPE__%-1%0%0%0%%1080%%0%0%1#MobaFont%10\n",
+   "ok": {
+    "sessions": [
+     {
+      "id": "mobaxterm-session-21vc5pcr6k9af",
+      "kind": "ssh",
+      "name": "Direct key",
+      "alias": "Direct-key",
+      "host": "direct.example.com",
+      "port": 22,
+      "username": "admin",
+      "folder": "Lab",
+      "authMode": "key",
+      "identityFile": "~/ssh_keys/id_ecdsa"
+     },
+     {
+      "id": "mobaxterm-session-uqszovsszvg1",
+      "kind": "ssh",
+      "name": "Via bastion",
+      "alias": "Via-bastion",
+      "host": "10.0.0.5",
+      "port": 22,
+      "username": "root",
+      "folder": "Lab",
+      "authMode": "password",
+      "jumpHost": {
+       "host": "bastion.example.com",
+       "port": 2222,
+       "username": "jump",
+       "identityFile": "C:/keys/bastion.ppk",
+       "id": "mobaxterm-jump-17otbmmru20cs",
+       "alias": "jump-jump-bastion.example.com-2222",
+       "name": "jump@bastion.example.com:2222"
+      }
+     },
+     {
+      "id": "mobaxterm-session-3s5x69i5x4rdx",
+      "kind": "ssh",
+      "name": "Two hops",
+      "alias": "Two-hops",
+      "host": "10.0.1.5",
+      "port": 22,
+      "username": "root",
+      "folder": "Lab",
+      "authMode": "password",
+      "jumpHost": {
+       "host": "inner.example.com",
+       "port": 22,
+       "username": "ops",
+       "via": {
+        "host": "bastion.example.com",
+        "port": 2222,
+        "username": "jump",
+        "identityFile": "C:/keys/bastion.ppk",
+        "id": "mobaxterm-jump-17otbmmru20cs",
+        "alias": "jump-jump-bastion.example.com-2222",
+        "name": "jump@bastion.example.com:2222"
+       },
+       "id": "mobaxterm-jump-29swslt38t957",
+       "alias": "jump-ops-inner.example.com",
+       "name": "ops@inner.example.com via jump@bastion.example.com:2222"
+      }
+     }
+    ],
+    "ignoredCount": 0,
+    "skippedSessions": []
+   },
+   "openssh": {
+    "sshHosts": [
+     {
+      "alias": "Direct-key",
+      "aliases": [
+       "Direct-key"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "direct.example.com",
+       "user": "admin",
+       "identityFiles": [
+        "~/ssh_keys/id_ecdsa"
+       ]
+      },
+      "metadata": {
+       "displayName": "Direct key",
+       "group": "Lab"
+      }
+     },
+     {
+      "alias": "Via-bastion",
+      "aliases": [
+       "Via-bastion"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "10.0.0.5",
+       "user": "root",
+       "proxyJump": [
+        "jump-jump-bastion.example.com-2222"
+       ],
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Via bastion",
+       "group": "Lab"
+      }
+     },
+     {
+      "alias": "Two-hops",
+      "aliases": [
+       "Two-hops"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "10.0.1.5",
+       "user": "root",
+       "proxyJump": [
+        "jump-ops-inner.example.com"
+       ],
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Two hops",
+       "group": "Lab"
+      }
+     },
+     {
+      "alias": "jump-jump-bastion.example.com-2222",
+      "aliases": [
+       "jump-jump-bastion.example.com-2222"
+      ],
+      "description": "Jump host imported from MobaXterm.",
+      "options": {
+       "hostname": "bastion.example.com",
+       "user": "jump",
+       "port": 2222,
+       "identityFiles": [
+        "C:/keys/bastion.ppk"
+       ]
+      },
+      "metadata": {
+       "displayName": "jump@bastion.example.com:2222",
+       "group": "MobaXterm jump hosts"
+      }
+     },
+     {
+      "alias": "jump-ops-inner.example.com",
+      "aliases": [
+       "jump-ops-inner.example.com"
+      ],
+      "description": "Jump host imported from MobaXterm.",
+      "options": {
+       "hostname": "inner.example.com",
+       "user": "ops",
+       "passwordOnly": true,
+       "proxyJump": [
+        "jump-jump-bastion.example.com-2222"
+       ]
+      },
+      "metadata": {
+       "displayName": "ops@inner.example.com via jump@bastion.example.com:2222",
+       "group": "MobaXterm jump hosts"
+      }
+     }
+    ],
+    "savedHosts": [],
+    "hostOrder": []
+   },
+   "muxus": {
+    "sshHosts": [],
+    "savedHosts": [
+     {
+      "id": "mobaxterm-ssh-26shi3fr8xovh",
+      "name": "Direct key",
+      "profile": {
+       "kind": "ssh",
+       "target": "direct.example.com",
+       "useConfig": false,
+       "user": "admin",
+       "identityFiles": [
+        "~/ssh_keys/id_ecdsa"
+       ]
+      },
+      "metadata": {
+       "group": "Lab"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-3qgj0hy6pppwu",
+      "name": "Via bastion",
+      "profile": {
+       "kind": "ssh",
+       "target": "10.0.0.5",
+       "useConfig": false,
+       "user": "root",
+       "proxyJump": [
+        "muxus-host:mobaxterm-jump-1yia4etnpak2g"
+       ],
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Lab"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-2sgtejwizsw0o",
+      "name": "Two hops",
+      "profile": {
+       "kind": "ssh",
+       "target": "10.0.1.5",
+       "useConfig": false,
+       "user": "root",
+       "proxyJump": [
+        "muxus-host:mobaxterm-jump-9rwcp6hoayd0"
+       ],
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Lab"
+      }
+     },
+     {
+      "id": "mobaxterm-jump-1yia4etnpak2g",
+      "name": "jump@bastion.example.com:2222",
+      "profile": {
+       "kind": "ssh",
+       "target": "bastion.example.com",
+       "useConfig": false,
+       "user": "jump",
+       "port": 2222,
+       "identityFiles": [
+        "C:/keys/bastion.ppk"
+       ]
+      },
+      "metadata": {
+       "group": "MobaXterm jump hosts"
+      }
+     },
+     {
+      "id": "mobaxterm-jump-9rwcp6hoayd0",
+      "name": "ops@inner.example.com via jump@bastion.example.com:2222",
+      "profile": {
+       "kind": "ssh",
+       "target": "inner.example.com",
+       "useConfig": false,
+       "user": "ops",
+       "passwordOnly": true,
+       "proxyJump": [
+        "muxus-host:mobaxterm-jump-1yia4etnpak2g"
+       ]
+      },
+      "metadata": {
+       "group": "MobaXterm jump hosts"
+      }
+     }
+    ],
+    "hostOrder": []
+   }
+  },
+  {
+   "name": "executeCommand",
+   "input": "\n[Bookmarks]\nRoot=#109#0%a.example.com%22%admin%%-1%-1%sudo su -__PTVIRG__ echo done__PTVIRG__%%%%0%0%0%%%-1%0%0%0%%1080%%0%0%1#MobaFont%10\nNested=#109#0%b.example.com%22%root%%-1%-1%echo pw __PIPE__ sshpass -p pw ssh -oHostKeyAlgorithms__EQUAL__+ssh-rsa admin@10.0.0.1%%%%-1%0%0%%%-1%0%0%0%%1080%%0%0%1#MobaFont%10\nPlain=#109#0%c.example.com%22%root%%-1%-1%%%%%-1%0%0%%%-1%0%0%0%%1080%%0%0%1#MobaFont%10\nHash=#109#0%d.example.com%22%root%%-1%-1% echo __DIEZE__1 ; ;  %%%% -1 %0%0%%%-1#MobaFont%10\nOnly separators=#109#0%e.example.com%22%root%%-1%-1%__PTVIRG__ __PTVIRG__%%%%-1%0#MobaFont%10\n",
+   "ok": {
+    "sessions": [
+     {
+      "id": "mobaxterm-session-3ly87w7ek8z8j",
+      "kind": "ssh",
+      "name": "Root",
+      "alias": "Root",
+      "host": "a.example.com",
+      "port": 22,
+      "username": "admin",
+      "authMode": "password",
+      "remoteCommand": "sudo su -; echo done"
+     },
+     {
+      "id": "mobaxterm-session-1exm8xlciwy24",
+      "kind": "ssh",
+      "name": "Nested",
+      "alias": "Nested",
+      "host": "b.example.com",
+      "port": 22,
+      "username": "root",
+      "authMode": "password",
+      "remoteCommand": "echo pw | sshpass -p pw ssh -oHostKeyAlgorithms=+ssh-rsa admin@10.0.0.1; exec \"$SHELL\" -l"
+     },
+     {
+      "id": "mobaxterm-session-eapmlx4rbscp",
+      "kind": "ssh",
+      "name": "Plain",
+      "alias": "Plain",
+      "host": "c.example.com",
+      "port": 22,
+      "username": "root",
+      "authMode": "password"
+     },
+     {
+      "id": "mobaxterm-session-gjspwa67ghxr",
+      "kind": "ssh",
+      "name": "Hash",
+      "alias": "Hash",
+      "host": "d.example.com",
+      "port": 22,
+      "username": "root",
+      "authMode": "password",
+      "remoteCommand": "echo #1; exec \"$SHELL\" -l"
+     },
+     {
+      "id": "mobaxterm-session-2vnieb5q1jna0",
+      "kind": "ssh",
+      "name": "Only separators",
+      "alias": "Only-separators",
+      "host": "e.example.com",
+      "port": 22,
+      "username": "root",
+      "authMode": "password"
+     }
+    ],
+    "ignoredCount": 0,
+    "skippedSessions": []
+   },
+   "openssh": {
+    "sshHosts": [
+     {
+      "alias": "Root",
+      "aliases": [
+       "Root"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "a.example.com",
+       "user": "admin",
+       "passwordOnly": true,
+       "remoteCommand": "sudo su -; echo done",
+       "requestTty": "yes"
+      },
+      "metadata": {
+       "displayName": "Root"
+      }
+     },
+     {
+      "alias": "Nested",
+      "aliases": [
+       "Nested"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "b.example.com",
+       "user": "root",
+       "passwordOnly": true,
+       "remoteCommand": "echo pw | sshpass -p pw ssh -oHostKeyAlgorithms=+ssh-rsa admin@10.0.0.1; exec \"$SHELL\" -l",
+       "requestTty": "yes"
+      },
+      "metadata": {
+       "displayName": "Nested"
+      }
+     },
+     {
+      "alias": "Plain",
+      "aliases": [
+       "Plain"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "c.example.com",
+       "user": "root",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Plain"
+      }
+     },
+     {
+      "alias": "Hash",
+      "aliases": [
+       "Hash"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "d.example.com",
+       "user": "root",
+       "passwordOnly": true,
+       "remoteCommand": "echo #1; exec \"$SHELL\" -l",
+       "requestTty": "yes"
+      },
+      "metadata": {
+       "displayName": "Hash"
+      }
+     },
+     {
+      "alias": "Only-separators",
+      "aliases": [
+       "Only-separators"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "e.example.com",
+       "user": "root",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Only separators"
+      }
+     }
+    ],
+    "savedHosts": [],
+    "hostOrder": []
+   },
+   "muxus": {
+    "sshHosts": [],
+    "savedHosts": [
+     {
+      "id": "mobaxterm-ssh-19wn6ybiwmbzr",
+      "name": "Root",
+      "profile": {
+       "kind": "ssh",
+       "target": "a.example.com",
+       "useConfig": false,
+       "user": "admin",
+       "passwordOnly": true,
+       "remoteCommand": "sudo su -; echo done",
+       "requestTty": "yes"
+      },
+      "metadata": {}
+     },
+     {
+      "id": "mobaxterm-ssh-3s179rdj3mvsn",
+      "name": "Nested",
+      "profile": {
+       "kind": "ssh",
+       "target": "b.example.com",
+       "useConfig": false,
+       "user": "root",
+       "passwordOnly": true,
+       "remoteCommand": "echo pw | sshpass -p pw ssh -oHostKeyAlgorithms=+ssh-rsa admin@10.0.0.1; exec \"$SHELL\" -l",
+       "requestTty": "yes"
+      },
+      "metadata": {}
+     },
+     {
+      "id": "mobaxterm-ssh-2f279dniefin1",
+      "name": "Plain",
+      "profile": {
+       "kind": "ssh",
+       "target": "c.example.com",
+       "useConfig": false,
+       "user": "root",
+       "passwordOnly": true
+      },
+      "metadata": {}
+     },
+     {
+      "id": "mobaxterm-ssh-20gfklfcv4eye",
+      "name": "Hash",
+      "profile": {
+       "kind": "ssh",
+       "target": "d.example.com",
+       "useConfig": false,
+       "user": "root",
+       "passwordOnly": true,
+       "remoteCommand": "echo #1; exec \"$SHELL\" -l",
+       "requestTty": "yes"
+      },
+      "metadata": {}
+     },
+     {
+      "id": "mobaxterm-ssh-3amzd4yb7a4ko",
+      "name": "Only separators",
+      "profile": {
+       "kind": "ssh",
+       "target": "e.example.com",
+       "useConfig": false,
+       "user": "root",
+       "passwordOnly": true
+      },
+      "metadata": {}
+     }
+    ],
+    "hostOrder": []
+   }
+  },
+  {
+   "name": "desktops",
+   "input": "\n[Bookmarks]\nSubRep=Desktops\nWindows=#91#4%win.example.com%3390%Administrator%0%-1%-1%-1%-1%0%0%-1%%bastion.example.com%22%root%0%0%_ProfileDir_\\keys\\id_ed25519%-1%%-1%-1%0%-1%0%-1#MobaFont%10%0\nConsole=#128#5%127.0.0.1%5901%-1%0%bastion.example.com%22%root%%-1#MobaFont%10%0%0%-1%15%236,236,236\nPlain VNC=#128#5%vnc.example.com%%-1%0%%22%%%-1#MobaFont%10\n",
+   "ok": {
+    "sessions": [
+     {
+      "id": "mobaxterm-rdp-5e1qgowd30zh",
+      "kind": "rdp",
+      "name": "Windows",
+      "host": "win.example.com",
+      "port": 3390,
+      "username": "Administrator",
+      "folder": "Desktops",
+      "jumpHost": {
+       "host": "bastion.example.com",
+       "port": 22,
+       "username": "root",
+       "identityFile": "~/keys/id_ed25519",
+       "id": "mobaxterm-jump-12utvphqzg4i9",
+       "alias": "jump-root-bastion.example.com",
+       "name": "root@bastion.example.com"
+      }
+     },
+     {
+      "id": "mobaxterm-vnc-46b45kxgisex",
+      "kind": "vnc",
+      "name": "Console",
+      "host": "127.0.0.1",
+      "port": 5901,
+      "folder": "Desktops",
+      "jumpHost": {
+       "host": "bastion.example.com",
+       "port": 22,
+       "username": "root",
+       "id": "mobaxterm-jump-3jy6drnxowqpy",
+       "alias": "jump-root-bastion.example.com-2",
+       "name": "root@bastion.example.com (2)"
+      }
+     },
+     {
+      "id": "mobaxterm-vnc-9zl8v9d1qkx5",
+      "kind": "vnc",
+      "name": "Plain VNC",
+      "host": "vnc.example.com",
+      "port": 5900,
+      "folder": "Desktops"
+     }
+    ],
+    "ignoredCount": 0,
+    "skippedSessions": []
+   },
+   "openssh": {
+    "sshHosts": [
+     {
+      "alias": "jump-root-bastion.example.com",
+      "aliases": [
+       "jump-root-bastion.example.com"
+      ],
+      "description": "Jump host imported from MobaXterm.",
+      "options": {
+       "hostname": "bastion.example.com",
+       "user": "root",
+       "identityFiles": [
+        "~/keys/id_ed25519"
+       ]
+      },
+      "metadata": {
+       "displayName": "root@bastion.example.com",
+       "group": "MobaXterm jump hosts"
+      }
+     },
+     {
+      "alias": "jump-root-bastion.example.com-2",
+      "aliases": [
+       "jump-root-bastion.example.com-2"
+      ],
+      "description": "Jump host imported from MobaXterm.",
+      "options": {
+       "hostname": "bastion.example.com",
+       "user": "root",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "root@bastion.example.com (2)",
+       "group": "MobaXterm jump hosts"
+      }
+     }
+    ],
+    "savedHosts": [
+     {
+      "id": "mobaxterm-rdp-2ess307mopzuw",
+      "name": "Windows",
+      "profile": {
+       "kind": "rdp",
+       "host": "win.example.com",
+       "port": 3390,
+       "username": "Administrator",
+       "sshGateway": {
+        "target": "jump-root-bastion.example.com"
+       }
+      },
+      "metadata": {
+       "group": "Desktops"
+      }
+     },
+     {
+      "id": "mobaxterm-vnc-382z0h2g0nwg1",
+      "name": "Console",
+      "profile": {
+       "kind": "vnc",
+       "host": "127.0.0.1",
+       "port": 5901,
+       "sshGateway": {
+        "target": "jump-root-bastion.example.com-2"
+       }
+      },
+      "metadata": {
+       "group": "Desktops"
+      }
+     },
+     {
+      "id": "mobaxterm-vnc-3k4fnmyjrsbnz",
+      "name": "Plain VNC",
+      "profile": {
+       "kind": "vnc",
+       "host": "vnc.example.com",
+       "port": 5900
+      },
+      "metadata": {
+       "group": "Desktops"
+      }
+     }
+    ],
+    "hostOrder": []
+   },
+   "muxus": {
+    "sshHosts": [],
+    "savedHosts": [
+     {
+      "id": "mobaxterm-rdp-2ess307mopzuw",
+      "name": "Windows",
+      "profile": {
+       "kind": "rdp",
+       "host": "win.example.com",
+       "port": 3390,
+       "username": "Administrator",
+       "sshGateway": {
+        "target": "bastion.example.com",
+        "profileId": "mobaxterm-jump-24jlffpebnh1i"
+       }
+      },
+      "metadata": {
+       "group": "Desktops"
+      }
+     },
+     {
+      "id": "mobaxterm-vnc-382z0h2g0nwg1",
+      "name": "Console",
+      "profile": {
+       "kind": "vnc",
+       "host": "127.0.0.1",
+       "port": 5901,
+       "sshGateway": {
+        "target": "bastion.example.com",
+        "profileId": "mobaxterm-jump-tyufv4ze1hso"
+       }
+      },
+      "metadata": {
+       "group": "Desktops"
+      }
+     },
+     {
+      "id": "mobaxterm-vnc-3k4fnmyjrsbnz",
+      "name": "Plain VNC",
+      "profile": {
+       "kind": "vnc",
+       "host": "vnc.example.com",
+       "port": 5900
+      },
+      "metadata": {
+       "group": "Desktops"
+      }
+     },
+     {
+      "id": "mobaxterm-jump-24jlffpebnh1i",
+      "name": "root@bastion.example.com",
+      "profile": {
+       "kind": "ssh",
+       "target": "bastion.example.com",
+       "useConfig": false,
+       "user": "root",
+       "identityFiles": [
+        "~/keys/id_ed25519"
+       ]
+      },
+      "metadata": {
+       "group": "MobaXterm jump hosts"
+      }
+     },
+     {
+      "id": "mobaxterm-jump-tyufv4ze1hso",
+      "name": "root@bastion.example.com (2)",
+      "profile": {
+       "kind": "ssh",
+       "target": "bastion.example.com",
+       "useConfig": false,
+       "user": "root",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "MobaXterm jump hosts"
+      }
+     }
+    ],
+    "hostOrder": []
+   }
+  },
+  {
+   "name": "conversion",
+   "input": "\n[Bookmarks]\nSubRep=Customers\\Acme\nPassword host=#109#0%pw.example.com%2200%alice%%rest\nKey host=#109#0%key.example.com%22%bob%3%rest\n",
+   "ok": {
+    "sessions": [
+     {
+      "id": "mobaxterm-session-3aqvjhbiy9973",
+      "kind": "ssh",
+      "name": "Password host",
+      "alias": "Password-host",
+      "host": "pw.example.com",
+      "port": 2200,
+      "username": "alice",
+      "folder": "Customers/Acme",
+      "authMode": "password"
+     },
+     {
+      "id": "mobaxterm-session-2xjxwnn9rmx87",
+      "kind": "ssh",
+      "name": "Key host",
+      "alias": "Key-host",
+      "host": "key.example.com",
+      "port": 22,
+      "username": "bob",
+      "folder": "Customers/Acme",
+      "authMode": "key"
+     }
+    ],
+    "ignoredCount": 0,
+    "skippedSessions": []
+   },
+   "openssh": {
+    "sshHosts": [
+     {
+      "alias": "Password-host",
+      "aliases": [
+       "Password-host"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "pw.example.com",
+       "user": "alice",
+       "port": 2200,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Password host",
+       "group": "Customers/Acme"
+      }
+     },
+     {
+      "alias": "Key-host",
+      "aliases": [
+       "Key-host"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "key.example.com",
+       "user": "bob"
+      },
+      "metadata": {
+       "displayName": "Key host",
+       "group": "Customers/Acme"
+      }
+     }
+    ],
+    "savedHosts": [],
+    "hostOrder": []
+   },
+   "muxus": {
+    "sshHosts": [],
+    "savedHosts": [
+     {
+      "id": "mobaxterm-ssh-3qgx71f6gloch",
+      "name": "Password host",
+      "profile": {
+       "kind": "ssh",
+       "target": "pw.example.com",
+       "useConfig": false,
+       "user": "alice",
+       "port": 2200,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Customers/Acme"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-pkfzhhajm38g",
+      "name": "Key host",
+      "profile": {
+       "kind": "ssh",
+       "target": "key.example.com",
+       "useConfig": false,
+       "user": "bob"
+      },
+      "metadata": {
+       "group": "Customers/Acme"
+      }
+     }
+    ],
+    "hostOrder": []
+   }
+  },
+  {
+   "name": "gatewayFile",
+   "input": "\n[Bookmarks]\nSubRep=Lab\nInner=#109#0%10.0.1.5%22%root%%-1%-1%%bastion.example.com__PIPE__inner.example.com%2222__PIPE__22%jump__PIPE__ops%0%0%0%_ProfileDir_\\keys\\lab%_ProfileDir_\\keys\\bastion__PIPE__%-1%0%0%0%%1080%%0%0%1#MobaFont%10\nWindows=#91#4%win.example.com%3389%admin%0%-1%-1%-1%-1%0%0%-1%%bastion.example.com%2222%jump%0%0%_ProfileDir_\\keys\\bastion%-1%%-1%-1%0%-1%0%-1#MobaFont%10\n",
+   "ok": {
+    "sessions": [
+     {
+      "id": "mobaxterm-session-2yw39l0nlw118",
+      "kind": "ssh",
+      "name": "Inner",
+      "alias": "Inner",
+      "host": "10.0.1.5",
+      "port": 22,
+      "username": "root",
+      "folder": "Lab",
+      "authMode": "key",
+      "identityFile": "~/keys/lab",
+      "jumpHost": {
+       "host": "inner.example.com",
+       "port": 22,
+       "username": "ops",
+       "via": {
+        "host": "bastion.example.com",
+        "port": 2222,
+        "username": "jump",
+        "identityFile": "~/keys/bastion",
+        "id": "mobaxterm-jump-o2sj7u6nv1g6",
+        "alias": "jump-jump-bastion.example.com-2222",
+        "name": "jump@bastion.example.com:2222"
+       },
+       "id": "mobaxterm-jump-15igf0340r4pb",
+       "alias": "jump-ops-inner.example.com",
+       "name": "ops@inner.example.com via jump@bastion.example.com:2222"
+      }
+     },
+     {
+      "id": "mobaxterm-rdp-1ffevwxy4630p",
+      "kind": "rdp",
+      "name": "Windows",
+      "host": "win.example.com",
+      "port": 3389,
+      "username": "admin",
+      "folder": "Lab",
+      "jumpHost": {
+       "host": "bastion.example.com",
+       "port": 2222,
+       "username": "jump",
+       "identityFile": "~/keys/bastion",
+       "id": "mobaxterm-jump-o2sj7u6nv1g6",
+       "alias": "jump-jump-bastion.example.com-2222",
+       "name": "jump@bastion.example.com:2222"
+      }
+     }
+    ],
+    "ignoredCount": 0,
+    "skippedSessions": []
+   },
+   "openssh": {
+    "sshHosts": [
+     {
+      "alias": "Inner",
+      "aliases": [
+       "Inner"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "10.0.1.5",
+       "user": "root",
+       "identityFiles": [
+        "~/keys/lab"
+       ],
+       "proxyJump": [
+        "jump-ops-inner.example.com"
+       ]
+      },
+      "metadata": {
+       "displayName": "Inner",
+       "group": "Lab"
+      }
+     },
+     {
+      "alias": "jump-ops-inner.example.com",
+      "aliases": [
+       "jump-ops-inner.example.com"
+      ],
+      "description": "Jump host imported from MobaXterm.",
+      "options": {
+       "hostname": "inner.example.com",
+       "user": "ops",
+       "passwordOnly": true,
+       "proxyJump": [
+        "jump-jump-bastion.example.com-2222"
+       ]
+      },
+      "metadata": {
+       "displayName": "ops@inner.example.com via jump@bastion.example.com:2222",
+       "group": "MobaXterm jump hosts"
+      }
+     },
+     {
+      "alias": "jump-jump-bastion.example.com-2222",
+      "aliases": [
+       "jump-jump-bastion.example.com-2222"
+      ],
+      "description": "Jump host imported from MobaXterm.",
+      "options": {
+       "hostname": "bastion.example.com",
+       "user": "jump",
+       "port": 2222,
+       "identityFiles": [
+        "~/keys/bastion"
+       ]
+      },
+      "metadata": {
+       "displayName": "jump@bastion.example.com:2222",
+       "group": "MobaXterm jump hosts"
+      }
+     }
+    ],
+    "savedHosts": [
+     {
+      "id": "mobaxterm-rdp-3bhvbxgnf0ar5",
+      "name": "Windows",
+      "profile": {
+       "kind": "rdp",
+       "host": "win.example.com",
+       "port": 3389,
+       "username": "admin",
+       "sshGateway": {
+        "target": "jump-jump-bastion.example.com-2222"
+       }
+      },
+      "metadata": {
+       "group": "Lab"
+      }
+     }
+    ],
+    "hostOrder": []
+   },
+   "muxus": {
+    "sshHosts": [],
+    "savedHosts": [
+     {
+      "id": "mobaxterm-ssh-1tjbk81y8rmi3",
+      "name": "Inner",
+      "profile": {
+       "kind": "ssh",
+       "target": "10.0.1.5",
+       "useConfig": false,
+       "user": "root",
+       "identityFiles": [
+        "~/keys/lab"
+       ],
+       "proxyJump": [
+        "muxus-host:mobaxterm-jump-1qpzuc73c8zp5"
+       ]
+      },
+      "metadata": {
+       "group": "Lab"
+      }
+     },
+     {
+      "id": "mobaxterm-rdp-3bhvbxgnf0ar5",
+      "name": "Windows",
+      "profile": {
+       "kind": "rdp",
+       "host": "win.example.com",
+       "port": 3389,
+       "username": "admin",
+       "sshGateway": {
+        "target": "bastion.example.com",
+        "profileId": "mobaxterm-jump-20mguiyqwuml8"
+       }
+      },
+      "metadata": {
+       "group": "Lab"
+      }
+     },
+     {
+      "id": "mobaxterm-jump-1qpzuc73c8zp5",
+      "name": "ops@inner.example.com via jump@bastion.example.com:2222",
+      "profile": {
+       "kind": "ssh",
+       "target": "inner.example.com",
+       "useConfig": false,
+       "user": "ops",
+       "passwordOnly": true,
+       "proxyJump": [
+        "muxus-host:mobaxterm-jump-20mguiyqwuml8"
+       ]
+      },
+      "metadata": {
+       "group": "MobaXterm jump hosts"
+      }
+     },
+     {
+      "id": "mobaxterm-jump-20mguiyqwuml8",
+      "name": "jump@bastion.example.com:2222",
+      "profile": {
+       "kind": "ssh",
+       "target": "bastion.example.com",
+       "useConfig": false,
+       "user": "jump",
+       "port": 2222,
+       "identityFiles": [
+        "~/keys/bastion"
+       ]
+      },
+      "metadata": {
+       "group": "MobaXterm jump hosts"
+      }
+     }
+    ],
+    "hostOrder": []
+   }
+  },
+  {
+   "name": "edgeCases",
+   "input": "﻿[bookmarks]\r\n; a comment\r\nSubRep= Ops \\\\ Core\u0001 // Edge \r\nno separator line\r\nNot a session=just a value\r\n=#109#0%unnamed.example.com%22%root%%\r\n=#91#4%%3389%%\r\nLeading zeros=#109#0004%rdp.example.com% 3390abc%admin%%\r\nSigned port=#109#0%signed.example.com%+2201%  spaced user  %%\r\nZero port=#109#0%zero.example.com%0%%\r\nBig port=#109#0%big.example.com%65536%%\r\nHuge protocol=#109#99999999999999999999%x.example.com%22\r\nHäuser & Wörter #1 *?!=#109#0%unicode.example.com%22%%\r\nLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL=#109#0%long.example.com%22%%\r\nDup desktop=#91#4%a.example.com%3389%%\r\nDup desktop=#91#4%b.example.com%3389%%\r\nDup desktop=#128#5%c.example.com%5900%\r\njump-root-bastion.example.com=#109#0%taken.example.com%22%%\r\nGateway A=#109#0%ga.example.com%22%%%-1%-1%%bastion.example.com%22%root%0%0%0%%_MyDocuments_\\key%\r\nGateway B=#109#0%gb.example.com%22%%%-1%-1%%bastion.example.com%22%root%0%0%0%%%\r\nGateway C=#91#4%gc.example.com%3389%%0%-1%-1%-1%-1%0%0%-1%%bastion.example.com%22%root%0%0%%\r\nSparse hops=#109#0%sh.example.com%22%%%-1%-1%%a.example.com__PIPE____PIPE__c.example.com%22__PIPE__x__PIPE__2200%__PIPE__u2__PIPE__u3%0%0%0%%%\r\nIPv6 hop=#109#0%v6.example.com%22%%%-1%-1%%fe80::1%2022%adm@in%0%0%0%%%\r\n  Spaced name  =  #109#0%  spaced.example.com  %22%%  \r\nKey flag=#109#0%flag.example.com%22%%  3  %\r\n[Bookmarks_x]\r\nIgnored=#109#0%ignored.example.com%22%%\r\n[ Bookmarks_7 ]\r\nSection seven=#109#0%seven.example.com%22%%\r\n[Bookmarks_8]\r\nSubRep=\\\\\r\nRoot again=#109#0%root.example.com%22%%\r\n",
+   "ok": {
+    "sessions": [
+     {
+      "id": "mobaxterm-rdp-25b1vgd58370",
+      "kind": "rdp",
+      "name": "Leading zeros",
+      "host": "rdp.example.com",
+      "port": 3390,
+      "username": "admin",
+      "folder": "Ops/Core/Edge"
+     },
+     {
+      "id": "mobaxterm-session-1wijrc4invuzl",
+      "kind": "ssh",
+      "name": "Signed port",
+      "alias": "Signed-port",
+      "host": "signed.example.com",
+      "port": 2201,
+      "username": "spaced user",
+      "folder": "Ops/Core/Edge",
+      "authMode": "password"
+     },
+     {
+      "id": "mobaxterm-session-1l6o1uqy5tn6r",
+      "kind": "ssh",
+      "name": "Zero port",
+      "alias": "Zero-port",
+      "host": "zero.example.com",
+      "port": 22,
+      "folder": "Ops/Core/Edge",
+      "authMode": "password"
+     },
+     {
+      "id": "mobaxterm-session-341y6t5xx1xt9",
+      "kind": "ssh",
+      "name": "Big port",
+      "alias": "Big-port",
+      "host": "big.example.com",
+      "port": 22,
+      "folder": "Ops/Core/Edge",
+      "authMode": "password"
+     },
+     {
+      "id": "mobaxterm-session-2xjf4np9aiiuc",
+      "kind": "ssh",
+      "name": "Häuser & Wörter #1 *?!",
+      "alias": "Häuser-&-Wörter-1",
+      "host": "unicode.example.com",
+      "port": 22,
+      "folder": "Ops/Core/Edge",
+      "authMode": "password"
+     },
+     {
+      "id": "mobaxterm-session-3ogw9ico4bs5v",
+      "kind": "ssh",
+      "name": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL",
+      "alias": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL",
+      "host": "long.example.com",
+      "port": 22,
+      "folder": "Ops/Core/Edge",
+      "authMode": "password"
+     },
+     {
+      "id": "mobaxterm-rdp-3jwcdriuvd34o",
+      "kind": "rdp",
+      "name": "Dup desktop",
+      "host": "a.example.com",
+      "port": 3389,
+      "folder": "Ops/Core/Edge"
+     },
+     {
+      "id": "mobaxterm-rdp-2si7r3xc412vi",
+      "kind": "rdp",
+      "name": "Dup desktop",
+      "host": "b.example.com",
+      "port": 3389,
+      "folder": "Ops/Core/Edge"
+     },
+     {
+      "id": "mobaxterm-vnc-2si7rhyg0v4w1",
+      "kind": "vnc",
+      "name": "Dup desktop",
+      "host": "c.example.com",
+      "port": 5900,
+      "folder": "Ops/Core/Edge"
+     },
+     {
+      "id": "mobaxterm-session-33b6vda89bupg",
+      "kind": "ssh",
+      "name": "jump-root-bastion.example.com",
+      "alias": "jump-root-bastion.example.com",
+      "host": "taken.example.com",
+      "port": 22,
+      "folder": "Ops/Core/Edge",
+      "authMode": "password"
+     },
+     {
+      "id": "mobaxterm-session-vd7j89bqbmkh",
+      "kind": "ssh",
+      "name": "Gateway A",
+      "alias": "Gateway-A",
+      "host": "ga.example.com",
+      "port": 22,
+      "folder": "Ops/Core/Edge",
+      "authMode": "password",
+      "jumpHost": {
+       "host": "bastion.example.com",
+       "port": 22,
+       "username": "root",
+       "identityFile": "~/Documents/key",
+       "id": "mobaxterm-jump-14uq9ilfokaed",
+       "alias": "jump-root-bastion.example.com-2",
+       "name": "root@bastion.example.com"
+      }
+     },
+     {
+      "id": "mobaxterm-session-vd7i25zztgiw",
+      "kind": "ssh",
+      "name": "Gateway B",
+      "alias": "Gateway-B",
+      "host": "gb.example.com",
+      "port": 22,
+      "folder": "Ops/Core/Edge",
+      "authMode": "password",
+      "jumpHost": {
+       "host": "bastion.example.com",
+       "port": 22,
+       "username": "root",
+       "id": "mobaxterm-jump-3jy6drnxowqpy",
+       "alias": "jump-root-bastion.example.com-3",
+       "name": "root@bastion.example.com (2)"
+      }
+     },
+     {
+      "id": "mobaxterm-rdp-vabxdjd5ooce",
+      "kind": "rdp",
+      "name": "Gateway C",
+      "host": "gc.example.com",
+      "port": 3389,
+      "folder": "Ops/Core/Edge",
+      "jumpHost": {
+       "host": "bastion.example.com",
+       "port": 22,
+       "username": "root",
+       "id": "mobaxterm-jump-3jy6drnxowqpy",
+       "alias": "jump-root-bastion.example.com-3",
+       "name": "root@bastion.example.com (2)"
+      }
+     },
+     {
+      "id": "mobaxterm-session-363480s6vdaru",
+      "kind": "ssh",
+      "name": "Sparse hops",
+      "alias": "Sparse-hops",
+      "host": "sh.example.com",
+      "port": 22,
+      "folder": "Ops/Core/Edge",
+      "authMode": "password",
+      "jumpHost": {
+       "host": "c.example.com",
+       "port": 2200,
+       "username": "u3",
+       "via": {
+        "host": "a.example.com",
+        "port": 22,
+        "id": "mobaxterm-jump-1zdkhb2zvisj7",
+        "alias": "jump-a.example.com",
+        "name": "a.example.com"
+       },
+       "id": "mobaxterm-jump-1w8jzfxnh66dd",
+       "alias": "jump-u3-c.example.com-2200",
+       "name": "u3@c.example.com:2200 via a.example.com"
+      }
+     },
+     {
+      "id": "mobaxterm-session-1n99hv7cy4tqs",
+      "kind": "ssh",
+      "name": "IPv6 hop",
+      "alias": "IPv6-hop",
+      "host": "v6.example.com",
+      "port": 22,
+      "folder": "Ops/Core/Edge",
+      "authMode": "password",
+      "jumpHost": {
+       "host": "fe80::1",
+       "port": 2022,
+       "username": "adm@in",
+       "id": "mobaxterm-jump-1jr8dqqomevto",
+       "alias": "jump-adm-in-fe80-1-2022",
+       "name": "adm@in@fe80::1:2022"
+      }
+     },
+     {
+      "id": "mobaxterm-session-1g5i5prxjjdzz",
+      "kind": "ssh",
+      "name": "Spaced name",
+      "alias": "Spaced-name",
+      "host": "spaced.example.com",
+      "port": 22,
+      "folder": "Ops/Core/Edge",
+      "authMode": "password"
+     },
+     {
+      "id": "mobaxterm-session-3mime95wqv65z",
+      "kind": "ssh",
+      "name": "Key flag",
+      "alias": "Key-flag",
+      "host": "flag.example.com",
+      "port": 22,
+      "folder": "Ops/Core/Edge",
+      "authMode": "key"
+     },
+     {
+      "id": "mobaxterm-session-2sb703803a4b2",
+      "kind": "ssh",
+      "name": "Section seven",
+      "alias": "Section-seven",
+      "host": "seven.example.com",
+      "port": 22,
+      "authMode": "password"
+     },
+     {
+      "id": "mobaxterm-session-68uzewtv8b3u",
+      "kind": "ssh",
+      "name": "Root again",
+      "alias": "Root-again",
+      "host": "root.example.com",
+      "port": 22,
+      "authMode": "password"
+     }
+    ],
+    "ignoredCount": 3,
+    "skippedSessions": [
+     {
+      "id": "mobaxterm-skipped-5",
+      "name": "unnamed.example.com",
+      "folder": "Ops/Core/Edge",
+      "reason": "SSH session has no name"
+     },
+     {
+      "id": "mobaxterm-skipped-6",
+      "name": "Unnamed session",
+      "folder": "Ops/Core/Edge",
+      "reason": "RDP session has no name"
+     },
+     {
+      "id": "mobaxterm-skipped-11",
+      "name": "Huge protocol",
+      "folder": "Ops/Core/Edge",
+      "reason": "Only SSH, RDP and VNC sessions can be imported"
+     }
+    ]
+   },
+   "openssh": {
+    "sshHosts": [
+     {
+      "alias": "Signed-port",
+      "aliases": [
+       "Signed-port"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "signed.example.com",
+       "user": "spaced user",
+       "port": 2201,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Signed port",
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "alias": "Zero-port",
+      "aliases": [
+       "Zero-port"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "zero.example.com",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Zero port",
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "alias": "Big-port",
+      "aliases": [
+       "Big-port"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "big.example.com",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Big port",
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "alias": "Häuser-&-Wörter-1",
+      "aliases": [
+       "Häuser-&-Wörter-1"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "unicode.example.com",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Häuser & Wörter #1 *?!",
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "alias": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL",
+      "aliases": [
+       "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "long.example.com",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL",
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "alias": "jump-root-bastion.example.com",
+      "aliases": [
+       "jump-root-bastion.example.com"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "taken.example.com",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "jump-root-bastion.example.com",
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "alias": "Gateway-A",
+      "aliases": [
+       "Gateway-A"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "ga.example.com",
+       "proxyJump": [
+        "jump-root-bastion.example.com-2"
+       ],
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Gateway A",
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "alias": "Gateway-B",
+      "aliases": [
+       "Gateway-B"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "gb.example.com",
+       "proxyJump": [
+        "jump-root-bastion.example.com-3"
+       ],
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Gateway B",
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "alias": "Sparse-hops",
+      "aliases": [
+       "Sparse-hops"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "sh.example.com",
+       "proxyJump": [
+        "jump-u3-c.example.com-2200"
+       ],
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Sparse hops",
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "alias": "IPv6-hop",
+      "aliases": [
+       "IPv6-hop"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "v6.example.com",
+       "proxyJump": [
+        "jump-adm-in-fe80-1-2022"
+       ],
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "IPv6 hop",
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "alias": "Spaced-name",
+      "aliases": [
+       "Spaced-name"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "spaced.example.com",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Spaced name",
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "alias": "Key-flag",
+      "aliases": [
+       "Key-flag"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "flag.example.com"
+      },
+      "metadata": {
+       "displayName": "Key flag",
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "alias": "Section-seven",
+      "aliases": [
+       "Section-seven"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "seven.example.com",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Section seven"
+      }
+     },
+     {
+      "alias": "Root-again",
+      "aliases": [
+       "Root-again"
+      ],
+      "description": "Imported from MobaXterm.",
+      "options": {
+       "hostname": "root.example.com",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Root again"
+      }
+     },
+     {
+      "alias": "jump-root-bastion.example.com-2",
+      "aliases": [
+       "jump-root-bastion.example.com-2"
+      ],
+      "description": "Jump host imported from MobaXterm.",
+      "options": {
+       "hostname": "bastion.example.com",
+       "user": "root",
+       "identityFiles": [
+        "~/Documents/key"
+       ]
+      },
+      "metadata": {
+       "displayName": "root@bastion.example.com",
+       "group": "MobaXterm jump hosts"
+      }
+     },
+     {
+      "alias": "jump-root-bastion.example.com-3",
+      "aliases": [
+       "jump-root-bastion.example.com-3"
+      ],
+      "description": "Jump host imported from MobaXterm.",
+      "options": {
+       "hostname": "bastion.example.com",
+       "user": "root",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "root@bastion.example.com (2)",
+       "group": "MobaXterm jump hosts"
+      }
+     },
+     {
+      "alias": "jump-u3-c.example.com-2200",
+      "aliases": [
+       "jump-u3-c.example.com-2200"
+      ],
+      "description": "Jump host imported from MobaXterm.",
+      "options": {
+       "hostname": "c.example.com",
+       "user": "u3",
+       "port": 2200,
+       "passwordOnly": true,
+       "proxyJump": [
+        "jump-a.example.com"
+       ]
+      },
+      "metadata": {
+       "displayName": "u3@c.example.com:2200 via a.example.com",
+       "group": "MobaXterm jump hosts"
+      }
+     },
+     {
+      "alias": "jump-a.example.com",
+      "aliases": [
+       "jump-a.example.com"
+      ],
+      "description": "Jump host imported from MobaXterm.",
+      "options": {
+       "hostname": "a.example.com",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "a.example.com",
+       "group": "MobaXterm jump hosts"
+      }
+     },
+     {
+      "alias": "jump-adm-in-fe80-1-2022",
+      "aliases": [
+       "jump-adm-in-fe80-1-2022"
+      ],
+      "description": "Jump host imported from MobaXterm.",
+      "options": {
+       "hostname": "fe80::1",
+       "user": "adm@in",
+       "port": 2022,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "adm@in@fe80::1:2022",
+       "group": "MobaXterm jump hosts"
+      }
+     }
+    ],
+    "savedHosts": [
+     {
+      "id": "mobaxterm-rdp-2wkfeh6gohiq",
+      "name": "Leading zeros",
+      "profile": {
+       "kind": "rdp",
+       "host": "rdp.example.com",
+       "port": 3390,
+       "username": "admin"
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-rdp-2xky06fqcsm63",
+      "name": "Dup desktop",
+      "profile": {
+       "kind": "rdp",
+       "host": "a.example.com",
+       "port": 3389
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-rdp-2dnn46tdqmdud",
+      "name": "Dup desktop",
+      "profile": {
+       "kind": "rdp",
+       "host": "b.example.com",
+       "port": 3389
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-vnc-36nim10e3qv36",
+      "name": "Dup desktop",
+      "profile": {
+       "kind": "vnc",
+       "host": "c.example.com",
+       "port": 5900
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-rdp-2gaa8khql5zdw",
+      "name": "Gateway C",
+      "profile": {
+       "kind": "rdp",
+       "host": "gc.example.com",
+       "port": 3389,
+       "sshGateway": {
+        "target": "jump-root-bastion.example.com-3"
+       }
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     }
+    ],
+    "hostOrder": []
+   },
+   "muxus": {
+    "sshHosts": [],
+    "savedHosts": [
+     {
+      "id": "mobaxterm-rdp-2wkfeh6gohiq",
+      "name": "Leading zeros",
+      "profile": {
+       "kind": "rdp",
+       "host": "rdp.example.com",
+       "port": 3390,
+       "username": "admin"
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-3dmkb9yslsqw6",
+      "name": "Signed port",
+      "profile": {
+       "kind": "ssh",
+       "target": "signed.example.com",
+       "useConfig": false,
+       "user": "spaced user",
+       "port": 2201,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-2x8q02nbk5f1",
+      "name": "Zero port",
+      "profile": {
+       "kind": "ssh",
+       "target": "zero.example.com",
+       "useConfig": false,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-1ns0udqkrslo2",
+      "name": "Big port",
+      "profile": {
+       "kind": "ssh",
+       "target": "big.example.com",
+       "useConfig": false,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-3rasdo8pz4oza",
+      "name": "Häuser & Wörter #1 *?!",
+      "profile": {
+       "kind": "ssh",
+       "target": "unicode.example.com",
+       "useConfig": false,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-2ztcm80oy27dq",
+      "name": "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL",
+      "profile": {
+       "kind": "ssh",
+       "target": "long.example.com",
+       "useConfig": false,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-rdp-2xky06fqcsm63",
+      "name": "Dup desktop",
+      "profile": {
+       "kind": "rdp",
+       "host": "a.example.com",
+       "port": 3389
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-rdp-2dnn46tdqmdud",
+      "name": "Dup desktop",
+      "profile": {
+       "kind": "rdp",
+       "host": "b.example.com",
+       "port": 3389
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-vnc-36nim10e3qv36",
+      "name": "Dup desktop",
+      "profile": {
+       "kind": "vnc",
+       "host": "c.example.com",
+       "port": 5900
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-2bvh56wllzmki",
+      "name": "jump-root-bastion.example.com",
+      "profile": {
+       "kind": "ssh",
+       "target": "taken.example.com",
+       "useConfig": false,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-3o4xl1toy2an5",
+      "name": "Gateway A",
+      "profile": {
+       "kind": "ssh",
+       "target": "ga.example.com",
+       "useConfig": false,
+       "proxyJump": [
+        "muxus-host:mobaxterm-jump-w6btevpegbqt"
+       ],
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-1zmhqi31mjyuw",
+      "name": "Gateway B",
+      "profile": {
+       "kind": "ssh",
+       "target": "gb.example.com",
+       "useConfig": false,
+       "proxyJump": [
+        "muxus-host:mobaxterm-jump-tyufv4ze1hso"
+       ],
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-rdp-2gaa8khql5zdw",
+      "name": "Gateway C",
+      "profile": {
+       "kind": "rdp",
+       "host": "gc.example.com",
+       "port": 3389,
+       "sshGateway": {
+        "target": "bastion.example.com",
+        "profileId": "mobaxterm-jump-tyufv4ze1hso"
+       }
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-32f8knbayo6dz",
+      "name": "Sparse hops",
+      "profile": {
+       "kind": "ssh",
+       "target": "sh.example.com",
+       "useConfig": false,
+       "proxyJump": [
+        "muxus-host:mobaxterm-jump-1w7ddle719o00"
+       ],
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-f0f0me3xjcxe",
+      "name": "IPv6 hop",
+      "profile": {
+       "kind": "ssh",
+       "target": "v6.example.com",
+       "useConfig": false,
+       "proxyJump": [
+        "muxus-host:mobaxterm-jump-1y1guaaz4ec17"
+       ],
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-98tzk5zgpqel",
+      "name": "Spaced name",
+      "profile": {
+       "kind": "ssh",
+       "target": "spaced.example.com",
+       "useConfig": false,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-2h7f9ahrtml2q",
+      "name": "Key flag",
+      "profile": {
+       "kind": "ssh",
+       "target": "flag.example.com",
+       "useConfig": false
+      },
+      "metadata": {
+       "group": "Ops/Core/Edge"
+      }
+     },
+     {
+      "id": "mobaxterm-ssh-2vf71a7dh43d",
+      "name": "Section seven",
+      "profile": {
+       "kind": "ssh",
+       "target": "seven.example.com",
+       "useConfig": false,
+       "passwordOnly": true
+      },
+      "metadata": {}
+     },
+     {
+      "id": "mobaxterm-ssh-30tt68qsmp6ob",
+      "name": "Root again",
+      "profile": {
+       "kind": "ssh",
+       "target": "root.example.com",
+       "useConfig": false,
+       "passwordOnly": true
+      },
+      "metadata": {}
+     },
+     {
+      "id": "mobaxterm-jump-w6btevpegbqt",
+      "name": "root@bastion.example.com",
+      "profile": {
+       "kind": "ssh",
+       "target": "bastion.example.com",
+       "useConfig": false,
+       "user": "root",
+       "identityFiles": [
+        "~/Documents/key"
+       ]
+      },
+      "metadata": {
+       "group": "MobaXterm jump hosts"
+      }
+     },
+     {
+      "id": "mobaxterm-jump-tyufv4ze1hso",
+      "name": "root@bastion.example.com (2)",
+      "profile": {
+       "kind": "ssh",
+       "target": "bastion.example.com",
+       "useConfig": false,
+       "user": "root",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "MobaXterm jump hosts"
+      }
+     },
+     {
+      "id": "mobaxterm-jump-1w7ddle719o00",
+      "name": "u3@c.example.com:2200 via a.example.com",
+      "profile": {
+       "kind": "ssh",
+       "target": "c.example.com",
+       "useConfig": false,
+       "user": "u3",
+       "port": 2200,
+       "passwordOnly": true,
+       "proxyJump": [
+        "muxus-host:mobaxterm-jump-1oz9v77xlgjel"
+       ]
+      },
+      "metadata": {
+       "group": "MobaXterm jump hosts"
+      }
+     },
+     {
+      "id": "mobaxterm-jump-1oz9v77xlgjel",
+      "name": "a.example.com",
+      "profile": {
+       "kind": "ssh",
+       "target": "a.example.com",
+       "useConfig": false,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "MobaXterm jump hosts"
+      }
+     },
+     {
+      "id": "mobaxterm-jump-1y1guaaz4ec17",
+      "name": "adm@in@fe80::1:2022",
+      "profile": {
+       "kind": "ssh",
+       "target": "fe80::1",
+       "useConfig": false,
+       "user": "adm@in",
+       "port": 2022,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "MobaXterm jump hosts"
+      }
+     }
+    ],
+    "hostOrder": []
+   }
+  },
+  {
+   "name": "noBookmarks",
+   "input": "[Misc]\nSession=#109#0%x.example.com%22%%\n",
+   "error": "No SSH, RDP or VNC sessions were found in this MobaXterm file."
+  }
+ ],
+ "securecrt": [
+  {
+   "name": "export",
+   "input": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<VanDyke version=\"3.0\">\n  <key name=\"Security\"><string name=\"Passphrase\">encrypted-secret</string></key>\n  <key name=\"Sessions\">\n    <key name=\"Customers &amp; labs\">\n      <key name=\"Europe\">\n        <key name=\"Core router\">\n          <dword name=\"Is Session\">1</dword>\n          <string name=\"Protocol Name\">SSH2</string>\n          <string name=\"Hostname\">router.example.test</string>\n          <string name=\"Username\">deploy</string>\n          <dword name=\"[SSH2] Port\">2222</dword>\n          <string name=\"SSH2 Authentications V2\">keyboard-interactive,password,gssapi</string>\n          <string name=\"Password V2\">encrypted-password</string>\n          <string name=\"Identity Filename V2\">/private/key/that/must/not/import</string>\n        </key>\n        <key name=\"Core router\">\n          <dword name=\"Is Session\">1</dword>\n          <string name=\"Protocol Name\">SSH2</string>\n          <string name=\"Hostname\">key.example.test</string>\n          <string name=\"Username\">root</string>\n          <dword name=\"[SSH2] Port\">70000</dword>\n          <string name=\"SSH2 Authentications V2\">publickey,password</string>\n        </key>\n      </key>\n      <key name=\"Bench console\">\n        <dword name=\"Is Session\">1</dword>\n        <string name=\"Protocol Name\">Serial</string>\n        <string name=\"Mac Com Port\">/dev/cu.usbserial-1234</string>\n        <dword name=\"Mac Baud Rate\">9600</dword>\n        <dword name=\"Mac Data Bits\">7</dword>\n        <dword name=\"Mac Stop Bits\">2</dword>\n        <dword name=\"Mac Parity\">2</dword>\n        <dword name=\"Mac CTS Flow\">1</dword>\n        <dword name=\"Mac XON Flow\">1</dword>\n      </key>\n      <key name=\"Empty folder\"/>\n    </key>\n    <key name=\"Local terminal\">\n      <dword name=\"Is Session\">1</dword>\n      <string name=\"Protocol Name\">Local Shell</string>\n    </key>\n    <key name=\"Broken SSH\">\n      <dword name=\"Is Session\">1</dword>\n      <string name=\"Protocol Name\">SSH2</string>\n      <string name=\"Hostname\"/>\n    </key>\n  </key>\n  <key name=\"Files\">\n    <key name=\"File 0\"><binary name=\"Contents\">private-key-bytes</binary></key>\n  </key>\n</VanDyke>",
+   "ok": {
+    "sessions": [
+     {
+      "id": "securecrt-session-zqw2m32g20ku",
+      "kind": "ssh",
+      "name": "Core router",
+      "alias": "Core-router",
+      "host": "router.example.test",
+      "port": 2222,
+      "username": "deploy",
+      "folder": "Customers & labs/Europe",
+      "authMode": "password"
+     },
+     {
+      "id": "securecrt-session-zqw2m32g20ku-2",
+      "kind": "ssh",
+      "name": "Core router",
+      "alias": "Core-router-2",
+      "host": "key.example.test",
+      "port": 22,
+      "username": "root",
+      "folder": "Customers & labs/Europe",
+      "authMode": "key"
+     },
+     {
+      "id": "securecrt-serial-3f7mjfjyzx1nn",
+      "kind": "serial",
+      "name": "Bench console",
+      "profileId": "securecrt-serial-3f7mjfjyzx1nn",
+      "path": "/dev/cu.usbserial-1234",
+      "baudRate": 9600,
+      "dataBits": 7,
+      "stopBits": 2,
+      "parity": "even",
+      "flowControl": "hardware",
+      "folder": "Customers & labs"
+     }
+    ],
+    "ignoredCount": 2,
+    "skippedSessions": [
+     {
+      "id": "securecrt-skipped-0",
+      "name": "Local terminal",
+      "reason": "Protocol “Local Shell” is not supported"
+     },
+     {
+      "id": "securecrt-skipped-1",
+      "name": "Broken SSH",
+      "reason": "SSH session has no hostname"
+     }
+    ]
+   },
+   "openssh": {
+    "sshHosts": [
+     {
+      "alias": "Core-router",
+      "aliases": [
+       "Core-router"
+      ],
+      "description": "Imported from SecureCRT.",
+      "options": {
+       "hostname": "router.example.test",
+       "user": "deploy",
+       "port": 2222,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Core router",
+       "group": "Customers & labs/Europe"
+      }
+     },
+     {
+      "alias": "Core-router-2",
+      "aliases": [
+       "Core-router-2"
+      ],
+      "description": "Imported from SecureCRT.",
+      "options": {
+       "hostname": "key.example.test",
+       "user": "root"
+      },
+      "metadata": {
+       "displayName": "Core router",
+       "group": "Customers & labs/Europe"
+      }
+     }
+    ],
+    "savedHosts": [
+     {
+      "id": "securecrt-serial-3f7mjfjyzx1nn",
+      "name": "Bench console",
+      "profile": {
+       "kind": "serial",
+       "path": "/dev/cu.usbserial-1234",
+       "baudRate": 9600,
+       "dataBits": 7,
+       "stopBits": 2,
+       "parity": "even",
+       "flowControl": "hardware"
+      },
+      "metadata": {
+       "group": "Customers & labs"
+      }
+     }
+    ],
+    "hostOrder": []
+   },
+   "muxus": {
+    "sshHosts": [],
+    "savedHosts": [
+     {
+      "id": "securecrt-ssh-3b5tvsxd4runs",
+      "name": "Core router",
+      "profile": {
+       "kind": "ssh",
+       "target": "router.example.test",
+       "useConfig": false,
+       "user": "deploy",
+       "port": 2222,
+       "passwordOnly": true
+      },
+      "metadata": {
+       "group": "Customers & labs/Europe"
+      }
+     },
+     {
+      "id": "securecrt-ssh-3e0qwcgyf9apz",
+      "name": "Core router",
+      "profile": {
+       "kind": "ssh",
+       "target": "key.example.test",
+       "useConfig": false,
+       "user": "root"
+      },
+      "metadata": {
+       "group": "Customers & labs/Europe"
+      }
+     },
+     {
+      "id": "securecrt-serial-3f7mjfjyzx1nn",
+      "name": "Bench console",
+      "profile": {
+       "kind": "serial",
+       "path": "/dev/cu.usbserial-1234",
+       "baudRate": 9600,
+       "dataBits": 7,
+       "stopBits": 2,
+       "parity": "even",
+       "flowControl": "hardware"
+      },
+      "metadata": {
+       "group": "Customers & labs"
+      }
+     }
+    ],
+    "hostOrder": []
+   }
+  },
+  {
+   "name": "unprefixedSerial",
+   "input": "\n      <VanDyke><key name=\"Sessions\"><key name=\"Console\">\n        <dword name=\"Is Session\">1</dword>\n        <string name=\"Protocol Name\">Serial</string>\n        <string name=\"Com Port\">COM4</string>\n        <dword name=\"Baud Rate\">115200</dword>\n        <dword name=\"Data Bits\">8</dword>\n        <dword name=\"Stop Bits\">1</dword>\n        <dword name=\"Parity\">4</dword>\n        <dword name=\"XON Flow\">1</dword>\n      </key></key></VanDyke>\n    ",
+   "ok": {
+    "sessions": [
+     {
+      "id": "securecrt-serial-3ubqqnd12fwru",
+      "kind": "serial",
+      "name": "Console",
+      "profileId": "securecrt-serial-3ubqqnd12fwru",
+      "path": "COM4",
+      "baudRate": 115200,
+      "dataBits": 8,
+      "stopBits": 1.5,
+      "parity": "space",
+      "flowControl": "software"
+     }
+    ],
+    "ignoredCount": 0,
+    "skippedSessions": []
+   },
+   "openssh": {
+    "sshHosts": [],
+    "savedHosts": [
+     {
+      "id": "securecrt-serial-3ubqqnd12fwru",
+      "name": "Console",
+      "profile": {
+       "kind": "serial",
+       "path": "COM4",
+       "baudRate": 115200,
+       "dataBits": 8,
+       "stopBits": 1.5,
+       "parity": "space",
+       "flowControl": "software"
+      },
+      "metadata": {}
+     }
+    ],
+    "hostOrder": []
+   },
+   "muxus": {
+    "sshHosts": [],
+    "savedHosts": [
+     {
+      "id": "securecrt-serial-3ubqqnd12fwru",
+      "name": "Console",
+      "profile": {
+       "kind": "serial",
+       "path": "COM4",
+       "baudRate": 115200,
+       "dataBits": 8,
+       "stopBits": 1.5,
+       "parity": "space",
+       "flowControl": "software"
+      },
+      "metadata": {}
+     }
+    ],
+    "hostOrder": []
+   }
+  },
+  {
+   "name": "doctype",
+   "input": "<!DOCTYPE x><VanDyke/>",
+   "error": "SecureCRT XML with declarations or entities is not supported."
+  },
+  {
+   "name": "entity",
+   "input": "<VanDyke><!-- x --><! entity y></VanDyke>",
+   "error": "SecureCRT XML with declarations or entities is not supported."
+  },
+  {
+   "name": "otherRoot",
+   "input": "<Other/>",
+   "error": "That is not a valid SecureCRT XML export."
+  },
+  {
+   "name": "noSessions",
+   "input": "<VanDyke/>",
+   "error": "No SecureCRT Sessions section was found in this XML file."
+  },
+  {
+   "name": "malformed",
+   "input": "<VanDyke><key></VanDyke>",
+   "error": "That SecureCRT XML file is malformed."
+  },
+  {
+   "name": "unsupportedOnly",
+   "input": "\n        <VanDyke><key name=\"Sessions\"><key name=\"Shell\">\n          <dword name=\"Is Session\">1</dword>\n          <string name=\"Protocol Name\">Local Shell</string>\n        </key></key></VanDyke>\n      ",
+   "error": "No supported SSH or serial sessions were found in this SecureCRT file."
+  },
+  {
+   "name": "parserErrorElement",
+   "input": "<VanDyke><key name=\"Sessions\"><parsererror/><key name=\"A\"><dword name=\"Is Session\">1</dword></key></key></VanDyke>",
+   "error": "That is not a valid SecureCRT XML export."
+  },
+  {
+   "name": "prefixedRoot",
+   "input": "<x:VanDyke xmlns:x=\"urn:x\"><key name=\"Sessions\"/></x:VanDyke>",
+   "error": "That is not a valid SecureCRT XML export."
+  },
+  {
+   "name": "edgeCases",
+   "input": "<VanDyke>\n  <key name=\"Ignored first\"/>\n  <key name=\"Sessions\">\n    <key name=\"A/B\\C\">\n      <key name=\"\">\n        <key name=\"Nested\">\n          <dword name=\"Is Session\">1</dword>\n          <string name=\"Protocol Name\">ssh2</string>\n          <string name=\"Hostname\"><![CDATA[cdata.example.test]]></string>\n          <string name=\"Username\">us\"er</string>\n          <dword name=\"[SSH2] Port\">22abc</dword>\n          <string name=\"SSH2 Authentications V2\"> PublicKey </string>\n        </key>\n      </key>\n      <key name=\"Nested\">\n        <dword name=\"Is Session\">1</dword>\n        <string name=\"Protocol Name\">SSH2</string>\n        <string name=\"Hostname\">second.example.test</string>\n        <dword name=\"[SSH2] Port\">0</dword>\n        <string name=\"SSH2 Authentications V2\">gssapi</string>\n      </key>\n    </key>\n    <key name=\"Dup\">\n      <dword name=\"Is Session\">1</dword>\n      <string name=\"Protocol Name\">SSH2</string>\n      <string name=\"Hostname\">dup1.example.test</string>\n      <string name=\"SSH2 Authentications V2\">password</string>\n    </key>\n    <key name=\"Dup\">\n      <dword name=\"Is Session\">1</dword>\n      <string name=\"Protocol Name\">SSH2</string>\n      <string name=\"Hostname\">dup2.example.test</string>\n      <string name=\"SSH2 Authentications V2\">keyboard-interactive</string>\n    </key>\n    <key name=\"Dup\">\n      <dword name=\"Is Session\">1</dword>\n      <string name=\"Protocol Name\">Serial</string>\n      <string name=\"Port\">/dev/ttyS0</string>\n      <string name=\"Com Port\">COM9</string>\n      <dword name=\"Baud Rate\">0</dword>\n      <dword name=\"Data Bits\">9</dword>\n      <dword name=\"Stop Bits\">0</dword>\n      <dword name=\"Parity\">3</dword>\n      <dword name=\"DTR Flow Control\">2</dword>\n    </key>\n    <key name=\"Dup\">\n      <dword name=\"Is Session\">1</dword>\n      <string name=\"Protocol Name\">Serial</string>\n      <string name=\"Com Port\">COM10</string>\n      <dword name=\"Baud Rate\">12000001</dword>\n      <dword name=\"Parity\">-1</dword>\n      <dword name=\"RTS Flow Control\">2</dword>\n    </key>\n    <key name=\"DSR\">\n      <dword name=\"Is Session\">1</dword>\n      <string name=\"Protocol Name\">Serial</string>\n      <string name=\"Com Port\">COM11</string>\n      <dword name=\"DSR Flow\">1</dword>\n      <dword name=\"Data Bits\">5</dword>\n    </key>\n    <key name=\"No port\">\n      <dword name=\"Is Session\">1</dword>\n      <string name=\"Protocol Name\">Serial</string>\n    </key>\n    <key name=\"  \">\n      <dword name=\"Is Session\">1</dword>\n      <string name=\"Protocol Name\">SSH2</string>\n      <string name=\"Hostname\">nameless.example.test</string>\n    </key>\n    <key>\n      <dword name=\"Is Session\">1</dword>\n      <string name=\"Protocol Name\">SSH2</string>\n      <string name=\"Hostname\">\"quoted\"</string>\n    </key>\n    <key name=\"Telnet box\">\n      <dword name=\"Is Session\">1</dword>\n      <string name=\"Protocol Name\">Telnet</string>\n    </key>\n    <key name=\"No protocol\">\n      <dword name=\"Is Session\">1</dword>\n    </key>\n    <key name=\"Not a session\">\n      <dword name=\"Is Session\">0</dword>\n      <key name=\"Child &lt;1&gt;\">\n        <dword name=\"Is Session\">1</dword>\n        <string name=\"Protocol Name\">SSH2</string>\n        <string name=\"Hostname\">child.example.test</string>\n        <string name=\"Username\">  </string>\n      </key>\n    </key>\n  </key>\n</VanDyke>",
+   "ok": {
+    "sessions": [
+     {
+      "id": "securecrt-session-29qvinnyn4tb",
+      "kind": "ssh",
+      "name": "Nested",
+      "alias": "Nested",
+      "host": "cdata.example.test",
+      "port": 22,
+      "folder": "A/B/C",
+      "authMode": "key"
+     },
+     {
+      "id": "securecrt-session-p9smr00jkr0n",
+      "kind": "ssh",
+      "name": "Nested",
+      "alias": "Nested-2",
+      "host": "second.example.test",
+      "port": 22,
+      "folder": "A/B/C",
+      "authMode": "key"
+     },
+     {
+      "id": "securecrt-session-3ev4nfdys7r7q",
+      "kind": "ssh",
+      "name": "Dup",
+      "alias": "Dup",
+      "host": "dup1.example.test",
+      "port": 22,
+      "authMode": "password"
+     },
+     {
+      "id": "securecrt-session-3ev4nfdys7r7q-2",
+      "kind": "ssh",
+      "name": "Dup",
+      "alias": "Dup-2",
+      "host": "dup2.example.test",
+      "port": 22,
+      "authMode": "password"
+     },
+     {
+      "id": "securecrt-serial-3ev4nfdys7r7q",
+      "kind": "serial",
+      "name": "Dup",
+      "profileId": "securecrt-serial-3ev4nfdys7r7q",
+      "path": "/dev/ttyS0",
+      "baudRate": 115200,
+      "dataBits": 8,
+      "stopBits": 1,
+      "parity": "mark",
+      "flowControl": "hardware"
+     },
+     {
+      "id": "securecrt-serial-3ev4nfdys7r7q-2",
+      "kind": "serial",
+      "name": "Dup",
+      "profileId": "securecrt-serial-3ev4nfdys7r7q-2",
+      "path": "COM10",
+      "baudRate": 115200,
+      "dataBits": 8,
+      "stopBits": 1,
+      "parity": "none",
+      "flowControl": "hardware"
+     },
+     {
+      "id": "securecrt-serial-3el6r9blcruty",
+      "kind": "serial",
+      "name": "DSR",
+      "profileId": "securecrt-serial-3el6r9blcruty",
+      "path": "COM11",
+      "baudRate": 115200,
+      "dataBits": 5,
+      "stopBits": 1,
+      "parity": "none",
+      "flowControl": "hardware"
+     },
+     {
+      "id": "securecrt-session-3lvuem7k6hrwk",
+      "kind": "ssh",
+      "name": "Child <1>",
+      "alias": "Child-<1>",
+      "host": "child.example.test",
+      "port": 22,
+      "folder": "Not a session",
+      "authMode": "key"
+     }
+    ],
+    "ignoredCount": 5,
+    "skippedSessions": [
+     {
+      "id": "securecrt-skipped-0",
+      "name": "No port",
+      "reason": "Serial session has no port"
+     },
+     {
+      "id": "securecrt-skipped-1",
+      "name": "nameless.example.test",
+      "reason": "Session has no name"
+     },
+     {
+      "id": "securecrt-skipped-2",
+      "name": "Unnamed session",
+      "reason": "Session has no name"
+     },
+     {
+      "id": "securecrt-skipped-3",
+      "name": "Telnet box",
+      "reason": "Protocol “Telnet” is not supported"
+     },
+     {
+      "id": "securecrt-skipped-4",
+      "name": "No protocol",
+      "reason": "Session does not specify a supported protocol"
+     }
+    ]
+   },
+   "openssh": {
+    "sshHosts": [
+     {
+      "alias": "Nested",
+      "aliases": [
+       "Nested"
+      ],
+      "description": "Imported from SecureCRT.",
+      "options": {
+       "hostname": "cdata.example.test"
+      },
+      "metadata": {
+       "displayName": "Nested",
+       "group": "A/B/C"
+      }
+     },
+     {
+      "alias": "Nested-2",
+      "aliases": [
+       "Nested-2"
+      ],
+      "description": "Imported from SecureCRT.",
+      "options": {
+       "hostname": "second.example.test"
+      },
+      "metadata": {
+       "displayName": "Nested",
+       "group": "A/B/C"
+      }
+     },
+     {
+      "alias": "Dup",
+      "aliases": [
+       "Dup"
+      ],
+      "description": "Imported from SecureCRT.",
+      "options": {
+       "hostname": "dup1.example.test",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Dup"
+      }
+     },
+     {
+      "alias": "Dup-2",
+      "aliases": [
+       "Dup-2"
+      ],
+      "description": "Imported from SecureCRT.",
+      "options": {
+       "hostname": "dup2.example.test",
+       "passwordOnly": true
+      },
+      "metadata": {
+       "displayName": "Dup"
+      }
+     },
+     {
+      "alias": "Child-<1>",
+      "aliases": [
+       "Child-<1>"
+      ],
+      "description": "Imported from SecureCRT.",
+      "options": {
+       "hostname": "child.example.test"
+      },
+      "metadata": {
+       "displayName": "Child <1>",
+       "group": "Not a session"
+      }
+     }
+    ],
+    "savedHosts": [
+     {
+      "id": "securecrt-serial-3ev4nfdys7r7q",
+      "name": "Dup",
+      "profile": {
+       "kind": "serial",
+       "path": "/dev/ttyS0",
+       "baudRate": 115200,
+       "dataBits": 8,
+       "stopBits": 1,
+       "parity": "mark",
+       "flowControl": "hardware"
+      },
+      "metadata": {}
+     },
+     {
+      "id": "securecrt-serial-3ev4nfdys7r7q-2",
+      "name": "Dup",
+      "profile": {
+       "kind": "serial",
+       "path": "COM10",
+       "baudRate": 115200,
+       "dataBits": 8,
+       "stopBits": 1,
+       "parity": "none",
+       "flowControl": "hardware"
+      },
+      "metadata": {}
+     },
+     {
+      "id": "securecrt-serial-3el6r9blcruty",
+      "name": "DSR",
+      "profile": {
+       "kind": "serial",
+       "path": "COM11",
+       "baudRate": 115200,
+       "dataBits": 5,
+       "stopBits": 1,
+       "parity": "none",
+       "flowControl": "hardware"
+      },
+      "metadata": {}
+     }
+    ],
+    "hostOrder": []
+   },
+   "muxus": {
+    "sshHosts": [],
+    "savedHosts": [
+     {
+      "id": "securecrt-ssh-25grojtgi1di5",
+      "name": "Nested",
+      "profile": {
+       "kind": "ssh",
+       "target": "cdata.example.test",
+       "useConfig": false
+      },
+      "metadata": {
+       "group": "A/B/C"
+      }
+     },
+     {
+      "id": "securecrt-ssh-ngpwm4a0iw49",
+      "name": "Nested",
+      "profile": {
+       "kind": "ssh",
+       "target": "second.example.test",
+       "useConfig": false
+      },
+      "metadata": {
+       "group": "A/B/C"
+      }
+     },
+     {
+      "id": "securecrt-ssh-30nr1ovvh83es",
+      "name": "Dup",
+      "profile": {
+       "kind": "ssh",
+       "target": "dup1.example.test",
+       "useConfig": false,
+       "passwordOnly": true
+      },
+      "metadata": {}
+     },
+     {
+      "id": "securecrt-ssh-fbyu5376gawr",
+      "name": "Dup",
+      "profile": {
+       "kind": "ssh",
+       "target": "dup2.example.test",
+       "useConfig": false,
+       "passwordOnly": true
+      },
+      "metadata": {}
+     },
+     {
+      "id": "securecrt-serial-3ev4nfdys7r7q",
+      "name": "Dup",
+      "profile": {
+       "kind": "serial",
+       "path": "/dev/ttyS0",
+       "baudRate": 115200,
+       "dataBits": 8,
+       "stopBits": 1,
+       "parity": "mark",
+       "flowControl": "hardware"
+      },
+      "metadata": {}
+     },
+     {
+      "id": "securecrt-serial-3ev4nfdys7r7q-2",
+      "name": "Dup",
+      "profile": {
+       "kind": "serial",
+       "path": "COM10",
+       "baudRate": 115200,
+       "dataBits": 8,
+       "stopBits": 1,
+       "parity": "none",
+       "flowControl": "hardware"
+      },
+      "metadata": {}
+     },
+     {
+      "id": "securecrt-serial-3el6r9blcruty",
+      "name": "DSR",
+      "profile": {
+       "kind": "serial",
+       "path": "COM11",
+       "baudRate": 115200,
+       "dataBits": 5,
+       "stopBits": 1,
+       "parity": "none",
+       "flowControl": "hardware"
+      },
+      "metadata": {}
+     },
+     {
+      "id": "securecrt-ssh-48gu4xsz844b",
+      "name": "Child <1>",
+      "profile": {
+       "kind": "ssh",
+       "target": "child.example.test",
+       "useConfig": false
+      },
+      "metadata": {
+       "group": "Not a session"
+      }
+     }
+    ],
+    "hostOrder": []
+   }
+  }
+ ],
+ "ids": [
+  {
+   "prefix": "x",
+   "value": "",
+   "id": "x-33niihzj4ux45"
+  },
+  {
+   "prefix": "mobaxterm-session",
+   "value": "\u0000web",
+   "id": "mobaxterm-session-1p20jyeed415r"
+  },
+  {
+   "prefix": "mobaxterm-jump",
+   "value": "\u0000bastion\u00002222\u0000jump\u0000",
+   "id": "mobaxterm-jump-1jeyhflrd9haf"
+  },
+  {
+   "prefix": "securecrt-serial",
+   "value": "A\u0000B",
+   "id": "securecrt-serial-3tf1otlg25xpu"
+  },
+  {
+   "prefix": "p",
+   "value": "Häuser 🚀 􏿿",
+   "id": "p-1vgv158ywvbsn"
+  }
+ ],
+ "folders": [
+  {
+   "input": "Production\\Europe",
+   "output": "Production/Europe"
+  },
+  {
+   "input": " / a //\u0001b/ ",
+   "output": "a/b"
+  },
+  {
+   "input": "",
+   "output": null
+  },
+  {
+   "input": " \\ / ",
+   "output": null
+  },
+  {
+   "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/b",
+   "output": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "input": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé/üüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüü",
+   "output": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé/üüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüüü"
+  },
+  {
+   "input": "x/🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀",
+   "output": "x/🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀"
+  }
+ ],
+ "names": [
+  {
+   "input": " a\u0001b ",
+   "output": "ab"
+  },
+  {
+   "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+   "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx y",
+   "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+   "input": "🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀",
+   "output": "🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀"
+  },
+  {
+   "input": "c1",
+   "output": "c1"
+  }
+ ],
+ "aliases": [
+  {
+   "name": "My host!",
+   "host": "h",
+   "used": [],
+   "fallback": "x",
+   "output": "My-host"
+  },
+  {
+   "name": "  #*  ",
+   "host": "a b",
+   "used": [],
+   "fallback": "x",
+   "output": "a-b"
+  },
+  {
+   "name": "",
+   "host": "",
+   "used": [],
+   "fallback": "fallback",
+   "output": "fallback"
+  },
+  {
+   "name": "web",
+   "host": "",
+   "used": [
+    "web",
+    "web-2"
+   ],
+   "fallback": "x",
+   "output": "web-3"
+  },
+  {
+   "name": "--a--b--",
+   "host": "",
+   "used": [],
+   "fallback": "x",
+   "output": "a--b"
+  },
+  {
+   "name": "a　 b\tc",
+   "host": "",
+   "used": [],
+   "fallback": "x",
+   "output": "a-bc"
+  },
+  {
+   "name": "🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀",
+   "host": "",
+   "used": [],
+   "fallback": "x",
+   "output": "🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀"
+  }
+ ],
+ "collation": {
+  "input": [
+   "b",
+   "A",
+   "a",
+   "B",
+   "ab",
+   "Aa",
+   "e",
+   "é",
+   "E",
+   "f",
+   "É",
+   "ß",
+   "ss",
+   "st",
+   "1",
+   "10",
+   "9",
+   "_",
+   " ",
+   "-",
+   "a-b",
+   "a b",
+   "a_b",
+   "a.b",
+   "a/b",
+   "a~b",
+   "a$b",
+   "Lab",
+   "lab",
+   "Production",
+   "Production/EU",
+   "Production/EU/Core",
+   "Prod",
+   "Ungrouped",
+   "Ungrouped · lab",
+   "Hosts",
+   "edge-1",
+   "Edge-2",
+   "edge10",
+   "edge2",
+   "z",
+   "Z",
+   "zz",
+   "",
+   "!",
+   "#",
+   "@",
+   "[x]",
+   "(x)",
+   "{x}",
+   "'q'",
+   "\"q\"",
+   "a,b",
+   "a;b",
+   "a:b",
+   "a?b",
+   "a&b",
+   "a%b",
+   "a`b",
+   "a^b",
+   "a+b",
+   "a<b",
+   "a=b",
+   "a>b",
+   "a|b",
+   "a\\b",
+   "a*b"
+  ],
+  "sorted": [
+   "",
+   " ",
+   "_",
+   "-",
+   "!",
+   "'q'",
+   "\"q\"",
+   "(x)",
+   "[x]",
+   "{x}",
+   "@",
+   "#",
+   "1",
+   "10",
+   "9",
+   "a",
+   "A",
+   "a b",
+   "a_b",
+   "a-b",
+   "a,b",
+   "a;b",
+   "a:b",
+   "a?b",
+   "a.b",
+   "a*b",
+   "a/b",
+   "a\\b",
+   "a&b",
+   "a%b",
+   "a`b",
+   "a^b",
+   "a+b",
+   "a<b",
+   "a=b",
+   "a>b",
+   "a|b",
+   "a~b",
+   "a$b",
+   "Aa",
+   "ab",
+   "b",
+   "B",
+   "e",
+   "E",
+   "é",
+   "É",
+   "edge-1",
+   "Edge-2",
+   "edge10",
+   "edge2",
+   "f",
+   "Hosts",
+   "lab",
+   "Lab",
+   "Prod",
+   "Production",
+   "Production/EU",
+   "Production/EU/Core",
+   "ss",
+   "ß",
+   "st",
+   "Ungrouped",
+   "Ungrouped · lab",
+   "z",
+   "Z",
+   "zz"
+  ]
+ },
+ "argv": [
+  {
+   "argv": [
+    "muxus",
+    "--host",
+    "edge-1"
+   ],
+   "launch": {
+    "kind": "host",
+    "name": "edge-1"
+   }
+  },
+  {
+   "argv": [
+    "electron",
+    ".",
+    "--inspect=9229",
+    "--folder=Production/EU"
+   ],
+   "launch": {
+    "kind": "folder",
+    "name": "Production/EU"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "--workspace",
+    "Night shift"
+   ],
+   "launch": {
+    "kind": "workspace",
+    "name": "Night shift"
+   }
+  },
+  {
+   "argv": [
+    "muxus"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "--no-sandbox"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "--host"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "--host="
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "--host",
+    "--workspace",
+    "Lab"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "--host",
+    "edge",
+    "--folder",
+    "Lab"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "--host=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "--host=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   ],
+   "launch": {
+    "kind": "host",
+    "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "--host",
+    "  spaced  "
+   ],
+   "launch": {
+    "kind": "host",
+    "name": "spaced"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "--connect",
+    "admin@10.10.10.1"
+   ],
+   "launch": {
+    "kind": "connect",
+    "name": "admin@10.10.10.1"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "--connect=admin@10.10.10.1:2222"
+   ],
+   "launch": {
+    "kind": "connect",
+    "name": "admin@10.10.10.1:2222"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "--connect",
+    "edge-1.example.test"
+   ],
+   "launch": {
+    "kind": "connect",
+    "name": "edge-1.example.test"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "--connect",
+    "10.10.10.1",
+    "--user",
+    "admin",
+    "--port",
+    "2222"
+   ],
+   "launch": {
+    "kind": "connect",
+    "name": "admin@10.10.10.1:2222"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "--port=2222",
+    "--user=admin",
+    "--connect=10.10.10.1"
+   ],
+   "launch": {
+    "kind": "connect",
+    "name": "admin@10.10.10.1:2222"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "--connect",
+    "edge",
+    "--port",
+    "0022"
+   ],
+   "launch": {
+    "kind": "connect",
+    "name": "edge:22"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "--connect",
+    "admin@edge",
+    "--user",
+    "root"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "--connect",
+    "edge:22",
+    "--port",
+    "2222"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "--connect",
+    "edge",
+    "--port",
+    "22",
+    "--port",
+    "23"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "--host",
+    "edge",
+    "--port",
+    "22"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "--user",
+    "admin"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "--connect",
+    "edge",
+    "--user",
+    "a|b"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "/opt/Muxus/muxus",
+    "ssh://admin@10.0.0.1:2222"
+   ],
+   "launch": {
+    "kind": "url",
+    "name": "ssh://admin@10.0.0.1:2222"
+   }
+  },
+  {
+   "argv": [
+    "C:\\Muxus\\Muxus.exe",
+    "telnet://switch:23"
+   ],
+   "launch": {
+    "kind": "url",
+    "name": "telnet://switch:23"
+   }
+  },
+  {
+   "argv": [
+    "electron",
+    "/src/muxus/electron",
+    "--no-sandbox",
+    "ssh://edge"
+   ],
+   "launch": {
+    "kind": "url",
+    "name": "ssh://edge"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "ssh://-oProxyCommand=id"
+   ],
+   "launch": {
+    "kind": "url",
+    "name": "ssh://-oProxyCommand=id"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "sftp://host"
+   ],
+   "launch": {
+    "kind": "url",
+    "name": "sftp://host"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "ssh:host"
+   ],
+   "launch": {
+    "kind": "url",
+    "name": "ssh:host"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "SSH:host"
+   ],
+   "launch": {
+    "kind": "url",
+    "name": "SSH:host"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "ssh://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   ],
+   "launch": {
+    "kind": "url",
+    "name": "ssh://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   }
+  },
+  {
+   "argv": [
+    "ssh://not-a-link"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "--host",
+    "ssh://edge"
+   ],
+   "launch": {
+    "kind": "host",
+    "name": "ssh://edge"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "--inspect=ssh://x"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "ssh://a",
+    "ssh://b"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "--host",
+    "edge",
+    "ssh://a"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "ssh://a",
+    "--user",
+    "root"
+   ],
+   "launch": null
+  },
+  {
+   "argv": [
+    "muxus",
+    "--connect",
+    "[fe80::1]:22"
+   ],
+   "launch": {
+    "kind": "connect",
+    "name": "[fe80::1]:22"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "--connect",
+    "fe80::1",
+    "--port",
+    "22"
+   ],
+   "launch": {
+    "kind": "connect",
+    "name": "[fe80::1]:22"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "--connect=  admin@edge  "
+   ],
+   "launch": {
+    "kind": "connect",
+    "name": "admin@edge"
+   }
+  },
+  {
+   "argv": [
+    "muxus",
+    "plain-argument",
+    "--host",
+    "x"
+   ],
+   "launch": {
+    "kind": "host",
+    "name": "x"
+   }
+  }
+ ],
+ "launchData": [
+  {
+   "value": {
+    "kind": "workspace",
+    "name": " Night shift "
+   },
+   "launch": {
+    "kind": "workspace",
+    "name": "Night shift"
+   }
+  },
+  {
+   "value": {
+    "kind": "host",
+    "name": "edge-1"
+   },
+   "launch": {
+    "kind": "host",
+    "name": "edge-1"
+   }
+  },
+  {
+   "value": {
+    "kind": "unknown",
+    "name": "edge-1"
+   },
+   "launch": null
+  },
+  {
+   "value": {
+    "kind": "folder",
+    "name": ""
+   },
+   "launch": null
+  },
+  {
+   "value": {
+    "kind": "folder",
+    "name": "   "
+   },
+   "launch": null
+  },
+  {
+   "value": {
+    "kind": "connect",
+    "name": "admin@10.10.10.1:2222"
+   },
+   "launch": {
+    "kind": "connect",
+    "name": "admin@10.10.10.1:2222"
+   }
+  },
+  {
+   "value": {
+    "kind": "connect",
+    "name": "[fe80::1]:2222"
+   },
+   "launch": {
+    "kind": "connect",
+    "name": "[fe80::1]:2222"
+   }
+  },
+  {
+   "value": {
+    "kind": "connect",
+    "name": "edge;reboot"
+   },
+   "launch": null
+  },
+  {
+   "value": {
+    "kind": "connect",
+    "name": " edge "
+   },
+   "launch": {
+    "kind": "connect",
+    "name": "edge"
+   }
+  },
+  {
+   "value": {
+    "kind": "url",
+    "name": "ssh://edge"
+   },
+   "launch": {
+    "kind": "url",
+    "name": "ssh://edge"
+   }
+  },
+  {
+   "value": {
+    "kind": "url",
+    "name": "--host=edge"
+   },
+   "launch": null
+  },
+  {
+   "value": {
+    "kind": "url",
+    "name": 42
+   },
+   "launch": null
+  },
+  {
+   "value": {
+    "kind": "host",
+    "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   },
+   "launch": null
+  },
+  {
+   "value": {
+    "kind": "host"
+   },
+   "launch": null
+  },
+  {
+   "value": null,
+   "launch": null
+  },
+  {
+   "value": "host",
+   "launch": null
+  },
+  {
+   "value": [],
+   "launch": null
+  }
+ ],
+ "connectTargets": [
+  {
+   "target": "fe80::1",
+   "options": {},
+   "output": "fe80::1"
+  },
+  {
+   "target": "admin@fe80::1",
+   "options": {
+    "port": "2222"
+   },
+   "output": "admin@[fe80::1]:2222"
+  },
+  {
+   "target": "[2001:db8::5]:830",
+   "options": {},
+   "output": "[2001:db8::5]:830"
+  },
+  {
+   "target": "[2001:db8::5]",
+   "options": {},
+   "output": "2001:db8::5"
+  },
+  {
+   "target": "fe80::1%eth0",
+   "options": {
+    "port": "22"
+   },
+   "output": "[fe80::1%eth0]:22"
+  },
+  {
+   "target": "[edge]:22",
+   "options": {},
+   "output": "edge:22"
+  },
+  {
+   "target": "[edge]:",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "[]:22",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "[a]b",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "a@b@edge",
+   "options": {},
+   "output": "a@b@edge"
+  },
+  {
+   "target": "edge:0",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "edge:65536",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "edge:",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "edge:ssh",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "@edge",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "admin@",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "-oProxyCommand=sh",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "admin@-edge",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "edge;reboot",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "edge$(id)",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "ad min@edge",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "`id`@edge",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "[edge;id]:22",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "edge:00022",
+   "options": {},
+   "output": "edge:22"
+  },
+  {
+   "target": "edge:123456",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": ".edge",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "options": {},
+   "output": null
+  },
+  {
+   "target": "edge",
+   "options": {
+    "user": "-oProxyCommand=sh"
+   },
+   "output": null
+  },
+  {
+   "target": "edge",
+   "options": {
+    "port": "22;id"
+   },
+   "output": null
+  },
+  {
+   "target": "edge",
+   "options": {
+    "user": "root",
+    "port": "2200"
+   },
+   "output": "root@edge:2200"
+  }
+ ]
+}

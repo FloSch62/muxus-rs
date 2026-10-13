@@ -1,0 +1,22 @@
+[package]
+name = "muxus-core"
+description = "Shared types, protocol and pure helpers (port of shared/src)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-channel = "2"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+percent-encoding = "2"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+# Arbitrary JSON (workspace layouts, saved requests) must keep the key order
+# the TypeScript wrote, so maps preserve insertion order.
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_with = { version = "3", default-features = false, features = ["macros", "std"] }
+thiserror = "2"
+
+[lints]
+workspace = true

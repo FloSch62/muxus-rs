@@ -1,0 +1,23 @@
+[package]
+name = "muxus-serial"
+description = "Serial port transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+muxus-core.workspace = true
+async-channel = "2"
+serialport = { version = "4.7", default-features = false }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "test-util", "time"] }
+
+[lints]
+workspace = true

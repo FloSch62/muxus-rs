@@ -1,0 +1,266 @@
+{
+ "ids": {
+  "core": "z-Zlal-SKCQzJKfo9Zkxo",
+  "shell": "_gE89mH6KgRp67BS05rqr"
+ },
+ "all": {
+  "sessions": [
+   {
+    "id": "_gE89mH6KgRp67BS05rqr",
+    "profileKey": "local",
+    "title": "Shell",
+    "kind": "local",
+    "host": "local",
+    "startedAt": "2026-03-01T09:00:06.000Z",
+    "endedAt": "2026-03-01T09:00:08.000Z",
+    "status": "disconnected",
+    "paused": false,
+    "captureInput": false,
+    "pinned": false,
+    "eventCount": 1,
+    "rawBytes": 23,
+    "normalizedBytes": 23,
+    "partCount": 1
+   },
+   {
+    "id": "z-Zlal-SKCQzJKfo9Zkxo",
+    "profileKey": "ssh:core",
+    "title": "Core router",
+    "label": "Pre-change",
+    "kind": "ssh",
+    "host": "admin@core",
+    "startedAt": "2026-03-01T09:00:00.000Z",
+    "endedAt": "2026-03-01T09:00:05.000Z",
+    "status": "completed",
+    "paused": false,
+    "captureInput": true,
+    "pinned": true,
+    "eventCount": 4,
+    "rawBytes": 85,
+    "normalizedBytes": 64,
+    "partCount": 3
+   }
+  ]
+ },
+ "neighbor": {
+  "sessions": [
+   {
+    "id": "z-Zlal-SKCQzJKfo9Zkxo",
+    "profileKey": "ssh:core",
+    "title": "Core router",
+    "label": "Pre-change",
+    "kind": "ssh",
+    "host": "admin@core",
+    "startedAt": "2026-03-01T09:00:00.000Z",
+    "endedAt": "2026-03-01T09:00:05.000Z",
+    "status": "completed",
+    "paused": false,
+    "captureInput": true,
+    "pinned": true,
+    "eventCount": 4,
+    "rawBytes": 85,
+    "normalizedBytes": 64,
+    "partCount": 3,
+    "snippet": "BGP \u0001neighbor\u0002 \u000110.0\u0002.0.2 Established\n",
+    "matchCount": 1
+   }
+  ]
+ },
+ "byName": {
+  "sessions": [
+   {
+    "id": "z-Zlal-SKCQzJKfo9Zkxo",
+    "profileKey": "ssh:core",
+    "title": "Core router",
+    "label": "Pre-change",
+    "kind": "ssh",
+    "host": "admin@core",
+    "startedAt": "2026-03-01T09:00:00.000Z",
+    "endedAt": "2026-03-01T09:00:05.000Z",
+    "status": "completed",
+    "paused": false,
+    "captureInput": true,
+    "pinned": true,
+    "eventCount": 4,
+    "rawBytes": 85,
+    "normalizedBytes": 64,
+    "partCount": 3
+   }
+  ]
+ },
+ "page": {
+  "sessions": [
+   {
+    "id": "_gE89mH6KgRp67BS05rqr",
+    "profileKey": "local",
+    "title": "Shell",
+    "kind": "local",
+    "host": "local",
+    "startedAt": "2026-03-01T09:00:06.000Z",
+    "endedAt": "2026-03-01T09:00:08.000Z",
+    "status": "disconnected",
+    "paused": false,
+    "captureInput": false,
+    "pinned": false,
+    "eventCount": 1,
+    "rawBytes": 23,
+    "normalizedBytes": 23,
+    "partCount": 1
+   }
+  ],
+  "nextCursor": "WyIyMDI2LTAzLTAxVDA5OjAwOjA2LjAwMFoiLCJfZ0U4OW1INktnUnA2N0JTMDVycXIiXQ"
+ },
+ "coreDetail": {
+  "id": "z-Zlal-SKCQzJKfo9Zkxo",
+  "profileKey": "ssh:core",
+  "title": "Core router",
+  "label": "Pre-change",
+  "kind": "ssh",
+  "host": "admin@core",
+  "startedAt": "2026-03-01T09:00:00.000Z",
+  "endedAt": "2026-03-01T09:00:05.000Z",
+  "status": "completed",
+  "paused": false,
+  "captureInput": true,
+  "pinned": true,
+  "eventCount": 4,
+  "rawBytes": 85,
+  "normalizedBytes": 64,
+  "partCount": 3,
+  "events": [
+   {
+    "sequence": 1,
+    "recordedAt": "2026-03-01T09:00:01.000Z",
+    "elapsedMs": 1000,
+    "direction": "output",
+    "text": "core# show bgp summary\n",
+    "lineTimestamps": [
+     {
+      "offset": 0,
+      "recordedAt": "2026-03-01T09:00:01.000Z"
+     }
+    ]
+   },
+   {
+    "sequence": 2,
+    "recordedAt": "2026-03-01T09:00:02.000Z",
+    "elapsedMs": 2000,
+    "direction": "input",
+    "text": "conf t\n"
+   },
+   {
+    "sequence": 3,
+    "recordedAt": "2026-03-01T09:00:03.000Z",
+    "elapsedMs": 3000,
+    "direction": "output",
+    "text": "BGP neighbor 10.0.0.2 Established\n"
+   }
+  ],
+  "eventsTruncated": false
+ },
+ "coreLimited": {
+  "id": "z-Zlal-SKCQzJKfo9Zkxo",
+  "profileKey": "ssh:core",
+  "title": "Core router",
+  "label": "Pre-change",
+  "kind": "ssh",
+  "host": "admin@core",
+  "startedAt": "2026-03-01T09:00:00.000Z",
+  "endedAt": "2026-03-01T09:00:05.000Z",
+  "status": "completed",
+  "paused": false,
+  "captureInput": true,
+  "pinned": true,
+  "eventCount": 4,
+  "rawBytes": 85,
+  "normalizedBytes": 64,
+  "partCount": 3,
+  "events": [
+   {
+    "sequence": 1,
+    "recordedAt": "2026-03-01T09:00:01.000Z",
+    "elapsedMs": 1000,
+    "direction": "output",
+    "text": "core# show bgp summary\n",
+    "lineTimestamps": [
+     {
+      "offset": 0,
+      "recordedAt": "2026-03-01T09:00:01.000Z"
+     }
+    ]
+   }
+  ],
+  "eventsTruncated": true
+ },
+ "shellDetail": {
+  "id": "_gE89mH6KgRp67BS05rqr",
+  "profileKey": "local",
+  "title": "Shell",
+  "kind": "local",
+  "host": "local",
+  "startedAt": "2026-03-01T09:00:06.000Z",
+  "endedAt": "2026-03-01T09:00:08.000Z",
+  "status": "disconnected",
+  "paused": false,
+  "captureInput": false,
+  "pinned": false,
+  "eventCount": 1,
+  "rawBytes": 23,
+  "normalizedBytes": 23,
+  "partCount": 1,
+  "events": [
+   {
+    "sequence": 1,
+    "recordedAt": "2026-03-01T09:00:07.000Z",
+    "elapsedMs": 10,
+    "direction": "output",
+    "text": "ünïcode ✓ prompt $ "
+   }
+  ],
+  "eventsTruncated": false
+ },
+ "coreRaw": [
+  {
+   "sequence": 1,
+   "recordedAt": "2026-03-01T09:00:01.000Z",
+   "elapsedMs": 1000,
+   "direction": "output",
+   "raw": "Y29yZSMgc2hvdyBiZ3Agc3VtbWFyeQ0K",
+   "text": ""
+  },
+  {
+   "sequence": 2,
+   "recordedAt": "2026-03-01T09:00:02.000Z",
+   "elapsedMs": 2000,
+   "direction": "input",
+   "raw": "Y29uZiB0DQ==",
+   "text": ""
+  },
+  {
+   "sequence": 3,
+   "recordedAt": "2026-03-01T09:00:03.000Z",
+   "elapsedMs": 3000,
+   "direction": "output",
+   "raw": "G1sxbUJHUCBuZWlnaGJvciAxMC4wLjAuMiBFc3RhYmxpc2hlZBtbMG0NCg==",
+   "text": ""
+  },
+  {
+   "sequence": 4,
+   "recordedAt": "2026-03-01T09:00:04.000Z",
+   "elapsedMs": 4000,
+   "direction": "system",
+   "raw": "cmVjb25uZWN0ZWQ=",
+   "text": ""
+  }
+ ],
+ "shellRaw": [
+  {
+   "sequence": 1,
+   "recordedAt": "2026-03-01T09:00:07.000Z",
+   "elapsedMs": 10,
+   "direction": "output",
+   "raw": "w7xuw69jb2RlIOKckyBwcm9tcHQgJCA=",
+   "text": ""
+  }
+ ]
+}

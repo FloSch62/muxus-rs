@@ -1,0 +1,588 @@
+//! Phase 1 Kitty TGP ingestion tests.
+//!
+//! Verifies that `Terminal::process` strips Kitty APC sequences from the
+//! raw byte stream, feeds them to `KittyParser`, and stores results in the
+//! terminal's `GraphicsStore`. Surrounding text and non-Kitty APCs must be
+//! unaffected.
+
+use crate::terminal::Terminal;
+
+#[test]
+fn ingests_complete_kitty_transmit_apc() {
+    let mut term = Terminal::new(80, 24);
+
+    // 16 chars of base64 'A' decode to 12 zero bytes = 2 * 2 * 3 (s*v*RGB)
+    term.process(b"\x1b_Ga=t,f=24,i=42,s=2,v=2;AAAAAAAAAAAAAAAA\x1b\\");
+
+    let img = term.graphics.graphics_store.get_kitty_image(42);
+    assert!(img.is_some(), "image id 42 should be stored");
+    let (w, h, data) = img.unwrap();
+    assert_eq!(w, 2);
+    assert_eq!(h, 2);
+    // 12 bytes RGB are normalized to 16 bytes RGBA on storage.
+    assert_eq!(data.len(), 16);
+}
+
+#[test]
+fn ingests_virtual_placement_apc() {
+    let mut term = Terminal::new(80, 24);
+
+    // First transmit the image so it exists.
+    term.process(b"\x1b_Ga=t,f=24,i=42,s=2,v=2;AAAAAAAAAAAAAAAA\x1b\\");
+    // Then place it virtually.
+    term.process(b"\x1b_Ga=p,U=1,i=42,c=10,r=5\x1b\\");
+
+    let placements = term.graphics.graphics_store.all_virtual_placements();
+    assert!(
+        placements.contains_key(&(42, 0)),
+        "virtual placement for (image=42, placement=0) should exist; got keys: {:?}",
+        placements.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn ingests_transmit_then_regular_placement_apc() {
+    let mut term = Terminal::new(80, 24);
+
+    // Transmit a 2x2 RGB image under id 42 (16 base64 'A' chars decode to
+    // 12 zero bytes = 2*2*3). Transmit-only stores the shared image.
+    term.process(b"\x1b_Ga=t,f=24,i=42,s=2,v=2;AAAAAAAAAAAAAAAA\x1b\\");
+
+    // Regular (non-virtual) placement of the transmitted image.
+    // `KittyParser::build_graphic` returns `KittyGraphicResult::Graphic`
+    // WITHOUT storing it; the terminal layer must commit it via
+    // `GraphicsStore::add_graphic` or the graphic is silently dropped.
+    term.process(b"\x1b_Ga=p,i=42\x1b\\");
+
+    let graphics = term.graphics.graphics_store.all_graphics();
+    let placed: Vec<_> = graphics
+        .iter()
+        .filter(|g| g.kitty_image_id == Some(42))
+        .collect();
+    assert_eq!(
+        placed.len(),
+        1,
+        "placement APC must store exactly one graphic for image 42; got {}",
+        placed.len()
+    );
+    assert_eq!(
+        (placed[0].width, placed[0].height),
+        (2, 2),
+        "stored graphic must carry the transmitted pixel dimensions"
+    );
+    assert!(
+        !placed[0].pixels.is_empty(),
+        "stored graphic must carry the transmitted pixels"
+    );
+}
+
+#[test]
+fn handles_apc_split_across_process_calls() {
+    let mut term = Terminal::new(80, 24);
+
+    // Split mid-payload — first half ends inside the base64 data.
+    term.process(b"\x1b_Ga=t,f=24,i=99,s=2,v=2;AAAA");
+    term.process(b"AAAAAAAAAAAA\x1b\\");
+
+    let img = term.graphics.graphics_store.get_kitty_image(99);
+    assert!(
+        img.is_some(),
+        "image id 99 should be stored after split APC"
+    );
+    let (w, h, data) = img.unwrap();
+    assert_eq!(w, 2);
+    assert_eq!(h, 2);
+    // 12 bytes RGB are normalized to 16 bytes RGBA on storage.
+    assert_eq!(data.len(), 16);
+}
+
+#[test]
+fn passes_surrounding_text_through() {
+    let mut term = Terminal::new(80, 24);
+
+    // 4 chars of 'A' base64 = 3 zero bytes = 1 * 1 * 3 (1x1 RGB pixel)
+    term.process(b"hi\x1b_Ga=t,f=24,i=7,s=1,v=1;AAAA\x1b\\bye");
+
+    // Image should have been stored.
+    assert!(
+        term.graphics.graphics_store.get_kitty_image(7).is_some(),
+        "image id 7 should be stored"
+    );
+
+    // Surrounding text should appear on the screen.
+    let grid = term.active_grid();
+    let cells: String = (0..5)
+        .map(|c| grid.get(c, 0).map(|cell| cell.c).unwrap_or(' '))
+        .collect();
+    assert_eq!(cells, "hibye");
+}
+
+#[test]
+fn query_emits_ok_response_on_response_buffer() {
+    let mut term = Terminal::new(80, 24);
+
+    // Standard kitty TGP detection probe: a=q with a tiny RGB blob.
+    // 16 'A' chars decode to 12 zero bytes = 2x2 RGB.
+    term.process(b"\x1b_Gi=42,a=q,s=2,v=2,f=24;AAAAAAAAAAAAAAAA\x1b\\");
+
+    assert!(
+        term.has_pending_responses(),
+        "query should populate response_buffer"
+    );
+    let response = term.drain_responses();
+    assert_eq!(
+        response, b"\x1b_Gi=42;OK\x1b\\",
+        "response should be APC G i=42;OK ST"
+    );
+
+    // Query must not register an image.
+    assert!(term.graphics.graphics_store.get_kitty_image(42).is_none());
+}
+
+#[test]
+fn quiet_mode_query_suppresses_response() {
+    let mut term = Terminal::new(80, 24);
+
+    // q=2 means "suppress all replies".
+    term.process(b"\x1b_Gi=42,a=q,q=2,s=2,v=2,f=24;AAAAAAAAAAAAAAAA\x1b\\");
+
+    assert!(
+        !term.has_pending_responses(),
+        "q=2 must suppress response (got: {:?})",
+        term.drain_responses()
+    );
+}
+
+#[test]
+fn query_without_image_id_emits_ok_without_id() {
+    let mut term = Terminal::new(80, 24);
+
+    // No i= parameter; spec allows omitting i= in the response.
+    term.process(b"\x1b_Ga=q,s=2,v=2,f=24;AAAAAAAAAAAAAAAA\x1b\\");
+
+    assert!(term.has_pending_responses());
+    let response = term.drain_responses();
+    assert_eq!(response, b"\x1b_G;OK\x1b\\");
+}
+
+#[test]
+fn transmit_does_not_emit_response() {
+    let mut term = Terminal::new(80, 24);
+
+    // Phase 1-style transmit: must register the image and produce no reply bytes.
+    term.process(b"\x1b_Ga=t,f=24,i=77,s=2,v=2;AAAAAAAAAAAAAAAA\x1b\\");
+
+    assert!(
+        term.graphics.graphics_store.get_kitty_image(77).is_some(),
+        "transmit should still register the image"
+    );
+    assert!(
+        !term.has_pending_responses(),
+        "non-query actions must not write to response_buffer"
+    );
+}
+
+#[test]
+fn placeholder_cells_skip_unicode_normalization() {
+    // Placeholder cells (U+10EEEE base + combining diacritics) encode an image
+    // ID, not real text. The print/write_char path must accept them without
+    // running NFC normalization or grapheme width recalc — both would allocate
+    // strings per char and dominate frame time for an N×M placement.
+    use crate::graphics::placeholder::{number_to_diacritic, PLACEHOLDER_CHAR};
+
+    let mut term = Terminal::new(80, 24);
+
+    let row_diac = number_to_diacritic(0).unwrap();
+    let col_diac = number_to_diacritic(0).unwrap();
+    let id_diac = number_to_diacritic(0).unwrap();
+
+    let mut placeholder = String::new();
+    placeholder.push(PLACEHOLDER_CHAR);
+    placeholder.push(row_diac);
+    placeholder.push(col_diac);
+    placeholder.push(id_diac);
+
+    term.process(placeholder.as_bytes());
+
+    let grid = term.active_grid();
+    let cell = grid.get(0, 0).unwrap();
+    assert_eq!(cell.c, PLACEHOLDER_CHAR, "base char preserved");
+    assert_eq!(
+        cell.combining(),
+        [row_diac, col_diac, id_diac],
+        "combining marks preserved verbatim (no normalization rewrite)"
+    );
+    assert_eq!(cell.width(), 1, "no width recalc applied");
+}
+
+#[test]
+fn placeholder_cells_render_at_scale_quickly() {
+    // Smoke check: a 40x20 placeholder rectangle (800 cells × 4 chars =
+    // 3200 prints) must complete promptly. Before the fast path, NFC
+    // normalization on each char + per-combining-mark grapheme normalize
+    // pushed this into hundreds of milliseconds; after, it should be
+    // sub-10ms. We assert << 200ms to leave headroom for slow CI.
+    use crate::graphics::placeholder::{number_to_diacritic, PLACEHOLDER_CHAR};
+
+    let mut term = Terminal::new(80, 24);
+    let mut buf = String::with_capacity(40 * 20 * 8);
+    for r in 0..20u16 {
+        for c in 0..40u16 {
+            buf.push(PLACEHOLDER_CHAR);
+            buf.push(number_to_diacritic(r).unwrap());
+            buf.push(number_to_diacritic(c).unwrap());
+            buf.push(number_to_diacritic(0).unwrap());
+        }
+        buf.push('\r');
+        buf.push('\n');
+    }
+
+    let start = std::time::Instant::now();
+    term.process(buf.as_bytes());
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_millis(200),
+        "40x20 placeholder rect took {:?}, expected < 200ms",
+        elapsed
+    );
+}
+
+#[test]
+fn scaled_kitty_placement_uses_c_r_for_rows_and_scroll() {
+    let mut term = Terminal::new(80, 24);
+    term.set_cell_dimensions(5, 4);
+    for _ in 0..20 {
+        term.process(b"\n");
+    }
+
+    // 20x12 RGB pixels (720 bytes, encoded as 960 base64 zero bytes) are
+    // deliberately larger than the explicit two-column, one-row footprint.
+    let payload = "A".repeat(960);
+    let apc = format!("\x1b_Ga=T,f=24,i=7,s=20,v=12,c=2,r=1;{}\x1b\\", payload);
+    term.process(apc.as_bytes());
+
+    let graphic = &term.graphics.graphics_store.all_graphics()[0];
+    assert_eq!(graphic.cell_dimensions, Some((5, 4)));
+    assert_eq!(graphic.cell_span(5, 4), (2, 1));
+    assert_eq!(graphic.height_in_rows(1, 2), 1);
+    assert_eq!(term.graphics_at_row(20).len(), 1);
+    assert_eq!(term.graphics_at_row(21).len(), 0);
+
+    // A 21-line scroll fully removes the one-row placement. Pixel-derived
+    // math would incorrectly retain this native 3-row image.
+    term.graphics
+        .graphics_store
+        .adjust_for_scroll_up_with_scrollback(21, 0, 23, 0);
+    assert_eq!(term.graphics_count(), 0);
+    assert_eq!(term.graphics.graphics_store.scrollback_count(), 1);
+}
+
+#[test]
+fn non_kitty_apc_is_left_alone() {
+    let mut term = Terminal::new(80, 24);
+
+    // ESC _ X ... ST is a non-Kitty APC. Must not panic, must not register
+    // any image, and (per vte semantics) should leave the screen untouched.
+    term.process(b"\x1b_Xstuff\x1b\\");
+
+    // No image stored.
+    assert!(term.graphics.graphics_store.get_kitty_image(0).is_none());
+    assert!(term
+        .graphics
+        .graphics_store
+        .all_virtual_placements()
+        .is_empty());
+
+    // First cell should still be empty/blank (default).
+    let grid = term.active_grid();
+    let cell = grid.get(0, 0).unwrap();
+    assert_eq!(cell.c, ' ');
+}
+
+/// Herdr sends `CSI row;col H` before each `a=p` APC. The APC filter must
+/// advance the passthrough bytes (cursor moves) that precede each APC so
+/// slices at different rows get distinct terminal positions.
+#[test]
+fn interleaved_cursor_moves_produce_distinct_graphic_rows() {
+    let mut term = Terminal::new(80, 24);
+
+    // Transmit a 2×4 image (24 bytes RGB → 32 base64 chars).
+    term.process(b"\x1b_Ga=t,f=24,i=9,s=2,v=4;AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\x1b\\");
+
+    // Two placement APCs, each preceded by a cursor move to a different row.
+    // Stream: CSI 5;10H → a=p(y=0,h=2) → CSI 7;10H → a=p(y=2,h=2)
+    term.process(
+        b"\x1b[5;10H\x1b_Ga=p,i=9,p=1,c=2,r=1,y=0,h=2\x1b\\\
+          \x1b[7;10H\x1b_Ga=p,i=9,p=2,c=2,r=1,y=2,h=2\x1b\\",
+    );
+
+    let graphics = term.graphics.graphics_store.all_graphics();
+    assert_eq!(graphics.len(), 2, "two slices should be stored");
+
+    // Slice 1 should be at row 4 (0-indexed from CSI row 5).
+    assert_eq!(
+        graphics[0].position.1, 4,
+        "first slice should be at row 4 (CSI row 5, 0-indexed)"
+    );
+    // Slice 2 should be at row 6 (0-indexed from CSI row 7).
+    assert_eq!(
+        graphics[1].position.1, 6,
+        "following slice should be at row 6 (CSI row 7, 0-indexed)"
+    );
+}
+
+/// A default Kitty placement moves the cursor to the first line below the
+/// image (Kitty TGP cursor movement), spanning the placement's row count.
+#[test]
+fn placement_advances_cursor_to_line_below() {
+    let mut term = Terminal::new(80, 24);
+    term.set_cell_dimensions(1, 1);
+
+    // 1×3 pixel image: cell dimensions (1,1) make the span 1 col × 3 rows.
+    term.process(b"\x1b_Ga=t,f=24,i=5,s=1,v=3;AAAAAAAAAAAA\x1b\\");
+    assert_eq!(
+        (term.cursor().col, term.cursor().row),
+        (0, 0),
+        "transmit alone never moves the cursor"
+    );
+
+    term.process(b"\x1b_Ga=p,i=5\x1b\\");
+    assert_eq!(
+        (term.cursor().col, term.cursor().row),
+        (0, 3),
+        "cursor must land on the first line below the 3-row image"
+    );
+}
+
+/// `C=1` suppresses the post-placement cursor move; `C=0` and an omitted `C=`
+/// keep the default advance. Covers the parser field and the end-to-end path.
+#[test]
+fn placement_c_key_controls_cursor_movement() {
+    let mut term = Terminal::new(80, 24);
+    term.set_cell_dimensions(1, 1);
+    term.process(b"\x1b_Ga=t,f=24,i=5,s=1,v=3;AAAAAAAAAAAA\x1b\\");
+
+    term.process(b"\x1b_Ga=p,i=5,C=1\x1b\\");
+    assert_eq!(
+        (term.cursor().col, term.cursor().row),
+        (0, 0),
+        "C=1 must suppress the cursor move"
+    );
+    assert!(
+        term.graphics.graphics_store.all_graphics().len() == 1,
+        "C=1 suppresses only the cursor move, not the placement"
+    );
+
+    term.process(b"\x1b_Ga=p,i=5,C=0\x1b\\");
+    assert_eq!(
+        (term.cursor().col, term.cursor().row),
+        (0, 3),
+        "C=0 keeps the default (cursor advances)"
+    );
+
+    term.process(b"\x1b_Ga=p,i=5\x1b\\");
+    assert_eq!(
+        (term.cursor().col, term.cursor().row),
+        (0, 6),
+        "omitted C= keeps the default; advances accumulate across placements"
+    );
+}
+
+/// The post-placement advance flows through the ordinary newline path, so a
+/// placement that runs into the scroll region's bottom margin scrolls the
+/// region instead of moving the cursor past it.
+#[test]
+fn placement_advance_respects_scroll_region() {
+    let mut term = Terminal::new(80, 24);
+    // Scroll region rows 0..=9 (1-indexed 1;10). Park the cursor on the
+    // region's last row and place a 3-row image: two of the three advance
+    // newlines scroll the region.
+    term.set_cell_dimensions(1, 1);
+    term.process(b"\x1b[1;10r\x1b[10;1H");
+    assert_eq!((term.cursor().col, term.cursor().row), (0, 9));
+
+    term.process(b"\x1b_Ga=t,f=24,i=5,s=1,v=3;AAAAAAAAAAAA\x1b\\");
+    term.process(b"\x1b_Ga=p,i=5\x1b\\");
+
+    assert_eq!(
+        (term.cursor().col, term.cursor().row),
+        (0, 9),
+        "cursor clamps to the scroll region's bottom margin after scrolling"
+    );
+    // The scrolled placement rides the scroll like any multi-row write:
+    // placed at the region's bottom row, each advance newline scrolls it up.
+    assert_eq!(
+        term.graphics_at_row(6).len(),
+        1,
+        "placement moved up with the scroll"
+    );
+    assert_eq!(term.graphics_at_row(9).len(), 0);
+}
+
+/// Virtual placements (U=1) occupy cells via placeholder bookkeeping but do
+/// not move the cursor — kitty applies the same rule to unicode placements.
+#[test]
+fn virtual_placement_does_not_advance_cursor() {
+    let mut term = Terminal::new(80, 24);
+    term.set_cell_dimensions(1, 1);
+    term.process(b"\x1b_Ga=t,f=24,i=5,s=1,v=3;AAAAAAAAAAAA\x1b\\");
+
+    term.process(b"\x1b_Ga=p,i=5,U=1,c=2,r=2\x1b\\");
+    assert_eq!(
+        (term.cursor().col, term.cursor().row),
+        (0, 0),
+        "U=1 virtual placement must not move the cursor"
+    );
+    assert!(
+        !term
+            .graphics
+            .graphics_store
+            .all_virtual_placements()
+            .is_empty(),
+        "virtual placement is still registered"
+    );
+}
+
+/// a=T (transmit-and-display) and a=p (put) must emit GraphicsAdded like the
+/// Sixel (DCS) and iTerm2 inline paths do — otherwise observers subscribed to
+/// graphics_added and the streaming server's graphics subscribers never hear
+/// kitty placements (a=t is transmit-only and displays nothing, so it stays
+/// silent). The event carries the placement row, captured before the cursor
+/// advance.
+#[test]
+fn display_paths_emit_graphics_added() {
+    use crate::terminal::TerminalEvent;
+
+    let mut term = Terminal::new(80, 24);
+    term.set_cell_dimensions(1, 1);
+
+    // a=T: transmit a 2x2 image and display it at the cursor (0, 0).
+    term.process(b"\x1b_Ga=T,f=24,i=42,s=2,v=2;AAAAAAAAAAAAAAAA\x1b\\");
+    let row = term
+        .poll_events()
+        .into_iter()
+        .find_map(|e| match e {
+            TerminalEvent::GraphicsAdded(row) => Some(row),
+            _ => None,
+        })
+        .expect("a=T must emit GraphicsAdded");
+    assert_eq!(row, 0, "a=T at cursor (0, 0) reports the placement row");
+
+    // a=p: re-displaying the stored image is a new placement at the
+    // current cursor row.
+    let row_before = term.cursor().row;
+    term.process(b"\x1b_Ga=p,i=42\x1b\\");
+    let row = term
+        .poll_events()
+        .into_iter()
+        .find_map(|e| match e {
+            TerminalEvent::GraphicsAdded(row) => Some(row),
+            _ => None,
+        })
+        .expect("a=p must emit GraphicsAdded");
+    assert_eq!(row, row_before, "a=p reports the placement row");
+}
+
+/// Card 01a0d9e6f012, criterion 3: after displaying an image the cursor row
+/// must match between a daemon-side terminal and the client-side mirror
+/// rendering it. Both derive rows from the cell size, so a terminal whose
+/// host reported real text-area pixels (`set_pixel_size`, what
+/// `refresh-client -p` drives through `resize_with_cell_pixels`) advances
+/// by pixel-height / cell-height — not by the (1, 2) no-information default,
+/// which would put the daemon dozens of rows past the mirror.
+#[test]
+fn image_cursor_advance_uses_the_reported_cell_size() {
+    let mut term = Terminal::new(80, 24);
+    // The client's metrics: an 80x24 grid at 12x24 px cells.
+    term.set_pixel_size(80 * 12, 24 * 24);
+    assert_eq!(
+        term.graphics.cell_dimensions,
+        (12, 24),
+        "reporting text-area pixels derives the graphics cell size"
+    );
+
+    // a=T transmits and displays a 2x24 px image: 2*24*3 = 144 zero bytes
+    // = 192 base64 'A' chars. The length is computed, not hand-counted —
+    // a payload short of the declared dimensions is silently rejected (see
+    // `short_payload_for_declared_dims_is_silently_rejected` below).
+    let sequence = format!("\x1b_Ga=T,f=24,i=7,s=2,v=24;{}\x1b\\", "A".repeat(192));
+    term.process(sequence.as_bytes());
+    assert_eq!(
+        term.cursor().row, 1,
+        "a 24 px image over 24 px cells advances one row — the mirror's advance, where the (1, 2) default would advance 12 and desync the grids"
+    );
+}
+
+/// Card 01a0db7800637762b6c3189dee5c9189: a 1-wide, 24-tall RGB image
+/// (`s=1,v=24`, 1*24*3 = 72 bytes = exactly 96 base64 chars) must store a
+/// graphic and emit GraphicsAdded like every other well-formed shape — the
+/// card's "silently produces no graphic" did not reproduce at HEAD in any
+/// context (fresh terminal, with/without `set_pixel_size`, parser-direct).
+/// Pins the shape so a regression of exactly this dimension pair is caught.
+#[test]
+fn w1_h24_exact_payload_stores_graphic_and_emits_event() {
+    use crate::terminal::TerminalEvent;
+
+    let mut term = Terminal::new(80, 24);
+    term.set_pixel_size(80 * 12, 24 * 24);
+
+    let sequence = format!("\x1b_Ga=T,f=24,i=7,s=1,v=24;{}\x1b\\", "A".repeat(96));
+    term.process(sequence.as_bytes());
+
+    let graphics = term.graphics.graphics_store.all_graphics();
+    assert_eq!(graphics.len(), 1, "the 1x24 placement must be stored");
+    assert_eq!(
+        (graphics[0].width, graphics[0].height),
+        (1, 24),
+        "stored graphic carries the transmitted pixel dimensions"
+    );
+    assert!(
+        term.poll_events()
+            .into_iter()
+            .any(|e| matches!(e, TerminalEvent::GraphicsAdded(_))),
+        "a=T must emit GraphicsAdded for the 1x24 shape"
+    );
+    assert_eq!(
+        term.cursor().row,
+        1,
+        "24 px over 24 px cells advances one row, same rule as the 2x24 shape"
+    );
+}
+
+/// The rejection the filing session actually hit (misattributed to 1x24):
+/// a payload whose decoded length disagrees with the declared dimensions is
+/// rejected by `KittyParser::decode_pixels` ("Data size mismatch") inside
+/// `build_graphic`, whose error the terminal layer swallows by design
+/// ("Errors here are non-fatal" — a malformed graphic must never kill the
+/// emulator). The rejection is silent on purpose: no graphic, no event, no
+/// cursor move. Kitty TGP error replies (`_G...;ENOCI`-style APC responses)
+/// are a separate, unimplemented contract.
+#[test]
+fn short_payload_for_declared_dims_is_silently_rejected() {
+    use crate::terminal::TerminalEvent;
+
+    let mut term = Terminal::new(80, 24);
+    term.set_pixel_size(80 * 12, 24 * 24);
+
+    // 96 chars decode to 72 bytes, but s=2,v=24 RGB declares 2*24*3 = 144.
+    let sequence = format!("\x1b_Ga=T,f=24,i=7,s=2,v=24;{}\x1b\\", "A".repeat(96));
+    term.process(sequence.as_bytes());
+
+    assert!(
+        term.graphics.graphics_store.all_graphics().is_empty(),
+        "mismatched payload must not produce a placement"
+    );
+    assert!(
+        !term
+            .poll_events()
+            .into_iter()
+            .any(|e| matches!(e, TerminalEvent::GraphicsAdded(_))),
+        "no GraphicsAdded for a rejected graphic"
+    );
+    assert_eq!(
+        (term.cursor().col, term.cursor().row),
+        (0, 0),
+        "a rejected graphic never moves the cursor"
+    );
+}

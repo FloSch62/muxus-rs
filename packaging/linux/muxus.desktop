@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Muxus
+GenericName=SSH Client
+Comment=SSH, Telnet & serial client
+Exec=@EXEC@ %U
+Icon=muxus
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=ssh;telnet;serial;sftp;terminal;rdp;vnc;
+MimeType=x-scheme-handler/ssh;x-scheme-handler/telnet;
+StartupWMClass=muxus
+StartupNotify=true

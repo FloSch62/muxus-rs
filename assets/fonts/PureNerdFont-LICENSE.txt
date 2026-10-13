@@ -1,0 +1,4 @@
+PureNerdFont (@azurity/pure-nerd-font 3.x, https://github.com/azurity/pure-nerd-font)
+is distributed under the MIT license. It repackages the icon glyphs of Nerd Fonts
+(https://github.com/ryanoasis/nerd-fonts, MIT); the individual icon sets keep the
+licenses listed at https://github.com/ryanoasis/nerd-fonts/blob/master/license-audit.md

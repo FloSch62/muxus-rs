@@ -1,0 +1,52 @@
+[package]
+name = "muxus-store"
+description = "SQLite persistence, preferences and secrets, schema-compatible with Muxus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+muxus-core.workspace = true
+aes-gcm = "0.11"
+async-channel = "2"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+hmac = "0.13"
+indexmap = { version = "2", features = ["serde"] }
+keyring-core = "1"
+getrandom = "0.3"
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+scrypt = { version = "0.12", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_with = { version = "3", default-features = false, features = ["macros", "std"] }
+sha2 = "0.11"
+subtle = "2"
+thiserror = "2"
+zeroize = "1"
+zstd = "0.13"
+
+# The same credential stores the TypeScript build's @napi-rs/keyring uses, so
+# both builds find the vault key under the same service and account.
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-keyutils-keyring-store = "1"
+
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))'.dependencies]
+zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1"
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

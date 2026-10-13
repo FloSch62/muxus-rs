@@ -1,0 +1,26 @@
+#!/bin/sh
+# The same layout the Electron package used: the program in /opt/Muxus, /usr/bin/muxus
+# through update-alternatives, so either package replaces the other cleanly.
+set -e
+
+if [ "$1" = configure ]; then
+    if command -v update-alternatives >/dev/null 2>&1; then
+        # Remove a previous link that does not use update-alternatives.
+        if [ -L /usr/bin/muxus ] && [ -e /usr/bin/muxus ] && [ "$(readlink /usr/bin/muxus)" != /etc/alternatives/muxus ]; then
+            rm -f /usr/bin/muxus
+        fi
+        update-alternatives --install /usr/bin/muxus muxus /opt/Muxus/muxus 100 || ln -sf /opt/Muxus/muxus /usr/bin/muxus
+    else
+        ln -sf /opt/Muxus/muxus /usr/bin/muxus
+    fi
+
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database /usr/share/applications || true
+    fi
+    # The icon-theme cache, so the app icon shows up in launchers.
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -f -t /usr/share/icons/hicolor || true
+    fi
+fi
+
+exit 0

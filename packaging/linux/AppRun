@@ -1,0 +1,5 @@
+#!/bin/sh
+# Entry point of the AppImage. The runtime sets APPIMAGE (the file the user started) and
+# APPDIR (its mount); Muxus reads APPIMAGE for link registration and in-app updates.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/bin/muxus" "$@"

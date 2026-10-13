@@ -1,0 +1,24 @@
+[package]
+name = "muxus-term-view"
+description = "GPUI terminal view widget"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+async-channel = "2"
+gpui-kit = { version = "=0.7.3", features = ["assets", "tree-sitter-languages"] }
+image = { version = "0.25", default-features = false }
+muxus-core.workspace = true
+muxus-term.workspace = true
+# The search box takes its chrome colors from the app theme.
+muxus-ui.workspace = true
+smallvec = "1"
+
+[dev-dependencies]
+portable-pty = "0.9"
+
+[lints]
+workspace = true

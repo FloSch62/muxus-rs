@@ -1,0 +1,255 @@
+//! DCS (Device Control String) sequence handling dispatcher
+
+mod query;
+mod sixel;
+
+use crate::debug;
+use crate::graphics::{next_graphic_id, GraphicProtocol, TerminalGraphic};
+use crate::terminal::Terminal;
+use vte::Params;
+
+/// Which DCS sub-protocol is currently active.
+///
+/// `action` alone is not enough to route a DCS sequence: Sixel (`DCS q`),
+/// XTGETTCAP (`DCS + q`), and DECRQSS (`DCS $ q`) all share the final byte
+/// `q` and are distinguished only by their intermediate byte(s) (none, `+`,
+/// `$` respectively).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DcsKind {
+    /// `DCS q ... ST` - Sixel graphics
+    Sixel,
+    /// `DCS + q ... ST` - XTGETTCAP (termcap/terminfo capability query)
+    XtGetTcap,
+    /// `DCS $ q ... ST` - DECRQSS (request selection or setting)
+    Decrqss,
+    /// Any other/unhandled DCS sequence
+    Other,
+}
+
+/// Classify a DCS sequence by its final action character and intermediates.
+fn classify_dcs(action: char, intermediates: &[u8]) -> DcsKind {
+    if action != 'q' {
+        return DcsKind::Other;
+    }
+    match intermediates {
+        [] => DcsKind::Sixel,
+        [b'+'] => DcsKind::XtGetTcap,
+        [b'$'] => DcsKind::Decrqss,
+        _ => DcsKind::Other,
+    }
+}
+
+/// SEC-003: cap on `dcs_buffer` accumulation. Non-Sixel DCS kinds buffer
+/// every payload byte with no other bound; 64 KiB comfortably exceeds any
+/// legitimate XTGETTCAP/DECRQSS reply or Sixel command fragment (sixel pixel
+/// data streams to the parser, not this buffer). Past the cap the sequence is
+/// dropped whole at unhook.
+/// cap: Payload bytes accumulated for one DCS sequence from terminal output.
+const MAX_DCS_BUFFER: usize = 64 * 1024;
+
+impl Terminal {
+    /// VTE hook - start of DCS sequence
+    pub(in crate::terminal) fn dcs_hook(
+        &mut self,
+        params: &Params,
+        intermediates: &[u8],
+        _ignore: bool,
+        action: char,
+    ) {
+        let kind = classify_dcs(action, intermediates);
+
+        if kind == DcsKind::Sixel && self.security_state.disable_insecure_sequences {
+            debug::log(
+                debug::DebugLevel::Debug,
+                "SECURITY",
+                "Blocked Sixel DCS (disable_insecure_sequences=true)",
+            );
+            return;
+        }
+
+        self.dcs_state.dcs_active = true;
+        self.dcs_state.dcs_action = Some(action);
+        self.dcs_state.dcs_kind = kind;
+        self.dcs_state.dcs_buffer.clear();
+        self.dcs_state.dcs_overflow = false;
+
+        if kind == DcsKind::Sixel {
+            sixel::handle_sixel_hook(&mut self.dcs_state, self.graphics.sixel_limits, params);
+        }
+    }
+
+    /// VTE put - data for DCS sequence
+    pub(in crate::terminal) fn dcs_put(&mut self, byte: u8) {
+        if !self.dcs_state.dcs_active {
+            return;
+        }
+
+        // SEC-003: bound accumulation. Once tripped, stop buffering (and stop
+        // feeding the Sixel parser — a sequence this size is hostile) and let
+        // unhook drop the whole sequence.
+        if self.dcs_state.dcs_overflow {
+            return;
+        }
+        if self.dcs_state.dcs_buffer.len() >= MAX_DCS_BUFFER {
+            self.dcs_state.dcs_overflow = true;
+            crate::debug_log!(
+                "SECURITY",
+                "DCS payload exceeds {} bytes, dropping sequence",
+                MAX_DCS_BUFFER
+            );
+            return;
+        }
+
+        if self.dcs_state.dcs_kind == DcsKind::Sixel {
+            let is_sixel_data = (63..=126).contains(&byte);
+
+            if is_sixel_data {
+                let mut pending_repeat = None;
+                let has_repeat =
+                    !self.dcs_state.dcs_buffer.is_empty() && self.dcs_state.dcs_buffer[0] == b'!';
+
+                if has_repeat {
+                    // Parse repeat count
+                    let s = std::str::from_utf8(&self.dcs_state.dcs_buffer[1..]).unwrap_or("1");
+                    let count = s.parse().unwrap_or(1);
+                    pending_repeat = Some(count);
+                    self.dcs_state.dcs_buffer.clear();
+                } else if !self.dcs_state.dcs_buffer.is_empty() {
+                    // Process any other pending commands (colors)
+                    sixel::process_sixel_command(&mut self.dcs_state);
+                }
+
+                // Feed to parser
+                if let Some(parser) = &mut self.dcs_state.sixel_parser {
+                    if let Some(count) = pending_repeat {
+                        parser.parse_repeat(count, byte as char);
+                    } else {
+                        parser.parse_sixel(byte as char);
+                    }
+                }
+            } else if byte == b'-' {
+                if !self.dcs_state.dcs_buffer.is_empty() {
+                    sixel::process_sixel_command(&mut self.dcs_state);
+                }
+                if let Some(p) = &mut self.dcs_state.sixel_parser {
+                    p.new_line();
+                }
+            } else if byte == b'$' {
+                if !self.dcs_state.dcs_buffer.is_empty() {
+                    sixel::process_sixel_command(&mut self.dcs_state);
+                }
+                if let Some(p) = &mut self.dcs_state.sixel_parser {
+                    p.carriage_return();
+                }
+            } else {
+                // Control chars or parameters (#, ", !, digits)
+                // If starting a new command, process previous one
+                if (byte == b'#' || byte == b'"' || byte == b'!')
+                    && !self.dcs_state.dcs_buffer.is_empty()
+                {
+                    sixel::process_sixel_command(&mut self.dcs_state);
+                }
+                self.dcs_state.dcs_buffer.push(byte);
+            }
+        } else {
+            self.dcs_state.dcs_buffer.push(byte);
+        }
+    }
+
+    /// VTE unhook - end of DCS sequence
+    pub(in crate::terminal) fn dcs_unhook(&mut self) {
+        if !self.dcs_state.dcs_active {
+            return;
+        }
+
+        // SEC-003: an overflowed sequence is dropped whole — processing a
+        // truncated payload would decode garbage.
+        if self.dcs_state.dcs_overflow {
+            debug::log(
+                debug::DebugLevel::Debug,
+                "SECURITY",
+                "Dropping overflowed DCS sequence at unhook",
+            );
+            self.dcs_state.dcs_overflow = false;
+            self.dcs_state.dcs_active = false;
+            self.dcs_state.dcs_buffer.clear();
+            self.dcs_state.sixel_parser = None;
+            return;
+        }
+
+        if self.dcs_state.dcs_kind == DcsKind::XtGetTcap {
+            query::handle_xtgettcap_reply(&self.dcs_state.dcs_buffer, &mut self.response_buffer);
+        } else if self.dcs_state.dcs_kind == DcsKind::Decrqss {
+            query::handle_decrqss_reply(
+                &self.dcs_state.dcs_buffer,
+                &self.attrs,
+                self.cursor.style,
+                &self.margins,
+                &mut self.response_buffer,
+            );
+        } else if self.dcs_state.dcs_kind == DcsKind::Sixel {
+            sixel::process_sixel_command(&mut self.dcs_state);
+            if let Some(parser) = self.dcs_state.sixel_parser.take() {
+                // DECSDM (DECSET 80) display mode paints at the home position
+                // and leaves the cursor alone; scrolling mode (default) paints
+                // at the cursor and advances it below the image.
+                let display_mode = self.modes.sixel_display_mode;
+                let position = if display_mode {
+                    (0, 0)
+                } else {
+                    (self.cursor.col, self.cursor.row)
+                };
+                let sixel_graphic = parser.build_graphic(position);
+
+                // Convert SixelGraphic to TerminalGraphic
+                let mut pixels = Vec::with_capacity(sixel_graphic.width * sixel_graphic.height * 4);
+                for y in 0..sixel_graphic.height {
+                    for x in 0..sixel_graphic.width {
+                        if let Some((r, g, b, a)) = sixel_graphic.get_pixel(x, y) {
+                            pixels.push(r);
+                            pixels.push(g);
+                            pixels.push(b);
+                            pixels.push(a);
+                        } else {
+                            pixels.extend_from_slice(&[0, 0, 0, 0]);
+                        }
+                    }
+                }
+
+                let mut graphic = TerminalGraphic::new(
+                    next_graphic_id(),
+                    GraphicProtocol::Sixel,
+                    position,
+                    sixel_graphic.width,
+                    sixel_graphic.height,
+                    pixels,
+                );
+
+                let (cell_w, cell_h) = self.graphics.cell_dimensions;
+                graphic.set_cell_dimensions(cell_w, cell_h);
+
+                let row = if display_mode { 0 } else { self.cursor.row };
+                self.graphics.graphics_store.add_graphic(graphic);
+                self.events
+                    .push(crate::terminal::TerminalEvent::GraphicsAdded(row));
+
+                // Advance cursor to next line(s) as per test expectation.
+                // DECSDM display mode leaves the cursor where it was.
+                if !display_mode && cell_h > 0 {
+                    let rows = (sixel_graphic.height as f32 / cell_h as f32).ceil() as usize;
+                    self.cursor.col = 0;
+                    let (_cols, screen_rows) = self.size();
+                    self.cursor.move_down(rows, screen_rows.saturating_sub(1));
+                }
+            }
+        }
+
+        self.dcs_state.dcs_active = false;
+        self.dcs_state.dcs_action = None;
+        self.dcs_state.dcs_kind = DcsKind::Other;
+        self.dcs_state.dcs_buffer.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -1,0 +1,63 @@
+import type { FastifyInstance } from 'fastify';
+import { z } from '../../../../../../muxus/server/node_modules/zod/index.js';
+import type { TunnelRecord, TunnelsResponse } from '../../../../../../muxus/shared/src/index.ts';
+import type { AppContext } from '../../../../../../muxus/server/src/app.ts';
+import { sendError } from '../../../../../../muxus/server/src/util/errors.ts';
+
+const sshOptionsSchema = z
+  .object({
+    user: z.string().trim().min(1).max(200).optional(),
+    port: z.number().int().min(1).max(65535).optional(),
+    identityFiles: z.array(z.string().trim().min(1).max(4096)).max(32).optional(),
+    identitiesOnly: z.boolean().optional(),
+    forwardAgent: z.boolean().optional(),
+    proxyJump: z.array(z.string().trim().min(1).max(500)).max(8).optional(),
+    passwordOnly: z.boolean().optional(),
+  })
+  .strict();
+
+export const tunnelSchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    name: z.string().max(200).optional(),
+    target: z.string().trim().min(1).max(500),
+    sshOptions: sshOptionsSchema.optional(),
+    type: z.enum(['local', 'remote', 'dynamic']),
+    bindPort: z.number().int().min(1).max(65535),
+    targetHost: z.string().min(1).max(500).optional(),
+    targetPort: z.number().int().min(1).max(65535).optional(),
+    autoStart: z.boolean().optional(),
+    autoReconnect: z.boolean().optional(),
+  })
+  .refine((t) => t.type === 'dynamic' || (!!t.targetHost && !!t.targetPort), {
+    message: 'targetHost and targetPort are required for local/remote tunnels',
+  });
+
+/**
+ * Saved tunnel definitions — start/stop happens via /api/forwards. Saving or
+ * deleting one ends a redial that should no longer happen.
+ */
+export function registerTunnelRoutes(app: FastifyInstance, ctx: AppContext): void {
+  app.get('/api/tunnels', (): TunnelsResponse => ({ tunnels: ctx.database.listTunnels() }));
+
+  app.put('/api/tunnels', async (req, reply): Promise<TunnelRecord | void> => {
+    try {
+      const parsed = tunnelSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return await reply.code(400).send({ message: parsed.error.issues[0]?.message ?? 'invalid tunnel' });
+      }
+      const saved = ctx.database.saveTunnel(parsed.data);
+      ctx.forwards.tunnelChanged(saved.id);
+      return saved;
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  app.delete('/api/tunnels/:id', (req) => {
+    const { id } = req.params as { id: string };
+    const deleted = ctx.database.deleteTunnel(id);
+    ctx.forwards.tunnelChanged(id);
+    return { deleted };
+  });
+}
