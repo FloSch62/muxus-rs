@@ -29,6 +29,8 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+      # Every platform's crates: the license list reads `cargo metadata --offline`.
+      - run: cargo fetch --locked
       - run: cargo build --release --locked -p muxus-app
       - run: packaging/build-deb.sh
         env:
@@ -46,6 +48,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
+      # Every platform's crates: the license list reads `cargo metadata --offline`.
+      - run: cargo fetch --locked
       - run: cargo build --release --locked -p muxus-app --target aarch64-apple-darwin
       - run: cargo build --release --locked -p muxus-app --target x86_64-apple-darwin
       - name: Universal binary
@@ -71,6 +75,8 @@ jobs:
       - uses: ilammy/setup-nasm@v1
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+      # Every platform's crates: the license list reads `cargo metadata --offline`.
+      - run: cargo fetch --locked
       - run: cargo build --release --locked -p muxus-app
       - name: Package
         shell: pwsh
