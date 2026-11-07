@@ -10,7 +10,7 @@ use gpui_kit::{
     App, AppContext, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase,
     ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollWheelEvent,
+    MouseUpEvent, ParentElement, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollEvent,
     SharedString, StatefulInteractiveElement, Styled, Task, UTF16Selection, Window, canvas, div,
     point,
 };
@@ -1533,7 +1533,7 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn on_scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
+    fn on_scroll(&mut self, event: &ScrollEvent, cx: &mut Context<Self>) {
         let lines = match event.delta {
             ScrollDelta::Lines(delta) => delta.y,
             ScrollDelta::Pixels(delta) => f32::from(delta.y) / self.cell.height,
@@ -2402,9 +2402,9 @@ impl Render for TerminalView {
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
                     .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
                     .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
-                    .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
-                        view.on_scroll(event, cx)
-                    }))
+                    .on_scroll(
+                        cx.listener(|view, event: &ScrollEvent, _, cx| view.on_scroll(event, cx)),
+                    )
                     .on_hover(cx.listener(|view, hovered: &bool, _, cx| {
                         view.hovered = *hovered;
                         if !*hovered {

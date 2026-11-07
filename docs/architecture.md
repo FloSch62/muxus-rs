@@ -7,8 +7,10 @@ TypeScript disagree, the TypeScript wins.
 
 ## Stack
 
-- **UI:** [GPUI](https://www.gpui.rs) through `gpui-component` (pinned: `gpui-component = "=0.7.3"`,
-  which pins `gpui = { package = "gpui-pre", version = "=0.3.9" }`). No webview in the app's
+- **UI:** [GPUI](https://www.gpui.rs) through `gpui-component` (pinned: `gpui-kit = "=0.9.0"`,
+  the facade over `gpui-component` and `gpui-base` 0.9.0, which pins
+  `gpui = { package = "gpui-pre", version = "=0.3.11" }`; the code editors' `tree-sitter`
+  follows gpui-component's, 0.26). No webview in the app's
   windows. Saved web pages, and lab topologies in the containerlab viewer, open in windows of
   their own: `muxus --web-window` processes running wry (WebKitGTK 4.1 on Linux) behind the
   `webview` feature (`muxus-webview`).

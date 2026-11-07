@@ -67,7 +67,7 @@ tokio = { version = "1", features = ["io-util", "net", "rt"] }
 [dev-dependencies]
 tempfile = "3"
 # Headless windows for the UI regression tests (tests/ui_*.rs).
-gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }
+gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] }
 muxus-ssh = { workspace = true, features = ["testing"] }
 russh = "0.64"
 bytes = "1"
