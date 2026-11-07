@@ -193,6 +193,22 @@ impl SessionSidebar {
                     }
                     paper = paper.child(item);
                 }
+                if muxus_app::features::environments::model::environment_host_for_managed(&host)
+                    .is_some()
+                {
+                    paper = paper.child(
+                        MenuItem::new("host-environments", "Containers & VMs")
+                            .icon("ViewInArOutlined")
+                            .on_click(Self::action(
+                                SidebarAction::Environments(
+                                    crate::ui::environments::EnvironmentsRequest::Show(
+                                        host.clone(),
+                                    ),
+                                ),
+                                cx,
+                            )),
+                    );
+                }
                 paper = paper
                     .child(
                         MenuItem::new("host-up", "Move up")

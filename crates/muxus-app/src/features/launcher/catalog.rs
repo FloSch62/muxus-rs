@@ -43,6 +43,7 @@ pub enum LauncherAction {
     History,
     Commands,
     Tunnels,
+    Environments,
     Sftp,
     FindTerminal,
 }
@@ -57,6 +58,7 @@ impl LauncherAction {
             LauncherAction::History => "history",
             LauncherAction::Commands => "commands",
             LauncherAction::Tunnels => "tunnels",
+            LauncherAction::Environments => "environments",
             LauncherAction::Sftp => "sftp",
             LauncherAction::FindTerminal => "find-terminal",
         }
@@ -95,6 +97,8 @@ pub enum LauncherPayload {
         profile: LocalShellProfileConfig,
         wsl: bool,
     },
+    /// A container, lab node, VM or cluster found on a host.
+    Environment(Box<crate::features::environments::launcher::EnvironmentLaunchItem>),
     Action(LauncherAction),
     Keymap {
         command_id: String,
@@ -129,6 +133,7 @@ impl LauncherResult {
             LauncherPayload::Tunnel { .. } => QuickLauncherKind::Tunnel,
             LauncherPayload::History { .. } => QuickLauncherKind::History,
             LauncherPayload::LocalShell { .. } => QuickLauncherKind::LocalShell,
+            LauncherPayload::Environment(_) => QuickLauncherKind::Environment,
             LauncherPayload::Action(_) => QuickLauncherKind::Action,
             LauncherPayload::Keymap { .. } => QuickLauncherKind::Keymap,
         }
@@ -146,9 +151,13 @@ impl LauncherResult {
     /// The small caps tag at the row's end (`ResultKindLabel`); keymap rows
     /// show their chord instead.
     pub fn kind_label(&self) -> &'static str {
+        if let LauncherPayload::Environment(item) = &self.payload {
+            return item.kind.tag();
+        }
         match self.kind() {
             QuickLauncherKind::QuickConnect => "CONNECT",
             QuickLauncherKind::LocalShell => "LOCAL",
+            QuickLauncherKind::Environment => "ENVIRONMENT",
             QuickLauncherKind::Editor => "FILE",
             QuickLauncherKind::Tab => "TAB",
             QuickLauncherKind::Host => "HOST",
@@ -741,6 +750,20 @@ pub fn build_action_results(
             "Manage saved tunnels and live forwards",
             &["ssh", "forward", "proxy"],
         ),
+        action_result(
+            LauncherAction::Environments,
+            "Show containers & VMs",
+            "Docker, Podman, Containerlab, Kubernetes, Proxmox and libvirt on your hosts",
+            &[
+                "docker",
+                "podman",
+                "kubernetes",
+                "containerlab",
+                "proxmox",
+                "libvirt",
+                "virtual machines",
+            ],
+        ),
     ];
     let mut sftp = action_result(
         LauncherAction::Sftp,
@@ -960,6 +983,27 @@ pub fn folder_detail(group: Option<&str>) -> String {
     } else {
         format!("{} · ", segments.join(" / "))
     }
+}
+
+/// Containers, lab nodes, VMs and contexts on the hosts read so far: offered only for a
+/// query, after the hosts and before the actions.
+pub fn build_environment_results(
+    items: &[crate::features::environments::launcher::EnvironmentLaunchItem],
+) -> Vec<LauncherResult> {
+    items
+        .iter()
+        .map(|item| {
+            result(
+                item.id.clone(),
+                item.label.clone(),
+                item.detail.clone(),
+                item.keywords.clone(),
+                140,
+                false,
+                LauncherPayload::Environment(Box::new(item.clone())),
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -26,8 +26,8 @@ use super::leases::{
 };
 use super::profile::SshProfile;
 use super::session::{
-    ChannelError, SessionChannel, SessionRequest, SessionSettings, open_session, probe_command,
-    terminal_pty_options_for, wants_pty,
+    ChannelError, SessionChannel, SessionRequest, SessionSettings, environment_session,
+    open_session, probe_command, terminal_pty_options_for, wants_pty,
 };
 use super::transport::{
     AgentForwarding, BoxedStream, ConnectError, ConnectErrorKind, DialContext, HandshakeFacts,
@@ -894,10 +894,12 @@ impl SshConnectionManager {
         // Connection fields come from the database. The keepalive fallback is an application
         // preference supplied by the current UI, so the wire value always wins (including its
         // absence), which must clear anything a client stored. So does a link's host key
-        // fingerprint, which only tightens verification.
+        // fingerprint, which only tightens verification, and the container or console a
+        // session enters, which is the session's own choice rather than a connection setting.
         Ok(SshProfile {
             keepalive_interval_seconds: profile.keepalive_interval_seconds,
             host_key_fingerprint: profile.host_key_fingerprint.clone(),
+            environment: profile.environment.clone(),
             ..saved
         })
     }
@@ -1373,7 +1375,10 @@ impl SshConnectionManager {
         let lease = self
             .connect(profile, io.clone(), ConnectionLeaseOwner::Terminal, opts)
             .await?;
-        let settings = SessionSettings::from_resolved(&lease.target.resolved);
+        let settings = environment_session(
+            SessionSettings::from_resolved(&lease.target.resolved),
+            profile,
+        );
         let shell = lease
             .connection()
             .clone()
@@ -1424,7 +1429,10 @@ impl SshConnectionManager {
                         },
                     )
                     .await?;
-                let settings = SessionSettings::from_resolved(&dedicated.target.resolved);
+                let settings = environment_session(
+                    SessionSettings::from_resolved(&dedicated.target.resolved),
+                    profile,
+                );
                 match dedicated
                     .connection()
                     .clone()
@@ -1492,7 +1500,10 @@ impl SshConnectionManager {
                 },
             )
             .await?;
-        let settings = SessionSettings::from_resolved(&compatible.target.resolved);
+        let settings = environment_session(
+            SessionSettings::from_resolved(&compatible.target.resolved),
+            profile,
+        );
         match compatible
             .connection()
             .clone()

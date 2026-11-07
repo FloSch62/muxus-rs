@@ -38,8 +38,8 @@ use super::logic::desktop_draft::{
     desktop_draft_problem,
 };
 use super::logic::draft::{
-    HostDraft, Storage, blank_draft, draft_from_entry, draft_from_saved_ssh_profile, draft_problem,
-    identity_agent_for_detection,
+    EnvironmentDiscoveryDraft, HostDraft, Storage, blank_draft, draft_from_entry,
+    draft_from_saved_ssh_profile, draft_problem, identity_agent_for_detection,
 };
 use super::logic::forwards::ForwardRuleDraft;
 use super::logic::management_draft::{
@@ -78,6 +78,8 @@ pub struct NewHost {
     pub prefill_gateway: Option<muxus_core::protocol::SshGateway>,
     pub group: Option<String>,
     pub kind: Option<SavedHostKind>,
+    /// A new SSH host already filled in, e.g. a container found on a host.
+    pub draft: Option<Box<HostDraft>>,
 }
 
 /// What the editor tells its owner.
@@ -345,6 +347,9 @@ impl HostEditor {
                 }
                 if new.prefill_gateway.is_some() {
                     self.management.ssh_gateway = new.prefill_gateway.clone();
+                }
+                if let Some(draft) = &new.draft {
+                    self.ssh = (**draft).clone();
                 }
             }
             HostEditorTarget::Edit(host) | HostEditorTarget::Duplicate(host) => {
@@ -696,7 +701,10 @@ impl HostEditor {
                             d.extras.len()
                                 + usize::from(d.disable_sftp)
                                 + usize::from(d.console_compatibility)
-                                + usize::from(d.system_open_ssh),
+                                + usize::from(d.system_open_ssh)
+                                + usize::from(
+                                    d.discover_environments != EnvironmentDiscoveryDraft::Default,
+                                ),
                         ),
                     ),
                 ]

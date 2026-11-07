@@ -36,6 +36,7 @@ mod backend;
 pub mod data_dir;
 pub mod desktop;
 pub mod diagnostics;
+pub mod environments;
 mod error;
 pub mod links;
 pub mod logging;

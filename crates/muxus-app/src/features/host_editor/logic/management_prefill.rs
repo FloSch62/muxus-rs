@@ -47,6 +47,7 @@ pub fn management_host_prefill(
                 },
                 group: entry.metadata.as_ref().and_then(|m| m.group.clone()),
                 kind: Some(kind),
+                draft: None,
             }
         }
         ManagedHost::Profile(entry) => {
@@ -84,6 +85,7 @@ pub fn management_host_prefill(
                 prefill_gateway: jump_gateway(&hops, saved_profiles),
                 group: entry.metadata.group.clone(),
                 kind: Some(kind),
+                draft: None,
             }
         }
     }

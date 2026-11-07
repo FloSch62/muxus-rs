@@ -19,6 +19,8 @@ pub enum ConnectionLeaseOwner {
     Desktop,
     Management,
     Stats,
+    /// Container, cluster and VM discovery and its lookups.
+    Environments,
 }
 
 /// A transport the registry can close.

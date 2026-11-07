@@ -7,6 +7,7 @@
 //! |---|---|
 //! | `app.ts`, `logs.ts`, `local-shells.ts`, `serial.ts` | [`app`] |
 //! | `diagnostics.ts`, `host-stats.ts` | [`diagnostics`] |
+//! | `environments.ts` | [`environments`] |
 //! | `folders.ts` | [`folders`] |
 //! | `forwards.ts`, `tunnels.ts` | [`forwards`] |
 //! | `profiles.ts`, `host-order.ts`, `terminal-snapshots.ts`, `metadata-schema.ts` | [`hosts`] |
@@ -20,6 +21,7 @@
 
 pub mod app;
 pub mod diagnostics;
+pub mod environments;
 pub mod folders;
 pub mod forwards;
 pub mod history;

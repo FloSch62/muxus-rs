@@ -758,6 +758,7 @@ impl HostEditor {
                     p.text.secondary,
                 )),
         );
+        col = col.child(self.ssh_environment_discovery(window, cx));
 
         if config_backed {
             let tables = self
@@ -969,5 +970,53 @@ impl HostEditor {
         }
         let _ = (SMALL, FieldBody::Value(SharedString::default()));
         col.into_any_element()
+    }
+
+    /// "Containers & VMs" of `AdvancedSection.tsx`: the host's own choice to be read for
+    /// containers, clusters and VMs while a session to it is connected.
+    fn ssh_environment_discovery(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::features::host_editor::logic::draft::EnvironmentDiscoveryDraft;
+        let theme = *cx.theme();
+        let p = theme.palette;
+        let by_default = crate::features::settings::SettingsPrefs::global(cx)
+            .is_none_or(|prefs| prefs.read(cx).prefs().discover_environments);
+        let value = self.ssh.discover_environments;
+        let select = form::select(
+            self,
+            "discover-environments",
+            |body| {
+                FormField::new("discover-environments-field", body)
+                    .label("Find containers, clusters and VMs")
+            },
+            &value,
+            vec![
+                Choice::new(
+                    EnvironmentDiscoveryDraft::Default,
+                    format!("Like Settings ({})", if by_default { "on" } else { "off" }),
+                ),
+                Choice::new(EnvironmentDiscoveryDraft::On, "On"),
+                Choice::new(EnvironmentDiscoveryDraft::Off, "Off"),
+            ],
+            None,
+            window,
+            cx,
+            |this, value, cx| {
+                this.ssh.discover_environments = value;
+                this.changed(cx);
+            },
+        );
+        stack(1.)
+            .child(heading(&theme, "Containers & VMs", 600.))
+            .child(div().max_w(px(360.)).child(select))
+            .child(para(
+                "Runs docker, podman, kubectl, pvesh and virsh on this host while a session to it is connected, to list what it runs. Off never runs them here.",
+                body2(),
+                p.text.secondary,
+            ))
+            .into_any_element()
     }
 }

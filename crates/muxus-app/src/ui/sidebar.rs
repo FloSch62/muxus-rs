@@ -124,6 +124,8 @@ pub enum SidebarAction {
         label: String,
     },
     LocalShellSettings,
+    /// The containers and VMs panel: a row's mark or "Containers & VMs".
+    Environments(crate::ui::environments::EnvironmentsRequest),
 }
 
 pub struct SessionSidebar {
@@ -139,6 +141,8 @@ pub struct SessionSidebar {
     focused_key: Option<String>,
     last_index: usize,
     live: BTreeMap<String, LiveCounts>,
+    /// What each host runs, for the mark at the end of its row.
+    environment_marks: crate::ui::environments::SidebarMarks,
     scroll: ScrollHandle,
     row_window: RowWindow,
     open_gesture: SidebarOpenGesture,
@@ -177,6 +181,7 @@ impl SessionSidebar {
             focused_key: None,
             last_index: 0,
             live: BTreeMap::new(),
+            environment_marks: Default::default(),
             scroll: ScrollHandle::new(),
             // Enough rows for a tall window before the viewport has been measured.
             row_window: RowWindow {
@@ -204,6 +209,47 @@ impl SessionSidebar {
             self.live = live;
             cx.notify();
         }
+    }
+
+    /// What each host runs, and the host the containers and VMs panel shows.
+    pub fn set_environment_marks(
+        &mut self,
+        marks: crate::ui::environments::SidebarMarks,
+        cx: &mut Context<Self>,
+    ) {
+        if self.environment_marks != marks {
+            self.environment_marks = marks;
+            cx.notify();
+        }
+    }
+
+    /// The mark at the end of a host's row (`EnvironmentBadges`); clicking it opens the panel
+    /// on that host.
+    fn environment_mark(
+        &self,
+        key: &str,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let badges = self.environment_marks.marks.get(key)?;
+        let open = self.environment_marks.open.as_deref() == Some(key);
+        let request = key.to_string();
+        let entity = cx.entity().downgrade();
+        muxus_app::features::environments::sidebar_mark(
+            key,
+            badges,
+            open,
+            move |_, _, cx| {
+                let request = request.clone();
+                let _ = entity.update(cx, |_, cx| {
+                    cx.emit(SidebarEvent::Action(SidebarAction::Environments(
+                        crate::ui::environments::EnvironmentsRequest::Toggle(request),
+                    )))
+                });
+            },
+            window,
+            cx,
+        )
     }
 
     /// Replace the host catalog (the backend reloaded it).
@@ -670,6 +716,11 @@ impl Render for SessionSidebar {
             .flex_col()
             .pt(px(TREE_ROW_GAP))
             .gap(px(TREE_ROW_GAP));
+        let local_mark = self.environment_mark(
+            muxus_app::features::environments::model::LOCAL_ENVIRONMENT_KEY,
+            window,
+            cx,
+        );
         list = list.child(self.fixed_row(
             "local-terminal",
             icon("Terminal", 16., p.text.secondary),
@@ -689,6 +740,7 @@ impl Render for SessionSidebar {
                     cx.notify();
                 },
             ))),
+            local_mark,
             &theme,
         ));
         if self.quick_connectable() {
@@ -706,6 +758,7 @@ impl Render for SessionSidebar {
                         }
                     },
                 ),
+                None,
                 None,
                 &theme,
             ));
@@ -855,17 +908,19 @@ impl SessionSidebar {
         ink: Option<Hsla>,
         on_click: impl Fn(&muxus_ui::gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
         on_context: Option<ContextHandler>,
+        trailing: Option<AnyElement>,
         theme: &Theme,
     ) -> AnyElement {
         let mut row = row_shell(id.into(), 0, None, theme)
             .gap(px(6.))
             .cursor_pointer()
             .child(leading)
-            .child(label_text(
+            .child(div().flex_1().min_w_0().child(label_text(
                 label,
                 ink.unwrap_or(theme.palette.sidebar_ink),
                 450.,
-            ))
+            )))
+            .children(trailing)
             .on_click(on_click);
         if let Some(handler) = on_context {
             row = row.on_mouse_down(MouseButton::Right, move |event, window, cx| {
@@ -962,7 +1017,8 @@ impl SessionSidebar {
                     .when_bg(selected, p.action.selected)
                     .when_bg(is_match, p.action.selected)
                     .child(icon_box)
-                    .child(div().flex_1().min_w_0().child(label_row));
+                    .child(div().flex_1().min_w_0().child(label_row))
+                    .children(self.environment_mark(&key, window, cx));
                 if is_match {
                     el = el.child(
                         div()
@@ -983,11 +1039,16 @@ impl SessionSidebar {
                 let on_right = self.on_right;
                 let menu_closed = self.menu.is_none();
                 el.child(
+                    // Until the row is hovered the options button takes no width (nor the
+                    // row's gap), which goes to the name.
                     div()
                         .flex_none()
+                        .w(px(0.))
+                        .ml(px(-6.))
                         .mr(px(-3.))
+                        .overflow_hidden()
                         .invisible()
-                        .group_hover(group_name, |s| s.visible())
+                        .group_hover(group_name, |s| s.visible().w_auto().ml(px(0.)))
                         .child(
                             IconButton::new(
                                 ElementId::Name(format!("host-menu-{key}").into()),

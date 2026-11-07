@@ -187,20 +187,35 @@ fn pty_environment_overrides() -> [(String, String); 3] {
 
 /// Resolve the shell, arguments, working directory and environment of a local terminal.
 pub fn plan_local_pty(profile: &LocalProfile, environment: &LocalEnvironment) -> LocalPtyPlan {
-    let program = profile
-        .shell
-        .as_deref()
-        .map(str::trim)
-        .filter(|shell| !shell.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| default_shell(&environment.vars, environment.platform));
-    let integration = shell_integration(
-        &program,
-        &environment.vars,
-        environment.integration_root.as_deref(),
-        environment.platform,
-    );
-    let args = local_pty_args(profile, &integration.args);
+    // A container, pod or console session runs its tool directly, with no
+    // shell integration: the shell it ends up in belongs to the container.
+    let entered = profile
+        .environment
+        .as_ref()
+        .and_then(|target| muxus_core::environments::environment_argv(target).ok());
+    let program = match &entered {
+        Some(argv) => argv[0].clone(),
+        None => profile
+            .shell
+            .as_deref()
+            .map(str::trim)
+            .filter(|shell| !shell.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| default_shell(&environment.vars, environment.platform)),
+    };
+    let integration = match &entered {
+        Some(_) => crate::shell_integration::ShellIntegration::default(),
+        None => shell_integration(
+            &program,
+            &environment.vars,
+            environment.integration_root.as_deref(),
+            environment.platform,
+        ),
+    };
+    let args = match &entered {
+        Some(argv) => argv[1..].to_vec(),
+        None => local_pty_args(profile, &integration.args),
+    };
     let mut env = pty_environment(environment);
     env.extend(integration.env);
     // The terminal's own variables win over anything the integration set.

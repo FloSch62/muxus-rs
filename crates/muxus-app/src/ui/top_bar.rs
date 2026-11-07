@@ -151,6 +151,7 @@ impl AppShell {
                         })),
                 );
             }
+            bar = bar.children(self.environments_control(cx));
             let forwarding_open = self.features.forwarding_open;
             let summary = self.forwards;
             let mut forwarding = IconButton::new("forwarding", "SwapHorizOutlined")

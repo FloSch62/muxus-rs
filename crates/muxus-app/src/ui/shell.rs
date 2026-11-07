@@ -372,6 +372,7 @@ impl AppShell {
     }
 
     pub fn set_catalog(&mut self, catalog: Catalog, cx: &mut Context<Self>) {
+        self.environments_catalog_loaded(&catalog, cx);
         if self.catalog == catalog {
             return;
         }
@@ -567,6 +568,7 @@ impl Render for AppShell {
         self.sync_session_views(window, cx);
         self.sync_sftp(window, cx);
         self.sync_prompt_dialog(window, cx);
+        self.sync_environments(cx);
         let theme = *cx.theme();
         let p = theme.palette;
         let show_sidebar = self.show_sidebar();
@@ -587,10 +589,18 @@ impl Render for AppShell {
         {
             canvas = canvas.child(panel);
         }
+        // The containers and VMs panel opens beside the sidebar it grows out of.
+        let environments = self.render_environments_panel(window, cx);
         middle = if on_right {
-            middle.child(canvas).children(sidebar)
+            middle
+                .child(canvas)
+                .children(environments)
+                .children(sidebar)
         } else {
-            middle.children(sidebar).child(canvas)
+            middle
+                .children(sidebar)
+                .children(environments)
+                .child(canvas)
         };
 
         let mut root = div()

@@ -22,6 +22,8 @@ pub enum QuickLauncherKind {
     Tunnel,
     History,
     LocalShell,
+    /// A container, lab node, VM or cluster found on a host.
+    Environment,
     Action,
     Keymap,
 }
@@ -39,6 +41,7 @@ impl QuickLauncherKind {
             QuickLauncherKind::Tunnel => "tunnel",
             QuickLauncherKind::History => "history",
             QuickLauncherKind::LocalShell => "local-shell",
+            QuickLauncherKind::Environment => "environment",
             QuickLauncherKind::Action => "action",
             QuickLauncherKind::Keymap => "keymap",
         }
