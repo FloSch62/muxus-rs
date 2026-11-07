@@ -18,12 +18,13 @@ use crate::zoom::px;
 use gpui_kit::base::input::{Input, InputState};
 use gpui_kit::{
     AnyElement, App, ClickEvent, ElementId, Entity, Focusable, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce, SharedString,
     StatefulInteractiveElement, Styled, Transformation, Window, div, percentage, relative,
 };
 
 use crate::icon::icon;
 use crate::theme::{ActiveTheme, Theme, fonts};
+use crate::widgets::focus;
 use crate::widgets::text_field::style_input;
 use crate::widgets::tooltip::{AnchorBounds, bounds_probe};
 use crate::widgets::typography::{VariantExt, body1, body2, caption, para, rem, text};
@@ -388,6 +389,16 @@ impl RenderOnce for FormField {
             FieldBody::Input(state) => Some(state.read(cx).focus_handle(cx)),
             _ => self.element_focus.clone(),
         };
+        // A select (a clickable field without an input of its own) is a tab stop;
+        // keyboard focus outlines it as MUI's focused select. Enter or Space opens it.
+        let select_focus = (!matches!(self.body, FieldBody::Input(_))
+            && self.element_focus.is_none()
+            && !self.disabled
+            && (self.select || self.on_click.is_some()))
+        .then(|| focus::keyed_focus(&self.id, window, cx));
+        let keyboard_focused = select_focus
+            .as_ref()
+            .is_some_and(|focus| focus::focus_visible(focus, window));
         let (focused, filled) = match &self.body {
             FieldBody::Input(state) => {
                 style_input(state, &theme, cx);
@@ -399,10 +410,11 @@ impl RenderOnce for FormField {
                 let filled = !state.read(cx).value().is_empty();
                 (focused, filled)
             }
-            FieldBody::Value(value) => (self.open, !value.is_empty()),
-            FieldBody::Muted(_) => (self.open, true),
+            FieldBody::Value(value) => (self.open || keyboard_focused, !value.is_empty()),
+            FieldBody::Muted(_) => (self.open || keyboard_focused, true),
             FieldBody::Element(_) => (
                 self.open
+                    || keyboard_focused
                     || self
                         .element_focus
                         .as_ref()
@@ -578,6 +590,11 @@ impl RenderOnce for FormField {
         }
         if let Some(anchor) = &self.anchor {
             input_root = input_root.child(bounds_probe(anchor));
+        }
+        if let Some(focus) = &select_focus {
+            input_root = input_root
+                .track_focus(focus)
+                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default());
         }
         if !self.disabled {
             if self.select || self.on_click.is_some() {

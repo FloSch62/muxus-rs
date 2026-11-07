@@ -8,13 +8,14 @@ use std::rc::Rc;
 
 use crate::zoom::px;
 use gpui_kit::{
-    AnyElement, App, Div, FontWeight, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    RenderOnce, SharedString, Styled, Window, deferred, div, relative,
+    AnyElement, App, Div, ElementId, FontWeight, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, RenderOnce, SharedString, Styled, Window, deferred, div, relative,
 };
 
 use crate::color::rgba8;
 use crate::theme::{ActiveTheme, Theme, fonts};
 use crate::widgets::button::elevation;
+use crate::widgets::focus::FocusTrap;
 
 /// `maxWidth` of a dialog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,64 +188,72 @@ impl RenderOnce for Dialog {
 }
 
 /// A full-window backdrop with `content` centred on it.
-pub fn modal(content: impl IntoElement, on_close: Option<CloseHandler>) -> impl IntoElement {
-    let backdrop = div()
-        .id("modal-backdrop")
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(rgba8(0, 0, 0, 0.5))
-        // MUI's backdrop takes the pointer: nothing under it hovers or scrolls.
-        .occlude()
-        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            if let Some(close) = &on_close {
-                close(window, cx);
-            }
-        })
-        .child(crate::widgets::hover::hover_refresh("modal-hover"))
-        .child(
-            div()
-                .id("modal-content")
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(content),
-        );
-    deferred(backdrop).with_priority(3)
+#[track_caller]
+pub fn modal(content: impl IntoElement, on_close: Option<CloseHandler>) -> Modal {
+    Modal {
+        key: ElementId::CodeLocation(*std::panic::Location::caller()),
+        content: content.into_any_element(),
+        on_close,
+        top: None,
+    }
 }
 
 /// Like [`modal`], with `content` near the top instead of centred: the
 /// paper's top edge `top` px below the window's (`position: absolute;
 /// top: 10vh` papers such as the quick launcher's).
-pub fn modal_at_top(
-    content: impl IntoElement,
+#[track_caller]
+pub fn modal_at_top(content: impl IntoElement, on_close: Option<CloseHandler>, top: f32) -> Modal {
+    Modal {
+        key: ElementId::CodeLocation(*std::panic::Location::caller()),
+        content: content.into_any_element(),
+        on_close,
+        top: Some(top),
+    }
+}
+
+/// A modal layer (see [`modal`]). It traps the keyboard as MUI's `Modal`
+/// does ([`FocusTrap`]).
+#[derive(IntoElement)]
+pub struct Modal {
+    /// Keeps the focus traps of two modals one view mounts side by side apart.
+    key: ElementId,
+    content: AnyElement,
     on_close: Option<CloseHandler>,
-    top: f32,
-) -> impl IntoElement {
-    let backdrop = div()
-        .id("modal-backdrop")
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_start()
-        .justify_center()
-        .pt(px(top))
-        .bg(rgba8(0, 0, 0, 0.5))
-        // MUI's backdrop takes the pointer: nothing under it hovers or scrolls.
-        .occlude()
-        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            if let Some(close) = &on_close {
-                close(window, cx);
-            }
-        })
-        .child(crate::widgets::hover::hover_refresh("modal-hover"))
-        .child(
-            div()
-                .id("modal-content")
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(content),
-        );
-    deferred(backdrop).with_priority(3)
+    top: Option<f32>,
+}
+
+impl RenderOnce for Modal {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let on_close = self.on_close;
+        let mut backdrop = div()
+            .id("modal-backdrop")
+            .absolute()
+            .inset_0()
+            .flex()
+            .justify_center()
+            .bg(rgba8(0, 0, 0, 0.5))
+            // MUI's backdrop takes the pointer: nothing under it hovers or scrolls.
+            .occlude()
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                if let Some(close) = &on_close {
+                    close(window, cx);
+                }
+            });
+        backdrop = match self.top {
+            Some(top) => backdrop.items_start().pt(px(top)),
+            None => backdrop.items_center(),
+        };
+        let backdrop = backdrop
+            .child(crate::widgets::hover::hover_refresh("modal-hover"))
+            .child(FocusTrap::new(
+                self.key,
+                div()
+                    .id("modal-content")
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(self.content),
+            ));
+        deferred(backdrop).with_priority(3)
+    }
 }
 
 /// `DialogTitle` for a dialog that lays out its own title row (an icon, a

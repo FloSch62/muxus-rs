@@ -14,6 +14,7 @@ use crate::color::alpha;
 use crate::icon::icon;
 use crate::label::label;
 use crate::theme::ActiveTheme;
+use crate::widgets::focus::TabStop;
 
 type Handler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
@@ -213,7 +214,9 @@ impl RenderOnce for ToggleButtonGroup {
             if !self.disabled {
                 item = item.cursor_pointer();
                 if let Some(handler) = button.on_click {
-                    item = item.on_click(move |event, window, cx| handler(event, window, cx));
+                    item = item
+                        .tab_stop_with_ripple(crate::widgets::focus::ripple(ink, None), true)
+                        .on_click(move |event, window, cx| handler(event, window, cx));
                 }
             }
             if index > 0 {

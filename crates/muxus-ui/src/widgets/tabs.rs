@@ -17,6 +17,7 @@ use gpui_kit::{
 use crate::color::alpha;
 use crate::icon::{SMALL, icon};
 use crate::theme::{ActiveTheme, Theme, fonts};
+use crate::widgets::focus::{self, TabStop};
 
 type Handler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
@@ -198,7 +199,9 @@ impl RenderOnce for Tab {
             tab = tab.hover(move |s| s.text_color(hover));
         }
         if let Some(handler) = self.on_click {
-            tab = tab.on_click(move |event, window, cx| handler(event, window, cx));
+            tab = tab
+                .tab_stop_with_ripple(focus::ripple(ink, None), true)
+                .on_click(move |event, window, cx| handler(event, window, cx));
         }
         tab
     }
