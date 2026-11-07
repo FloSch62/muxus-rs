@@ -818,6 +818,54 @@ impl SettingsWindow {
             .into_any_element()
     }
 
+    /// Narrow windows (below MUI's `sm`, 600px): the section list becomes a
+    /// full-width picker above the page, under the search field.
+    fn render_section_picker(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        const KEY: &str = "settings-section";
+        let theme = *cx.theme();
+        let anchor = self.anchor(KEY);
+        let section = self.nav.section;
+        let entries: Vec<MenuEntry> = SettingsSection::ALL
+            .iter()
+            .map(|section| MenuEntry::item(section.id(), section.label()))
+            .collect();
+        let this = cx.entity().downgrade();
+        let open = self.menu_open(KEY);
+        super::kit::row_select(
+            "settings-section-picker",
+            // `fullWidth`: the field stretches to the page (it stops at 100%).
+            100_000.,
+            super::kit::select_value(&theme, section.label()),
+            open,
+            false,
+            &anchor,
+            &theme,
+            Rc::new(move |_, cx| {
+                let entries = entries.clone();
+                let _ = this.update(cx, |this, cx| {
+                    this.open_menu(
+                        KEY,
+                        112.,
+                        None,
+                        entries,
+                        Some(section.id().to_string()),
+                        Rc::new(|this, value, window, cx| {
+                            if let Some(section) = SettingsSection::ALL
+                                .into_iter()
+                                .find(|section| section.id() == value)
+                            {
+                                this.pick(section, window, cx);
+                            }
+                        }),
+                        cx,
+                    );
+                });
+            }),
+        )
+        .w_full()
+        .into_any_element()
+    }
+
     fn render_section(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         match self.nav.section {
             SettingsSection::Appearance => self.appearance(window, cx),
@@ -1045,6 +1093,9 @@ impl SettingsWindow {
     }
 }
 
+/// MUI's `sm` breakpoint: narrower windows trade the section list for a picker.
+const NARROW_WIDTH: f32 = 600.;
+
 /// `subheader` text of a select menu (MUI ListSubheader: 14px, 48px line).
 const BODY2_HEADER: f32 = 14. * 13. / 14.;
 
@@ -1055,7 +1106,21 @@ impl Render for SettingsWindow {
         let p = theme.palette;
         self.state.before_render(self.nav.section, cx);
         let title_bar = self.render_title_bar(window, cx);
-        let nav = self.render_nav(window, cx);
+        // Below MUI's `sm` breakpoint the section list folds into a picker.
+        let inset = window.client_inset().map_or(0., f32::from);
+        let narrow =
+            muxus_ui::zoom::unzoom(window.viewport_size().width) - 2. * inset < NARROW_WIDTH;
+        let nav = (!narrow).then(|| self.render_nav(window, cx));
+        let mut page = div();
+        if narrow {
+            page = page
+                .child(
+                    div()
+                        .mb(px(12.))
+                        .child(self.search_autocomplete(window, cx)),
+                )
+                .child(div().mb(px(20.)).child(self.render_section_picker(cx)));
+        }
         let focus = super::search::focus_scope(&self.state.search, p.primary.main);
         let section = self.render_section(window, cx);
         drop(focus);
@@ -1072,9 +1137,9 @@ impl Render for SettingsWindow {
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .bg(p.background_default)
-                    .px(px(28.))
+                    .px(px(if narrow { 16. } else { 28. }))
                     .py(px(24.))
-                    .child(div().max_w(px(760.)).child(section)),
+                    .child(page.child(div().max_w(px(760.)).child(section))),
             )
             .child(muxus_ui::widgets::scrollbar::vertical(&self.scroll, &theme));
         let menu = self.render_menu(cx);
@@ -1098,7 +1163,7 @@ impl Render for SettingsWindow {
             .font_family(fonts::UI)
             .text_color(p.text.primary)
             .child(title_bar)
-            .child(div().flex().flex_1().min_h_0().child(nav).child(content))
+            .child(div().flex().flex_1().min_h_0().children(nav).child(content))
             .children(dialogs)
             .children(self.render_rule_colors(cx))
             .children(self.render_color_picker(window, cx))

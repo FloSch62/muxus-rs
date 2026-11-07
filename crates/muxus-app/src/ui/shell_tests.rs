@@ -281,3 +281,234 @@ fn programs_mark_their_tab_until_it_is_looked_at(cx: &mut TestAppContext) {
     output(cx, "\x1b]7501;state=blocked:id=x\x07");
     assert_eq!(shown(cx), None);
 }
+
+/// Open `count` blank tabs titled "t0", "t1"... in the active pane, laid out once.
+fn blank_tabs(
+    window: &WindowHandle<AppShell>,
+    count: usize,
+    cx: &mut TestAppContext,
+) -> Vec<String> {
+    let ids = window
+        .update(cx, |shell, window, cx| {
+            let ids: Vec<String> = (0..count)
+                .map(|index| {
+                    let id = shell.tabs.open_empty();
+                    shell.tabs.update(
+                        &id,
+                        muxus_app::state::tabs::TabPatch {
+                            title: Some(format!("t{index}")),
+                            ..Default::default()
+                        },
+                    );
+                    id
+                })
+                .collect();
+            shell.tabs_changed(cx);
+            window.refresh();
+            ids
+        })
+        .unwrap();
+    cx.run_until_parked();
+    ids
+}
+
+/// The titles of the active pane's tabs, in order.
+fn strip_titles(window: &WindowHandle<AppShell>, cx: &mut TestAppContext) -> Vec<String> {
+    window
+        .update(cx, |shell, _, _| {
+            let pane = shell.tabs.active_pane_id.clone();
+            shell
+                .tabs
+                .pane_tabs(&pane)
+                .iter()
+                .map(|tab| tab.title.clone())
+                .collect()
+        })
+        .unwrap()
+}
+
+type PxBounds = muxus_ui::gpui_kit::Bounds<muxus_ui::gpui_kit::Pixels>;
+
+/// Where tab `id` is painted once every slide has arrived.
+fn tab_bounds(window: &WindowHandle<AppShell>, id: &str, cx: &mut TestAppContext) -> PxBounds {
+    // Tests have no clock to run the slides: land them.
+    window
+        .update(cx, |shell, window, _| {
+            shell.tab_motion.slides.clear();
+            window.refresh();
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(cx, |shell, _, _| shell.geometry.tabs.borrow()[id])
+        .unwrap()
+}
+
+/// A strip from `first`'s top-left, `width` wide.
+fn strip_from(first: PxBounds, width: f32) -> PxBounds {
+    muxus_ui::gpui_kit::Bounds {
+        origin: first.origin,
+        size: muxus_ui::gpui_kit::size(muxus_ui::gpui_kit::px(width), first.size.height),
+    }
+}
+
+/// `TabStrip.tsx` drags: a tab dragged along its own strip resorts it live (a pinned
+/// tab stays among the pinned ones), and a tab from another pane shows where it lands
+/// and goes there when dropped.
+#[gpui::test]
+fn dragged_tabs_resort_live_and_land_where_the_line_shows(cx: &mut TestAppContext) {
+    use muxus_app::state::tabs::Edge;
+    use muxus_app::state::workspace_layout::PaneDirection;
+    use muxus_ui::gpui_kit::{point, px};
+
+    let fx = Fixture::start(|_| {});
+    let window = main_window(&fx, cx);
+    let ids = blank_tabs(&window, 3, cx);
+    let over = |cx: &mut TestAppContext, dragged: &str, x: muxus_ui::gpui_kit::Pixels| {
+        let mut first = tab_bounds(&window, &ids[0], cx);
+        first.origin.x = px(0.);
+        let strip = strip_from(first, 4000.);
+        window
+            .update(cx, |shell, window, cx| {
+                // No slide is settling in a test.
+                shell.tab_motion.settle_until = None;
+                let pane = shell.tabs.active_pane_id.clone();
+                shell.tab_dragged_over(&pane, dragged, point(x, strip.center().y), strip, cx);
+                window.refresh();
+            })
+            .unwrap();
+        cx.run_until_parked();
+    };
+    assert_eq!(strip_titles(&window, cx), ["t0", "t1", "t2"]);
+    // "t0" dragged over the right half of "t2" moves behind it, live.
+    let third = tab_bounds(&window, &ids[2], cx);
+    over(cx, &ids[0], third.right() - px(5.));
+    assert_eq!(strip_titles(&window, cx), ["t1", "t2", "t0"]);
+    // Past the last tab: to the end of its group.
+    let last = tab_bounds(&window, &ids[0], cx);
+    over(cx, &ids[1], last.right() + px(40.));
+    assert_eq!(strip_titles(&window, cx), ["t2", "t0", "t1"]);
+
+    // A pinned tab never mixes with the others.
+    window
+        .update(cx, |shell, window, cx| {
+            shell.tabs.set_pinned(&ids[2], true);
+            shell.tabs_changed(cx);
+            window.refresh();
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let pinned = tab_bounds(&window, &ids[2], cx);
+    over(cx, &ids[1], pinned.left() + px(5.));
+    assert_eq!(strip_titles(&window, cx), ["t2", "t0", "t1"]);
+
+    // A second pane: "t1" dragged over its strip shows the line, and the drop lands there.
+    let (left_pane, right_pane) = window
+        .update(cx, |shell, window, cx| {
+            let left = shell.tabs.active_pane_id.clone();
+            shell
+                .tabs
+                .move_tab_to_new_pane(&ids[0], PaneDirection::Right);
+            let right = shell.tabs.active_pane_id.clone();
+            shell.tabs_changed(cx);
+            window.refresh();
+            (left, right)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let target = tab_bounds(&window, &ids[0], cx);
+    window
+        .update(cx, |shell, _, cx| {
+            shell.tab_dragged_over(
+                &right_pane,
+                &ids[1],
+                point(target.left() + px(5.), target.center().y),
+                strip_from(target, 400.),
+                cx,
+            );
+            assert_eq!(
+                shell.tab_motion.drop,
+                Some(super::tab_drag::TabDropIndicator {
+                    pane_id: right_pane.clone(),
+                    target: Some(ids[0].clone()),
+                    edge: Edge::Before,
+                })
+            );
+            shell.drop_tab(&ids[1], &right_pane, Some(&ids[0]), Edge::Before, cx);
+            assert_eq!(shell.tab_motion.drop, None);
+            let titles = |pane: &str| -> Vec<String> {
+                shell
+                    .tabs
+                    .pane_tabs(pane)
+                    .iter()
+                    .map(|tab| tab.title.clone())
+                    .collect()
+            };
+            assert_eq!(titles(&right_pane), ["t1", "t0"]);
+            assert_eq!(titles(&left_pane), ["t2"]);
+        })
+        .unwrap();
+}
+
+/// A tab from another window lands beside the tab it was let go over, keeping its
+/// title and flag (`adoptTransferredTab`).
+#[gpui::test]
+fn a_tab_from_another_window_lands_beside_the_tab_under_the_pointer(cx: &mut TestAppContext) {
+    use muxus_ui::gpui_kit::{point, px};
+
+    let fx = Fixture::start(|_| {});
+    let window = main_window(&fx, cx);
+    let ids = blank_tabs(&window, 2, cx);
+    let first = tab_bounds(&window, &ids[0], cx);
+    window
+        .update(cx, |shell, _, cx| {
+            let mut moved = shell.tabs.tab(&ids[1]).unwrap().clone();
+            moved.title = "router".into();
+            moved.color = Some(muxus_ui::theme::TAB_FLAG_COLORS[0].into());
+            shell.adopt_tab(
+                moved,
+                None,
+                point(first.right() - px(4.), first.center().y),
+                cx,
+            );
+        })
+        .unwrap();
+    assert_eq!(strip_titles(&window, cx), ["t0", "router", "t1"]);
+    let adopted = window
+        .update(cx, |shell, _, _| shell.tabs.active_tab().cloned())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        adopted.color.as_deref(),
+        Some(muxus_ui::theme::TAB_FLAG_COLORS[0])
+    );
+}
+
+/// `ToastHost`: errors and warnings can be copied; details unfold below the message and
+/// keep the toast up until it is dismissed.
+#[gpui::test]
+fn toasts_offer_copy_and_details(cx: &mut TestAppContext) {
+    use muxus_ui::theme::Status;
+
+    let fx = Fixture::start(|_| {});
+    let window = main_window(&fx, cx);
+    window
+        .update(cx, |shell, _, cx| {
+            shell.show_toast_with_details(
+                Status::Error,
+                "Could not save 3 hosts.",
+                Some("router-1: permission denied".into()),
+                cx,
+            );
+            let toast = shell.toast.clone().unwrap();
+            assert!(toast.copyable() && toast.sticky());
+            assert_eq!(
+                toast.copy_text(),
+                "Could not save 3 hosts.\n\nrouter-1: permission denied"
+            );
+            shell.show_toast(Status::Success, "Saved.", cx);
+            let toast = shell.toast.clone().unwrap();
+            assert!(!toast.copyable() && !toast.sticky() && toast.details.is_none());
+        })
+        .unwrap();
+}

@@ -42,6 +42,7 @@ mod sidebar_shells;
 mod sidebar_tests;
 mod status_bar;
 mod tab_actions;
+mod tab_drag;
 mod terminal;
 mod terminal_actions;
 mod toast;

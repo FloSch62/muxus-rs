@@ -67,8 +67,8 @@ pub fn chord_chip(content: impl Into<SharedString>, theme: &Theme) -> Chip {
         .font_size(theme.typography.chord_small.size)
 }
 
-/// A toast host: shows `message` with `status`.
-pub type ToastFn = dyn Fn(Status, SharedString, &mut App);
+/// A toast host: shows `message` with `status`, and `details` behind its Details button.
+pub type ToastFn = dyn Fn(Status, SharedString, Option<SharedString>, &mut App);
 
 /// What the screens hand the window's toast host (`showToast`).
 #[derive(Clone)]
@@ -77,15 +77,29 @@ pub struct ToastHook(pub Rc<ToastFn>);
 impl Global for ToastHook {}
 
 /// Register the window's toast host. Without one, toasts go to stderr.
-pub fn set_toast_hook(hook: impl Fn(Status, SharedString, &mut App) + 'static, cx: &mut App) {
+pub fn set_toast_hook(
+    hook: impl Fn(Status, SharedString, Option<SharedString>, &mut App) + 'static,
+    cx: &mut App,
+) {
     cx.set_global(ToastHook(Rc::new(hook)));
 }
 
 /// `showToast(severity, message)`.
 pub fn show_toast(status: Status, message: impl Into<SharedString>, cx: &mut App) {
+    show_toast_with_details(status, message, None, cx);
+}
+
+/// `showToast(severity, message, details)`: the full error text behind the
+/// toast's Details expander and its Copy button.
+pub fn show_toast_with_details(
+    status: Status,
+    message: impl Into<SharedString>,
+    details: Option<SharedString>,
+    cx: &mut App,
+) {
     let message = message.into();
     match cx.try_global::<ToastHook>().cloned() {
-        Some(hook) => (hook.0)(status, message, cx),
+        Some(hook) => (hook.0)(status, message, details, cx),
         None => eprintln!("[{status:?}] {message}"),
     }
 }

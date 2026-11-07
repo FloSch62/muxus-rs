@@ -593,12 +593,23 @@ pub fn row_select(
             spread_radius: px(2.),
             inset: true,
         }];
+        let on_key = on_open.clone();
         field = field
             .tab_stop(true)
             .focusable()
             .focus_visible(move |s| s.shadow(ring))
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .cursor_pointer()
+            // MUI's Select opens on the up and down arrows too.
+            .on_key_down(move |event, window, cx| {
+                let keystroke = &event.keystroke;
+                if matches!(keystroke.key.as_str(), "up" | "down")
+                    && !keystroke.modifiers.modified()
+                {
+                    cx.stop_propagation();
+                    on_key(window, cx);
+                }
+            })
             .on_click(move |_, window, cx| on_open(window, cx));
     }
     field

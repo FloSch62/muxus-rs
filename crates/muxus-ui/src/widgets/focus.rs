@@ -3,7 +3,8 @@
 //! Every control (buttons, icon buttons, checkboxes, radios, switches,
 //! sliders, tabs, toggle buttons, select fields, sort labels) is a tab
 //! stop, so Tab and Shift+Tab walk them in paint order: in a window with the
-//! component library's root (settings, SFTP), and inside any dialog, whose
+//! component library's root (settings, SFTP) or with [`tab_order`] on its
+//! root (the main window), and inside any dialog, whose
 //! [`super::dialog::modal`] keeps the walk within it (MUI's `FocusTrap`).
 //! Enter and Space press the focused control (GPUI turns them into a click).
 //!
@@ -16,7 +17,7 @@
 
 use gpui_kit::{
     App, Div, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyBinding,
-    MouseButton, RenderOnce, Stateful, StatefulInteractiveElement, Styled, Window,
+    MouseButton, NoAction, RenderOnce, Stateful, StatefulInteractiveElement, Styled, Window,
 };
 
 use crate::color::{alpha, over};
@@ -80,12 +81,32 @@ gpui_kit::actions!(muxus_focus, [FocusNext, FocusPrevious]);
 /// inside the trap (the window's others come first when it wraps around).
 const MAX_TAB_STEPS: usize = 1024;
 
-/// Bind Tab and Shift+Tab inside focus traps.
+/// The key context of a window whose root walks its tab stops with Tab and
+/// Shift+Tab ([`tab_order`]), as a browser page does.
+pub const WINDOW_KEY_CONTEXT: &str = "MuxusWindow";
+
+/// Bind Tab and Shift+Tab inside focus traps and windows with a tab order.
+/// A terminal keeps both: Tab completes in the shell there, as in xterm.js.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("tab", FocusNext, Some(TRAP_KEY_CONTEXT)),
         KeyBinding::new("shift-tab", FocusPrevious, Some(TRAP_KEY_CONTEXT)),
+        KeyBinding::new("tab", FocusNext, Some(WINDOW_KEY_CONTEXT)),
+        KeyBinding::new("shift-tab", FocusPrevious, Some(WINDOW_KEY_CONTEXT)),
+        KeyBinding::new("tab", NoAction, Some(crate::TERMINAL_KEY_CONTEXT)),
+        KeyBinding::new("shift-tab", NoAction, Some(crate::TERMINAL_KEY_CONTEXT)),
     ]);
+}
+
+/// A window root whose tab stops Tab and Shift+Tab walk in paint order,
+/// wrapping at the ends (the browser's sequential focus navigation). Views
+/// that need Tab themselves unbind it in their key context (a terminal does,
+/// see [`init`]); dialogs keep the walk inside themselves ([`FocusTrap`]).
+pub fn tab_order<E: InteractiveElement>(element: E) -> E {
+    element
+        .key_context(WINDOW_KEY_CONTEXT)
+        .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
+        .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
 }
 
 /// MUI's `FocusTrap` around a modal's paper: when it opens, the focus moves
@@ -124,7 +145,10 @@ struct TrapState {
 impl TrapState {
     fn new(window: &mut Window, cx: &mut gpui_kit::Context<Self>) -> Self {
         let container = cx.focus_handle();
-        let previous = window.focused(cx);
+        // A dialog opened from a menu item goes back to what had the keyboard
+        // before the menu, which is gone by the time the dialog closes.
+        let previous =
+            crate::widgets::menu_keyboard::focus_before_menus(window.focused(cx), window);
         let this = cx.weak_entity();
         let enter = container.clone();
         window.on_next_frame(move |window, cx| {
