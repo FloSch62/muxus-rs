@@ -105,7 +105,11 @@ impl Console {
     }
 
     async fn wait_for(&self, needle: &[u8]) {
-        tokio::time::timeout(Duration::from_secs(10), async {
+        self.wait_for_within(needle, Duration::from_secs(10)).await;
+    }
+
+    async fn wait_for_within(&self, needle: &[u8], limit: Duration) {
+        tokio::time::timeout(limit, async {
             while !self
                 .received()
                 .windows(needle.len())
@@ -1160,7 +1164,11 @@ async fn anti_idle_waits_for_the_first_input_on_a_saved_telnet_host_then_types_i
     );
     handle.send_data(b"admin".to_vec());
     console.wait_for(b"admin").await;
-    console.wait_for(b"adminshow clock\r\n").await;
+    // Anti-idle types a full interval (10 s) after that input, so the wait must outlast it;
+    // the default 10 s wait raced the timer and failed whenever the machine was busy.
+    console
+        .wait_for_within(b"adminshow clock\r\n", Duration::from_secs(20))
+        .await;
     handle.close();
     sandbox.stop().await;
 }
