@@ -643,11 +643,12 @@ impl Render for AppShell {
         if let Some((dialog, _)) = &self.confirm {
             root = root.child(dialog.clone());
         }
+        root = root.children(self.feature_layers());
+        root = root.children(self.overlays.iter().map(|overlay| overlay.view.clone()));
+        // Questions draw over feature dialogs: a script's hosts ask while Scripts is open.
         if let Some((dialog, _)) = &self.prompt_dialog {
             root = root.child(dialog.clone());
         }
-        root = root.children(self.feature_layers());
-        root = root.children(self.overlays.iter().map(|overlay| overlay.view.clone()));
         if let Some(toast) = self.render_toast(window, cx) {
             root = root.child(toast);
         }

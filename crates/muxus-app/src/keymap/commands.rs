@@ -519,6 +519,21 @@ pub(crate) fn build_commands_for(is_mac: bool) -> Vec<KeyCommand> {
             &["Mod+Shift+B"],
             &["distraction free", "zen", "fullscreen", "hide chrome"],
         ),
+        command(
+            "app.scripts",
+            "Run a script on hosts…",
+            App,
+            &[],
+            &[
+                "script",
+                "batch",
+                "bulk",
+                "run",
+                "many hosts",
+                "parallel",
+                "ansible",
+            ],
+        ),
         hidden(command(
             "app.settings",
             "Open settings",
@@ -566,7 +581,7 @@ mod tests {
 
     #[test]
     fn catalog_matches_the_typescript_table() {
-        assert_eq!(KEY_COMMANDS.len(), 59);
+        assert_eq!(KEY_COMMANDS.len(), 60);
         let first = &KEY_COMMANDS[0];
         assert_eq!(first.id, "pane.split.right");
         assert_eq!(first.title, "Split pane right");

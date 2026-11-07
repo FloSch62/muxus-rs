@@ -106,6 +106,11 @@ pub enum SidebarAction {
         label: String,
         hosts: Vec<ManagedHost>,
     },
+    /// Open Scripts for these hosts; `what` names them in the notice.
+    RunScript {
+        hosts: Vec<ManagedHost>,
+        what: String,
+    },
     /// Write these hosts' order alphabetically.
     SortHosts(Vec<ManagedHost>),
     /// Hosts dragged into a folder or to a new place among their siblings.

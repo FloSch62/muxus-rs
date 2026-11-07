@@ -18,6 +18,7 @@
 //! | `ssh.ts` | [`ssh`] |
 //! | `workspaces.ts` | [`workspaces`] |
 //! | `management-requests.ts` | not here: see [`crate::management`] |
+//! | `scripts.ts` | not here: see [`crate::scripts::routes`] |
 
 pub mod app;
 pub mod diagnostics;

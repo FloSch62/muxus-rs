@@ -24,6 +24,7 @@ mod prefs;
 mod program_status;
 mod prompts;
 mod scenes;
+mod scripts;
 mod session_views;
 mod sftp;
 mod shell;

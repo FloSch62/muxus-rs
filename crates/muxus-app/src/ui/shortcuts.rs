@@ -169,6 +169,10 @@ impl AppShell {
                 self.open_shortcuts(window, cx);
                 true
             }
+            "app.scripts" => {
+                self.open_scripts(None, window, cx);
+                true
+            }
             "app.quick-launcher" => {
                 self.open_launcher(window, cx);
                 true

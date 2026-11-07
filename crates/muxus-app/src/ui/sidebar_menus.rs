@@ -176,6 +176,37 @@ impl SessionSidebar {
                                 cx,
                             )),
                     );
+                if muxus_app::features::scripts::is_script_host(&host) {
+                    let system =
+                        muxus_app::hosts::system_openssh::managed_host_uses_system_open_ssh(&host);
+                    let mut item = MenuItem::new(
+                        "host-run-script",
+                        if for_selection {
+                            format!("Run script on {selected} selected hosts…")
+                        } else {
+                            "Run script…".into()
+                        },
+                    )
+                    .icon("TerminalOutlined")
+                    .disabled(system && !for_selection)
+                    .on_click(Self::action(
+                        SidebarAction::RunScript {
+                            hosts: targets.clone(),
+                            what: if for_selection {
+                                "The selection"
+                            } else {
+                                "This host"
+                            }
+                            .into(),
+                        },
+                        cx,
+                    ));
+                    if system && !for_selection {
+                        item = item
+                            .detail(muxus_app::hosts::system_openssh::SYSTEM_OPENSSH_UNAVAILABLE);
+                    }
+                    paper = paper.child(item);
+                }
                 if managed_host_supports_sftp(&host) {
                     // Windows OpenSSH cannot share a login, so nothing runs beside its terminal.
                     let system_on_windows =
@@ -419,6 +450,18 @@ impl SessionSidebar {
                             .icon("EditNoteOutlined")
                             .disabled(count == 0)
                             .on_click(Self::action(SidebarAction::EditHosts(hosts.clone()), cx)),
+                    )
+                    .child(
+                        MenuItem::new("folder-run-script", "Run script on hosts in this folder…")
+                            .icon("TerminalOutlined")
+                            .disabled(count == 0)
+                            .on_click(Self::action(
+                                SidebarAction::RunScript {
+                                    hosts: hosts.clone(),
+                                    what: format!("“{label}”"),
+                                },
+                                cx,
+                            )),
                     )
                     .child(menu_divider(theme))
                     .child(

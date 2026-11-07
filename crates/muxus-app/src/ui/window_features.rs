@@ -147,6 +147,11 @@ pub struct WindowFeatures {
     pub vault_unlock: Option<Entity<VaultStartupUnlock>>,
     /// The vault's startup question is on screen: it has the keyboard.
     pub vault_blocking: bool,
+    /// The window's script job (`ui::scripts`), made on first use.
+    pub scripts: Option<(
+        Entity<muxus_app::features::scripts::ScriptJobs>,
+        Subscription,
+    )>,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -165,6 +170,7 @@ impl Default for WindowFeatures {
             secret_sender: None,
             vault_unlock: None,
             vault_blocking: false,
+            scripts: None,
             _subscriptions: Vec::new(),
             _tasks: Vec::new(),
         }
