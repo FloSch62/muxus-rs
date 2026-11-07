@@ -78,8 +78,9 @@ fn gpui_bounds(rect: Rectangle) -> Bounds<muxus_ui::gpui_kit::Pixels> {
 }
 
 /// Bring up the settings window (`showSettingsWindow`): focus the open one
-/// and show `target` in it, or open it where it was last left (on the
-/// display it overlaps most), else centred over the active window.
+/// and show `target` in it, or open it centered over the active window, kept
+/// on that window's display, at the size it was last left (and maximized if
+/// it was).
 ///
 /// Needs [`SettingsPrefs::init`] to have run; returns `None` otherwise.
 pub fn open_settings_window(
@@ -119,7 +120,8 @@ pub fn open_settings_window(
         .iter()
         .map(|display| rect(display.bounds()))
         .collect();
-    let placed = window_bounds(saved.map(|p| p.bounds), owner, &areas, SETTINGS_WINDOW_SIZE);
+    let left_size = saved.map_or(SETTINGS_WINDOW_SIZE, |placement| placement.size());
+    let placed = window_bounds(left_size, owner, &areas);
     let bounds = match placed {
         PlacedBounds::Placed(rect) => gpui_bounds(rect),
         PlacedBounds::SizeOnly(size_only) => Bounds::centered(
@@ -173,7 +175,7 @@ pub fn open_settings_window(
     Some(handle)
 }
 
-/// Remember where the settings window is (`saveSettingsWindowPlacement`).
+/// Remember the settings window's size (`saveSettingsWindowPlacement`).
 pub fn save_placement(window: &mut muxus_ui::gpui_kit::Window, cx: &mut App) {
     let Some(prefs) = SettingsPrefs::global(cx) else {
         return;
@@ -191,7 +193,8 @@ pub fn save_placement(window: &mut muxus_ui::gpui_kit::Window, cx: &mut App) {
     let _ = save_window_placement(
         &path,
         &WindowPlacement {
-            bounds: rect(bounds),
+            width: f64::from(f32::from(bounds.size.width)),
+            height: f64::from(f32::from(bounds.size.height)),
             maximized,
         },
     );
