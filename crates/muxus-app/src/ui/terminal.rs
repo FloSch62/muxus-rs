@@ -425,6 +425,27 @@ impl AppShell {
                 Some(_) => {}
             }
         }
+        // A terminal is `active` while its tab is the one shown in the focused pane
+        // with the terminal (not an editor) in front; one in the background keeps
+        // less image data.
+        let active_pane = self.tabs.active_pane_id.clone();
+        for tab in &self.tabs.tabs {
+            let Some(terminal) = self.terminals.get(&tab.id) else {
+                continue;
+            };
+            let shown =
+                muxus_app::state::workspace_layout::find_pane(&self.tabs.root, &tab.pane_id)
+                    .and_then(|pane| pane.active_tab_id.as_deref())
+                    == Some(tab.id.as_str());
+            let editor_shown = tab.active_editor_path.is_some() && tab.terminal_shown != Some(true);
+            let active = shown && tab.pane_id == active_pane && !editor_shown;
+            if terminal.view.read(cx).is_active() != active {
+                terminal
+                    .view
+                    .clone()
+                    .update(cx, |view, _| view.set_active(active));
+            }
+        }
         // The active tab's terminal takes the keyboard when the tab becomes
         // active, as `term.focus()` on `active` does; menus and dialogs keep it.
         let active = self.tabs.active_id.clone();

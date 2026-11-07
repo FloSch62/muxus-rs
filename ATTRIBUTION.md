@@ -30,11 +30,13 @@ derived from someone else's code or design.
 | `crates/muxus-ui/src/color.rs` (`lighten`, `darken`, `alpha`, contrast ratio) | Same formulas as MUI's `colorManipulator`. | MIT (MUI) |
 | Code editor colors in `crates/muxus-ui/src/syntax.rs` and `crates/muxus-app/src/util/code_editor.rs` (the `vs`/`vs-dark` token colors, bracket pair colors by depth, fold controls on hover) | Monaco Editor's built-in themes and defaults, as the Muxus client shows them; values only, no source copied. | MIT (Monaco Editor) |
 | Box Drawing and Block Elements shapes in `crates/muxus-term-view/src/box_drawing.rs` (the line paths, light and heavy weights, double-line gaps, arcs and eighth-cell blocks) | Adapted from xterm.js's `CustomGlyphDefinitions.ts` and `CustomGlyphRasterizer.ts` (`@xterm/addon-webgl`), with Muxus' patch that rounds block edges to whole device pixels. Copyright (c) 2021 The xterm.js authors. | MIT (xterm.js) |
+| Alt+click cursor moves in `crates/muxus-term/src/move_to_cell.rs` | Adapted from xterm.js's `MoveToCell.ts`. Copyright (c) 2018 The xterm.js authors. | MIT (xterm.js) |
+| The terminal scrollbar's slider geometry and track presses in `crates/muxus-term-view/src/scrollbar.rs` | Adapted from VS Code's `scrollbarState.ts` and `abstractScrollbar.ts` as bundled in xterm.js 6. Copyright (c) Microsoft Corporation. | MIT (VS Code, xterm.js) |
 | GPUI and gpui-component (`gpui-kit`, `gpui-pre`) | Used as dependencies; the unstyled text input of `gpui-base` backs `TextField`. No source is copied. | Apache License 2.0 |
 
 ## Vendored crates (`vendor/`)
 
 | Crate | Source | License |
 |---|---|---|
-| `vendor/par-term-emu-core` | [par-term-emu-core-rust](https://github.com/paulrobello/par-term-emu-core-rust) 0.60.0 by Paul Robello, with the scrolling, scrollback and printing paths reworked for throughput and the parts Muxus does not use removed; see `docs/parity/terminal-perf.md`. Patched in through `[patch.crates-io]` in the root `Cargo.toml`. | MIT (`vendor/par-term-emu-core/LICENSE`) |
+| `vendor/par-term-emu-core` | [par-term-emu-core-rust](https://github.com/paulrobello/par-term-emu-core-rust) 0.60.0 by Paul Robello, with the scrolling, scrollback and printing paths reworked for throughput and the parts Muxus does not use removed (see `docs/parity/terminal-perf.md`), and a running terminal's scrollback size and image removal added (see `vendor/par-term-emu-core/PATCHES.md`). Patched in through `[patch.crates-io]` in the root `Cargo.toml`. | MIT (`vendor/par-term-emu-core/LICENSE`) |
 | `vendor/russh` | [russh](https://github.com/warp-tech/russh) 0.64.1 by Pierre-Étienne Meunier and the russh contributors, unchanged except for the RFC 4335 `break` channel request (client request, server handler hook); see `vendor/russh/PATCHES.md`. Patched in through `[patch.crates-io]` in the root `Cargo.toml`. | Apache License 2.0 (`vendor/russh/LICENSE`) |

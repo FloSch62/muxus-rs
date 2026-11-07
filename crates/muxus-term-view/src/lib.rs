@@ -16,6 +16,7 @@
 mod box_drawing;
 mod keys;
 mod paint;
+mod scrollbar;
 mod view;
 
 pub use muxus_term;
@@ -65,7 +66,7 @@ pub struct TerminalSettings {
     pub line_height: f32,
     pub cursor_style: CursorShape,
     pub cursor_blink: bool,
-    /// Scrollback lines; takes effect for new terminals.
+    /// Scrollback lines; a running terminal drops its oldest lines when it shrinks.
     pub scrollback: usize,
     /// The resolved theme (`themeWithColorOverrides(terminalScheme(..))`).
     pub theme: TerminalTheme,

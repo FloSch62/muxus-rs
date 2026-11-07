@@ -153,9 +153,15 @@ impl Render for Shell {
 fn main() {
     let program: Vec<String> = std::env::args().skip(1).collect();
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(muxus_ui::assets::Assets)
         .run(move |cx| {
-            gpui_kit::init(cx);
+            // The kit's theme and icons: the search box is built from its widgets.
+            let mode = if std::env::var_os("MUXUS_TERM_APP_LIGHT").is_some() {
+                muxus_ui::theme::Mode::Light
+            } else {
+                muxus_ui::theme::Mode::Dark
+            };
+            muxus_ui::init(mode, cx);
             load_fonts(cx);
             cx.bind_keys([
                 KeyBinding::new("ctrl-shift-c", Copy, Some("Terminal")),
