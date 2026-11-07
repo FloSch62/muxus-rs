@@ -3,11 +3,12 @@ name = "par-term-emu-core"
 # Lockstep with the root crate (DESIGN.md "Version train"): the XTVERSION
 # reply embeds this crate's CARGO_PKG_VERSION. `make core-version-check`
 # fails when it drifts from the root version or the root's dependency pin.
-version = "0.60.0"
+version = "0.79.0"
 edition = "2021"
 rust-version = "1.99"
 authors = ["Paul Robello <probello@gmail.com>"]
 description = "Terminal emulator core for par-term-emu-core-rust: VT100-VT520 state machine, grid, PTY session, Sixel/iTerm2/Kitty graphics, screenshot renderer"
+readme = "DESIGN.md"
 license = "MIT"
 repository = "https://github.com/paulrobello/par-term-emu-core-rust"
 homepage = "https://github.com/paulrobello/par-term-emu-core-rust"
@@ -19,10 +20,12 @@ name = "par_term_emu_core"
 
 [dependencies]
 log = "0.4"
+sha2 = { version = "0.11.0", optional = true }
+semver = { version = "1", optional = true }
+tempfile = { version = "3.27", optional = true }
 vte = "0.15.0"
-# SIMD byte search for the OSC guard (already a dependency of vte).
-memchr = "2"
 unicode-width = "0.2.2"
+portable-pty = { version = "0.9.0", optional = true }
 base64 = "0.22.1"
 smallvec = "1.13.0"
 bitflags = "2.13.0"
@@ -51,7 +54,7 @@ flate2 = "1.1.9"
 image = { version = "0.25.10", default-features = false, features = ["bmp", "ff", "gif", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp", "color_quant"] }
 # Optional (ARC-043): only the `screenshot` feature shapes text.
 swash = { version = "0.2.7", optional = true }
-parking_lot = "0.12.5"
+parking_lot = "0.13"
 unicode-segmentation = "1.13.3"
 unicode-normalization = "0.1.25"
 lru = "0.18.0"
@@ -68,10 +71,12 @@ tempfile = "3.27"
 
 [features]
 default = []
+# Shared release updater used by the standalone binaries.
+self-update = ["dep:sha2", "dep:semver", "dep:tempfile"]
 # Terminal-to-image renderer (embedded fonts + swash).
 screenshot = ["dep:swash"]
 # Real PTY backend (PtySession).
-pty_session = []
+pty_session = ["dep:portable-pty"]
 # Serde derives on the replay-snapshot types (par-mux persistence format).
 serde = ["smallvec/serde", "bitflags/serde"]
 # `Macro::{save_yaml, load_yaml, to_yaml, from_yaml}`.

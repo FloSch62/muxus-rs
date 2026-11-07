@@ -41,12 +41,23 @@ pub enum TerminalEvent {
     BellRang(BellEvent),
     /// Terminal title changed
     TitleChanged(String),
+    /// The pointer shape changed (OSC 22, the kitty/ghostty/iTerm2
+    /// pointer-shape meaning): `None` = the terminal's own pointer.
+    /// NOT xterm's icon-label stack pop (which stays on OSC 23).
+    PointerShapeChanged(Option<String>),
     /// Terminal was resized
     SizeChanged(usize, usize),
     /// A terminal mode changed
     ModeChanged(String, bool),
-    /// Graphics added at row
-    GraphicsAdded(usize),
+    /// Graphics added at row. `image_id` is the [`crate::graphics::TerminalGraphic`]
+    /// id in the terminal's store, so a consumer can fetch the frame's pixels
+    /// by id without the event carrying them.
+    GraphicsAdded {
+        /// Terminal graphic id (the placement's store id)
+        image_id: u64,
+        /// Row the graphic was placed at
+        row: usize,
+    },
     /// Hyperlink added with URL, position, and optional internal ID
     HyperlinkAdded {
         /// The URL of the hyperlink
@@ -230,9 +241,10 @@ impl TerminalEvent {
         match self {
             TerminalEvent::BellRang(_) => TerminalEventKind::BellRang,
             TerminalEvent::TitleChanged(_) => TerminalEventKind::TitleChanged,
+            TerminalEvent::PointerShapeChanged(_) => TerminalEventKind::PointerShapeChanged,
             TerminalEvent::SizeChanged(_, _) => TerminalEventKind::SizeChanged,
             TerminalEvent::ModeChanged(_, _) => TerminalEventKind::ModeChanged,
-            TerminalEvent::GraphicsAdded(_) => TerminalEventKind::GraphicsAdded,
+            TerminalEvent::GraphicsAdded { .. } => TerminalEventKind::GraphicsAdded,
             TerminalEvent::HyperlinkAdded { .. } => TerminalEventKind::HyperlinkAdded,
             TerminalEvent::DirtyRegion(_, _) => TerminalEventKind::DirtyRegion,
             TerminalEvent::CwdChanged(_) => TerminalEventKind::CwdChanged,
@@ -265,6 +277,8 @@ pub enum TerminalEventKind {
     BellRang,
     /// Matches [`TerminalEvent::TitleChanged`].
     TitleChanged,
+    /// The OSC 22 pointer shape changed (None = reset).
+    PointerShapeChanged,
     /// Matches [`TerminalEvent::SizeChanged`].
     SizeChanged,
     /// Matches [`TerminalEvent::ModeChanged`].
@@ -317,9 +331,10 @@ pub enum TerminalEventKind {
 
 impl TerminalEventKind {
     /// Every event kind, in declaration order.
-    pub const ALL: [TerminalEventKind; 26] = [
+    pub const ALL: [TerminalEventKind; 27] = [
         Self::BellRang,
         Self::TitleChanged,
+        Self::PointerShapeChanged,
         Self::SizeChanged,
         Self::ModeChanged,
         Self::GraphicsAdded,
@@ -353,6 +368,7 @@ impl TerminalEventKind {
         match self {
             Self::BellRang => "bell",
             Self::TitleChanged => "title_changed",
+            Self::PointerShapeChanged => "pointer_shape_changed",
             Self::SizeChanged => "size_changed",
             Self::ModeChanged => "mode_changed",
             Self::GraphicsAdded => "graphics_added",
@@ -395,6 +411,54 @@ mod tests {
     use super::*;
     use crate::terminal::Terminal;
 
+    /// ALL must list every variant. The exhaustive match makes adding a
+    /// variant without visiting this test a compile error, and the pinned
+    /// length fails when ALL omits a kind; the positional parity test in
+    /// `python_bindings` catches reordering and duplicates.
+    #[test]
+    fn all_matches_variant_count() {
+        use TerminalEventKind as K;
+
+        fn exhaustively(kind: &K) -> u8 {
+            match kind {
+                K::BellRang
+                | K::TitleChanged
+                | K::PointerShapeChanged
+                | K::SizeChanged
+                | K::ModeChanged
+                | K::GraphicsAdded
+                | K::HyperlinkAdded
+                | K::DirtyRegion
+                | K::CwdChanged
+                | K::TriggerMatched
+                | K::UserVarChanged
+                | K::ProgressBarChanged
+                | K::BadgeChanged
+                | K::ShellIntegrationEvent
+                | K::ZoneOpened
+                | K::ZoneClosed
+                | K::ZoneScrolledOut
+                | K::EnvironmentChanged
+                | K::RemoteHostTransition
+                | K::SubShellDetected
+                | K::FileTransferStarted
+                | K::FileTransferProgress
+                | K::FileTransferCompleted
+                | K::FileTransferFailed
+                | K::UploadRequested
+                | K::ScreenCleared
+                | K::InlineImageDropped => 1,
+            }
+        }
+
+        let total: usize = TerminalEventKind::ALL
+            .iter()
+            .map(|k| exhaustively(k) as usize)
+            .sum();
+        assert_eq!(total, TerminalEventKind::ALL.len());
+        assert_eq!(TerminalEventKind::ALL.len(), 27);
+    }
+
     #[test]
     fn test_event_kind_bell_rang() {
         let event = TerminalEvent::BellRang(BellEvent::VisualBell);
@@ -427,7 +491,10 @@ mod tests {
 
     #[test]
     fn test_event_kind_graphics_added() {
-        let event = TerminalEvent::GraphicsAdded(10);
+        let event = TerminalEvent::GraphicsAdded {
+            image_id: 7,
+            row: 10,
+        };
         assert_eq!(event.kind(), TerminalEventKind::GraphicsAdded);
     }
 

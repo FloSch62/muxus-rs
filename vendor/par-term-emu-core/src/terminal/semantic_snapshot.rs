@@ -679,17 +679,24 @@ impl Terminal {
     ///
     /// # Arguments
     /// * `format` - Export format (Plain, Html, Ansi)
-    /// * `max_lines` - Maximum number of scrollback lines to export (None = all)
+    /// * `max_lines` - Tail limit: export only the NEWEST `max_lines`
+    ///   scrollback rows (None = all)
     ///
-    /// Returns the exported content as a string.
+    /// Rows are emitted newest-first (the row directly above the screen
+    /// leads), so for Plain and Html `Some(n)` is always the first `n` rows
+    /// of the `None` export. Ansi joins soft-wrapped rows into one logical
+    /// line (see [`crate::grid::Grid::export_scrollback_styled`]), so a cut
+    /// inside a wrapped line keeps only that line's newest rows. Returns the
+    /// exported content as a string.
     pub fn export_scrollback(&self, format: ExportFormat, max_lines: Option<usize>) -> String {
         let scrollback_len = self.grid.scrollback_len();
         let lines_to_export = max_lines.unwrap_or(scrollback_len).min(scrollback_len);
+        let newest = scrollback_len - lines_to_export..scrollback_len;
 
         match format {
             ExportFormat::Plain => {
                 let mut output = String::new();
-                for i in (0..lines_to_export).rev() {
+                for i in newest.rev() {
                     if let Some(line) = self.grid.scrollback_line(i) {
                         output.push_str(&crate::text_utils::cells_to_text(line));
                         output.push('\n');
@@ -699,7 +706,7 @@ impl Terminal {
             }
             ExportFormat::Html => {
                 let mut output = String::from("<pre>\n");
-                for i in (0..lines_to_export).rev() {
+                for i in newest.rev() {
                     if let Some(line) = self.grid.scrollback_line(i) {
                         let text = crate::text_utils::cells_to_text(line);
                         output.push_str(&crate::text_utils::html_escape(&text));
@@ -968,14 +975,12 @@ impl Terminal {
         self.active_grid().export_visible_screen_styled_lines()
     }
 
-    /// Export entire buffer (scrollback + current screen) as plain text
+    /// Export entire buffer (scrollback + current screen) as plain text.
+    ///
+    /// For a lock-held terminal, [`Terminal::text_export_snapshot`] builds
+    /// the same text from a copy taken under the lock (ARC-004).
     pub fn export_text(&self) -> String {
-        let mut output = self.export_scrollback(ExportFormat::Plain, None);
-        if !output.is_empty() && !output.ends_with('\n') {
-            output.push('\n');
-        }
-        output.push_str(&self.content());
-        output
+        super::export_snapshot::export_text(&self.grid, self.active_grid())
     }
 
     /// Export entire buffer (scrollback + current screen) with ANSI styling

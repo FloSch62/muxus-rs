@@ -14,13 +14,11 @@ pub(crate) const DEFAULT_BG: Color = Color::Named(NamedColor::Black);
 impl Grid {
     /// Clear the entire grid, filling cells with the given background color (BCE)
     pub fn clear_with_bg(&mut self, bg: Color) {
-        for cell in self.screen.iter_mut().flat_map(|row| row.iter_mut()) {
+        for cell in &mut self.cells {
             cell.reset();
             cell.bg = PackedColor::pack(bg);
         }
-        // A default background leaves default cells behind.
-        let used = if bg == DEFAULT_BG { 0 } else { self.cols };
-        self.row_used.fill(used);
+        self.wrapped.fill(false);
         self.zones.clear();
         // Every cell changed, not just moved (ENH-038).
         self.mark_rows_content(0, self.rows.saturating_sub(1));
@@ -33,39 +31,11 @@ impl Grid {
 
     /// Clear a specific row, filling cells with the given background color (BCE)
     pub fn clear_row_with_bg(&mut self, row: usize, bg: Color) {
-        if row < self.rows {
-            let end = self.cols;
-            self.erase_span(row, 0, end, bg);
-        }
-    }
-
-    /// Reset `[start, end)` of screen row `row` with background `bg`,
-    /// marking the row changed once. With the default background the
-    /// cells past the row's written part are already blank, so only the
-    /// written part is touched; the written-part bound follows the erase.
-    fn erase_span(&mut self, row: usize, start: usize, end: usize, bg: Color) {
-        let end = end.min(self.cols);
-        if start >= end {
-            return;
-        }
-        self.mark_row_content(row);
-        let used = self.row_used[row];
-        if bg == DEFAULT_BG {
-            // A default cell is exactly what reset + the default bg write.
-            let cells = &mut self.screen[row];
-            for cell in &mut cells[start..end.min(used.max(start))] {
+        if let Some(row_cells) = self.row_mut(row) {
+            for cell in row_cells.iter_mut() {
                 cell.reset();
+                cell.bg = PackedColor::pack(bg);
             }
-            if end >= used {
-                self.row_used[row] = used.min(start);
-            }
-        } else {
-            let packed = PackedColor::pack(bg);
-            for cell in &mut self.screen[row][start..end] {
-                cell.reset();
-                cell.bg = packed;
-            }
-            self.row_used[row] = used.max(end);
         }
     }
 
@@ -77,16 +47,24 @@ impl Grid {
     /// Clear from cursor to end of line, filling cells with the given background color (BCE)
     pub fn clear_line_right(&mut self, col: usize, row: usize, bg: Color) {
         if row < self.rows {
-            let end = self.cols;
-            self.erase_span(row, col, end, bg);
+            for c in col..self.cols {
+                if let Some(cell) = self.get_mut(c, row) {
+                    cell.reset();
+                    cell.bg = PackedColor::pack(bg);
+                }
+            }
         }
     }
 
     /// Clear from beginning of line to cursor, filling cells with the given background color (BCE)
     pub fn clear_line_left(&mut self, col: usize, row: usize, bg: Color) {
-        if row < self.rows && self.cols > 0 {
-            let end = col.min(self.cols - 1) + 1;
-            self.erase_span(row, 0, end, bg);
+        if row < self.rows {
+            for c in 0..=col.min(self.cols - 1) {
+                if let Some(cell) = self.get_mut(c, row) {
+                    cell.reset();
+                    cell.bg = PackedColor::pack(bg);
+                }
+            }
         }
     }
 
@@ -109,8 +87,13 @@ impl Grid {
     /// Erase characters at (col, row), filling cells with the given background color (BCE)
     pub fn erase_characters(&mut self, col: usize, row: usize, n: usize, bg: Color) {
         if row < self.rows {
-            let end = col.saturating_add(n).min(self.cols);
-            self.erase_span(row, col, end, bg);
+            let end = (col + n).min(self.cols);
+            for c in col..end {
+                if let Some(cell) = self.get_mut(c, row) {
+                    cell.reset();
+                    cell.bg = PackedColor::pack(bg);
+                }
+            }
         }
     }
 
