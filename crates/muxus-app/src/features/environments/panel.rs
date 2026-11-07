@@ -62,7 +62,7 @@ const WIDENED_RESERVE: f32 = 560.;
 /// What the panel asks its window to do.
 pub enum EnvironmentsPanelEvent {
     /// Open a session in the window's focused pane.
-    Open(SessionSetEntry),
+    Open(Box<SessionSetEntry>),
     /// Open the host editor with a new host filled in, to name and file before saving.
     EditHost(Box<HostDraft>),
 }
@@ -321,7 +321,7 @@ impl EnvironmentsPanel {
         toggle: Option<(String, bool)>,
         open: Option<PanelAction>,
         cx: &mut Context<Self>,
-    ) -> Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>> {
+    ) -> Option<super::tree::Click> {
         if toggle.is_none() && open.is_none() {
             return None;
         }
@@ -413,10 +413,10 @@ impl EnvironmentsPanel {
     pub(super) fn run(&mut self, action: PanelAction, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         match action {
-            PanelAction::Open(entry) => cx.emit(EnvironmentsPanelEvent::Open(entry)),
-            PanelAction::Target(host, target) => cx.emit(EnvironmentsPanelEvent::Open(
+            PanelAction::Open(entry) => cx.emit(EnvironmentsPanelEvent::Open(Box::new(entry))),
+            PanelAction::Target(host, target) => cx.emit(EnvironmentsPanelEvent::Open(Box::new(
                 environment_entry(&host, target),
-            )),
+            ))),
             PanelAction::SshAs {
                 host,
                 address,
@@ -451,8 +451,8 @@ impl EnvironmentsPanel {
                     };
                     let _ = this.update(cx, |_, cx| match result {
                         Ok(display) => match display.vnc {
-                            Some(vnc) => cx.emit(EnvironmentsPanelEvent::Open(vnc_entry(
-                                &host, &vnc.host, vnc.port, &domain,
+                            Some(vnc) => cx.emit(EnvironmentsPanelEvent::Open(Box::new(
+                                vnc_entry(&host, &vnc.host, vnc.port, &domain),
                             ))),
                             None => show_toast(
                                 Status::Warning,
@@ -580,11 +580,13 @@ impl EnvironmentsPanel {
             let user = user.trim().to_string();
             let _ = this.update(cx, |this, cx| {
                 this.last_users.insert(host.key.clone(), user.clone());
-                cx.emit(EnvironmentsPanelEvent::Open(ssh_to_address_entry(
-                    &host,
-                    &address,
-                    &name,
-                    (!user.is_empty()).then_some(user.as_str()),
+                cx.emit(EnvironmentsPanelEvent::Open(Box::new(
+                    ssh_to_address_entry(
+                        &host,
+                        &address,
+                        &name,
+                        (!user.is_empty()).then_some(user.as_str()),
+                    ),
                 )));
             });
         })
@@ -623,7 +625,7 @@ impl EnvironmentsPanel {
             match result {
                 Ok(addresses) => Some(addresses),
                 Err(message) => {
-                    let _ = cx.update(|cx| show_error_toast(message, cx));
+                    cx.update(|cx| show_error_toast(message, cx));
                     None
                 }
             }
@@ -721,7 +723,7 @@ impl EnvironmentsPanel {
                 Ok(_) => Err(format!("{} is not connected", host.label)),
                 Err(message) => Err(message),
             };
-            let _ = cx.update(|cx| match result {
+            cx.update(|cx| match result {
                 Ok(forward) => cx.open_url(&forwarded_port_url(scheme, forward.local_port)),
                 Err(message) => {
                     show_error_toast(format!("Could not open port {port}: {message}"), cx)
@@ -800,7 +802,7 @@ impl EnvironmentsPanel {
                 }
                 TopologyEvent::Open(entry) => {
                     this.topology = None;
-                    this.run(PanelAction::Open(entry.clone()), window, cx);
+                    this.run(PanelAction::Open((**entry).clone()), window, cx);
                 }
             },
         );

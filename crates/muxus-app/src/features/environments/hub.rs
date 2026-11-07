@@ -18,7 +18,7 @@ use muxus_session::{Backend, SessionEvent, SessionHandle};
 use muxus_ui::gpui_kit::{AsyncApp, Context, EventEmitter, Task, WeakEntity};
 
 use super::model::{
-    EntryPatch, EnvironmentBadge, EnvironmentHost, EnvironmentStatus, EnvironmentsStore,
+    EntryPatch, EnvironmentCount, EnvironmentHost, EnvironmentStatus, EnvironmentsStore,
     HostEnvironmentsEntry, LOCAL_ENVIRONMENT_KEY, LiveTab, connected_hosts, disconnected_keys,
     discovery_enabled_for, environment_badges, live_connection_for,
 };
@@ -161,7 +161,7 @@ impl EnvironmentsHub {
     }
 
     /// The marks the sidebar shows at the end of host rows, by host key.
-    pub fn marks(&self) -> HashMap<String, Vec<EnvironmentBadge>> {
+    pub fn marks(&self) -> HashMap<String, Vec<EnvironmentCount>> {
         self.store
             .entries()
             .map(|entry| {

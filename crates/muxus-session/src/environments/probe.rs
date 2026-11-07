@@ -215,19 +215,33 @@ pub fn remote_probe_runner(remote: Arc<dyn RemoteCommand>) -> ProbeRunner {
     })
 }
 
-/// Probes on the computer running Muxus.
-pub fn local_probe_runner() -> ProbeRunner {
-    Arc::new(|probes| Box::pin(async move { Ok(run_local(probes).await) }))
+/// Probes on the computer running Muxus, in the environment local terminals start from (the
+/// login shell's PATH on a GUI launch; the sandbox's HOME in tests). `None` keeps this
+/// process's environment.
+pub fn local_probe_runner(env: Option<HashMap<String, String>>) -> ProbeRunner {
+    let env = Arc::new(env);
+    Arc::new(move |probes| {
+        let env = env.clone();
+        Box::pin(async move { Ok(run_local(probes, env.as_ref().as_ref()).await) })
+    })
+}
+
+fn local_command(program: &str, env: Option<&HashMap<String, String>>) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(program);
+    if let Some(env) = env {
+        command.env_clear().envs(env);
+    }
+    command
 }
 
 #[cfg(unix)]
-async fn run_local(probes: Vec<Probe>) -> ProbeResults {
+async fn run_local(probes: Vec<Probe>, env: Option<&HashMap<String, String>>) -> ProbeResults {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
     if probes.is_empty() {
         return ProbeResults::new();
     }
-    let child = tokio::process::Command::new("sh")
+    let child = local_command("sh", env)
         .arg("-s")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -256,12 +270,12 @@ async fn run_local(probes: Vec<Probe>) -> ProbeResults {
 
 /// Windows has no sh: each probe runs on its own, side by side.
 #[cfg(not(unix))]
-async fn run_local(probes: Vec<Probe>) -> ProbeResults {
+async fn run_local(probes: Vec<Probe>, env: Option<&HashMap<String, String>>) -> ProbeResults {
     let runs = probes.into_iter().map(|probe| async move {
         let Some((file, args)) = probe.argv.split_first() else {
             return (probe.id, ProbeResult::Missing);
         };
-        let mut command = tokio::process::Command::new(file);
+        let mut command = local_command(file, env);
         command
             .args(args)
             .stdin(std::process::Stdio::null())
@@ -330,8 +344,7 @@ pub fn probe_failure(result: Option<&ProbeResult>) -> Option<String> {
     let line = source
         .split('\n')
         .map(muxus_core::js::js_trim)
-        .filter(|candidate| !candidate.is_empty() && !NOISE.is_match(candidate))
-        .next_back()
+        .rfind(|candidate| !candidate.is_empty() && !NOISE.is_match(candidate))
         .map(|line| ERROR_PREFIX.replace(line, "").into_owned())
         .unwrap_or_else(|| format!("exit code {exit_code}"));
     if muxus_core::js::utf16_len(&line) > 240 {

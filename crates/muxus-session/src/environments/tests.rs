@@ -34,7 +34,7 @@ fn block_on<T>(future: impl Future<Output = T>) -> T {
 #[cfg(unix)]
 #[test]
 fn runs_each_probe_on_its_own_and_keeps_stderr_out_of_stdout() {
-    let run = probe::local_probe_runner();
+    let run = probe::local_probe_runner(None);
     let results = block_on(run(vec![
         Probe::new("ok", &["printf", "%s\n", "hello world"]),
         Probe::new("missing", &["muxus-no-such-tool-anywhere"]),

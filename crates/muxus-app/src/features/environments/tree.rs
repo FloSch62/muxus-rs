@@ -128,7 +128,8 @@ pub fn small_text(text: impl Into<SharedString>, theme: &Theme) -> impl IntoElem
         .color(theme.palette.text.secondary)
 }
 
-type Click =
+/// A line's click handler.
+pub type Click =
     Box<dyn Fn(&ClickEvent, &mut muxus_ui::gpui_kit::Window, &mut muxus_ui::gpui_kit::App)>;
 
 /// One line of the tree. `on_click` runs on every click, with the click count, so a single

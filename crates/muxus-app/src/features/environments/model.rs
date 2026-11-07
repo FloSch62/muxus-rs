@@ -339,6 +339,18 @@ impl EnvironmentKind {
         }
     }
 
+    /// The launcher's kind tag (`label.toUpperCase()`).
+    pub fn tag(self) -> &'static str {
+        match self {
+            EnvironmentKind::Docker => "DOCKER",
+            EnvironmentKind::Podman => "PODMAN",
+            EnvironmentKind::Containerlab => "CONTAINERLAB",
+            EnvironmentKind::Kubernetes => "KUBERNETES",
+            EnvironmentKind::Proxmox => "PROXMOX VE",
+            EnvironmentKind::Libvirt => "LIBVIRT",
+        }
+    }
+
     /// The kind of one discovered environment.
     pub fn of(environment: &HostEnvironment) -> Self {
         match environment {
@@ -353,7 +365,7 @@ impl EnvironmentKind {
 
 /// One kind of thing a host runs, counting what is up.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EnvironmentBadge {
+pub struct EnvironmentCount {
     pub kind: EnvironmentKind,
     pub count: usize,
     pub label: String,
@@ -377,7 +389,7 @@ pub fn plural(count: usize, one: &str, many: &str) -> String {
 }
 
 /// One badge per kind of thing the host runs, counting what is up (`environmentBadges`).
-pub fn environment_badges(environments: &[HostEnvironment]) -> Vec<EnvironmentBadge> {
+pub fn environment_badges(environments: &[HostEnvironment]) -> Vec<EnvironmentCount> {
     let mut badges = Vec::new();
     for environment in environments {
         match environment {
@@ -388,7 +400,7 @@ pub fn environment_badges(environments: &[HostEnvironment]) -> Vec<EnvironmentBa
                     .count();
                 if running > 0 {
                     let kind = EnvironmentKind::runtime(containers.runtime);
-                    badges.push(EnvironmentBadge {
+                    badges.push(EnvironmentCount {
                         kind,
                         count: running,
                         label: format!(
@@ -399,12 +411,12 @@ pub fn environment_badges(environments: &[HostEnvironment]) -> Vec<EnvironmentBa
                     });
                 }
             }
-            HostEnvironment::Containerlab(lab) => badges.push(EnvironmentBadge {
+            HostEnvironment::Containerlab(lab) => badges.push(EnvironmentCount {
                 kind: EnvironmentKind::Containerlab,
                 count: lab.labs.len(),
                 label: format!("Containerlab: {}", plural(lab.labs.len(), "lab", "labs")),
             }),
-            HostEnvironment::Kubernetes(kube) => badges.push(EnvironmentBadge {
+            HostEnvironment::Kubernetes(kube) => badges.push(EnvironmentCount {
                 kind: EnvironmentKind::Kubernetes,
                 count: kube.contexts.len(),
                 label: format!(
@@ -419,7 +431,7 @@ pub fn environment_badges(environments: &[HostEnvironment]) -> Vec<EnvironmentBa
                     continue;
                 }
                 let running = pve.guests.iter().filter(|g| g.status == "running").count();
-                badges.push(EnvironmentBadge {
+                badges.push(EnvironmentCount {
                     kind: EnvironmentKind::Proxmox,
                     count: running,
                     label: format!(
@@ -437,7 +449,7 @@ pub fn environment_badges(environments: &[HostEnvironment]) -> Vec<EnvironmentBa
                     .iter()
                     .filter(|d| d.state == "running")
                     .count();
-                badges.push(EnvironmentBadge {
+                badges.push(EnvironmentCount {
                     kind: EnvironmentKind::Libvirt,
                     count: running,
                     label: format!("libvirt: {}", plural(running, "running VM", "running VMs")),

@@ -31,7 +31,7 @@ use crate::state::tabs::SessionSetEntry;
 /// What the dialog asks the panel to do.
 pub enum TopologyEvent {
     Close,
-    Open(SessionSetEntry),
+    Open(Box<SessionSetEntry>),
 }
 
 /// The nodes and links of a containerlab topology file.
@@ -513,7 +513,8 @@ impl Render for TopologyDialog {
                         .disabled(!up || (ssh && system))
                         .on_click(move |_, _, cx| {
                             let entry = entry.clone();
-                            let _ = open.update(cx, |_, cx| cx.emit(TopologyEvent::Open(entry)));
+                            let _ = open
+                                .update(cx, |_, cx| cx.emit(TopologyEvent::Open(Box::new(entry))));
                         }),
                     ),
             );

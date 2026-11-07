@@ -182,6 +182,22 @@ impl SessionSidebar {
                             .on_click(Self::action(SidebarAction::OpenSftp(host.clone()), cx)),
                     );
                 }
+                if muxus_app::features::environments::model::environment_host_for_managed(&host)
+                    .is_some()
+                {
+                    paper = paper.child(
+                        MenuItem::new("host-environments", "Containers & VMs")
+                            .icon("ViewInArOutlined")
+                            .on_click(Self::action(
+                                SidebarAction::Environments(
+                                    crate::ui::environments::EnvironmentsRequest::Show(
+                                        host.clone(),
+                                    ),
+                                ),
+                                cx,
+                            )),
+                    );
+                }
                 paper = paper
                     .child(
                         MenuItem::new("host-up", "Move up")
@@ -550,6 +566,7 @@ fn management_host_for(host: &ManagedHost, gnmi: bool) -> NewHost {
                 )),
                 group: entry.metadata.as_ref().and_then(|m| m.group.clone()),
                 kind: Some(kind),
+                draft: None,
             }
         }
         ManagedHost::Profile(entry) => {
@@ -584,6 +601,7 @@ fn management_host_for(host: &ManagedHost, gnmi: bool) -> NewHost {
                 )),
                 group: entry.metadata.group.clone(),
                 kind: Some(kind),
+                draft: None,
             }
         }
     }

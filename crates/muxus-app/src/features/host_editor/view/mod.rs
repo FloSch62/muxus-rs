@@ -34,8 +34,8 @@ use super::logic::desktop_draft::{
     desktop_draft_problem,
 };
 use super::logic::draft::{
-    HostDraft, Storage, blank_draft, draft_from_entry, draft_from_saved_ssh_profile, draft_problem,
-    identity_agent_for_detection,
+    EnvironmentDiscoveryDraft, HostDraft, Storage, blank_draft, draft_from_entry,
+    draft_from_saved_ssh_profile, draft_problem, identity_agent_for_detection,
 };
 use super::logic::forwards::ForwardRuleDraft;
 use super::logic::management_draft::{
@@ -71,6 +71,8 @@ pub struct NewHost {
     pub prefill_name: Option<String>,
     pub group: Option<String>,
     pub kind: Option<SavedHostKind>,
+    /// A new SSH host already filled in, e.g. a container found on a host.
+    pub draft: Option<Box<HostDraft>>,
 }
 
 /// What the editor tells its owner.
@@ -335,6 +337,9 @@ impl HostEditor {
                     && !name.is_empty()
                 {
                     self.management.name = name.clone();
+                }
+                if let Some(draft) = &new.draft {
+                    self.ssh = (**draft).clone();
                 }
             }
             HostEditorTarget::Edit(host) | HostEditorTarget::Duplicate(host) => {
@@ -680,7 +685,10 @@ impl HostEditor {
                         Some(
                             d.extras.len()
                                 + usize::from(d.disable_sftp)
-                                + usize::from(d.console_compatibility),
+                                + usize::from(d.console_compatibility)
+                                + usize::from(
+                                    d.discover_environments != EnvironmentDiscoveryDraft::Default,
+                                ),
                         ),
                     ),
                 ]

@@ -74,6 +74,14 @@ pub fn sized_svg(svg: &str, size: f32) -> String {
     )
 }
 
+/// A tool's logo loaded through the asset source, for lists drawn without a window at hand
+/// (the quick launcher).
+pub fn environment_logo_image(kind: EnvironmentKind, dark: bool, size: f32) -> Img {
+    img(asset_path(kind, dark))
+        .size(muxus_ui::zoom::px(size))
+        .flex_none()
+}
+
 #[derive(Default)]
 struct LogoCache(HashMap<(EnvironmentKind, bool, u32, u32), Arc<RenderImage>>);
 

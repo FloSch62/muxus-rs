@@ -901,7 +901,10 @@ impl AppShell {
                 .profile
                 .as_ref()
                 .map(|profile| {
-                    if profile.kind() == ProfileKind::Local {
+                    if let Some(icon) = muxus_app::sidebar::kind_icon::environment_tab_icon(profile)
+                    {
+                        icon
+                    } else if profile.kind() == ProfileKind::Local {
                         "Terminal"
                     } else {
                         muxus_app::sidebar::kind_icon::host_kind_icon_name(profile.kind())

@@ -572,6 +572,7 @@ impl AppShell {
                 Some(SettingsTarget::section(SettingsSection::LocalShells)),
                 cx,
             ),
+            SidebarAction::Environments(request) => self.on_environments_request(request, cx),
         }
     }
 

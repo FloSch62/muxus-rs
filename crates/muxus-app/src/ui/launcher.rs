@@ -22,8 +22,9 @@ use crate::ui::shell::AppShell;
 
 impl AppShell {
     /// What the launcher needs to know about this window.
-    fn launcher_context(&self, cx: &Context<Self>) -> LauncherContext {
+    fn launcher_context(&mut self, cx: &mut Context<Self>) -> LauncherContext {
         LauncherContext {
+            environments: self.environment_launch_items(cx),
             tabs: self.tabs.tabs.clone(),
             active_id: self.tabs.active_id.clone(),
             shown_command_group: self.shown_command_group(cx),
@@ -101,6 +102,7 @@ impl AppShell {
                 self.run_command(&id, window, cx);
             }
             LauncherEvent::StartTunnel(tunnel) => self.start_tunnel(tunnel, cx),
+            LauncherEvent::OpenEnvironment(launch) => self.launch_environment(*launch, cx),
         }
         self.tabs_changed(cx);
     }
@@ -120,6 +122,13 @@ impl AppShell {
             LauncherAction::History => self.open_history("", None, window, cx),
             LauncherAction::Commands => self.open_command_buttons(window, cx),
             LauncherAction::Tunnels => self.set_forwarding_open(true, cx),
+            LauncherAction::Environments => {
+                if let Some(hub) = self.environments_hub(cx) {
+                    hub.update(cx, |hub, cx| {
+                        hub.set_panel(muxus_app::features::environments::hub::PanelScope::All, cx)
+                    });
+                }
+            }
             LauncherAction::Sftp => {
                 if let Some(tab) = self.tabs.active_tab().cloned()
                     && matches!(tab.profile, Some(SessionProfile::Ssh(_)))

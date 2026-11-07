@@ -90,6 +90,13 @@ pub struct SplitDrag {
 }
 
 fn tab_icon(tab: &TerminalTab) -> &'static str {
+    if let Some(icon) = tab
+        .profile
+        .as_ref()
+        .and_then(muxus_app::sidebar::kind_icon::environment_tab_icon)
+    {
+        return icon;
+    }
     match &tab.profile {
         None => "Add",
         Some(SessionProfile::Local { .. }) => "Terminal",

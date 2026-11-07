@@ -11,6 +11,7 @@
 mod closing;
 mod confirm;
 mod desktop;
+mod environments;
 mod features;
 mod host_actions;
 mod launcher;

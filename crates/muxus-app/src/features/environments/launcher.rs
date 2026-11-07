@@ -13,9 +13,9 @@ use crate::state::tabs::SessionSetEntry;
 #[derive(Clone, Debug, PartialEq)]
 pub enum EnvironmentLaunch {
     /// Open a session: a container's shell, a lab node, a guest's console.
-    Open(SessionSetEntry),
+    Open(Box<SessionSetEntry>),
     /// Show the host in the containers and VMs panel (clusters and labs).
-    ShowHost(EnvironmentHost),
+    ShowHost(Box<EnvironmentHost>),
 }
 
 /// One container, lab node, guest, VM or cluster the launcher can open.
@@ -71,14 +71,14 @@ pub fn environment_launch_items(entries: &[HostEnvironmentsEntry]) -> Vec<Enviro
                                 container.compose_project.clone().unwrap_or_default(),
                                 where_.clone(),
                             ],
-                            launch: EnvironmentLaunch::Open(environment_entry(
+                            launch: EnvironmentLaunch::Open(Box::new(environment_entry(
                                 host,
                                 EnvironmentTarget::Container {
                                     runtime: runtime.runtime,
                                     container: container.name.clone(),
                                     shell: None,
                                 },
-                            )),
+                            ))),
                         });
                     }
                 }
@@ -98,7 +98,7 @@ pub fn environment_launch_items(entries: &[HostEnvironmentsEntry]) -> Vec<Enviro
                                 "topology".into(),
                                 where_.clone(),
                             ],
-                            launch: EnvironmentLaunch::ShowHost(host.clone()),
+                            launch: EnvironmentLaunch::ShowHost(Box::new(host.clone())),
                         });
                         for node in &lab.nodes {
                             if !is_running(&node.state) {
@@ -129,9 +129,9 @@ pub fn environment_launch_items(entries: &[HostEnvironmentsEntry]) -> Vec<Enviro
                                     node.ipv4.clone().unwrap_or_default(),
                                     where_.clone(),
                                 ],
-                                launch: EnvironmentLaunch::Open(containerlab_node_entry(
+                                launch: EnvironmentLaunch::Open(Box::new(containerlab_node_entry(
                                     host, lab, node,
-                                )),
+                                ))),
                             });
                         }
                     }
@@ -155,7 +155,7 @@ pub fn environment_launch_items(entries: &[HostEnvironmentsEntry]) -> Vec<Enviro
                                 "pods".into(),
                                 where_.clone(),
                             ],
-                            launch: EnvironmentLaunch::ShowHost(host.clone()),
+                            launch: EnvironmentLaunch::ShowHost(Box::new(host.clone())),
                         });
                     }
                 }
@@ -182,14 +182,14 @@ pub fn environment_launch_items(entries: &[HostEnvironmentsEntry]) -> Vec<Enviro
                                 guest.vmid.to_string(),
                                 where_.clone(),
                             ],
-                            launch: EnvironmentLaunch::Open(environment_entry(
+                            launch: EnvironmentLaunch::Open(Box::new(environment_entry(
                                 host,
                                 if qemu {
                                     EnvironmentTarget::ProxmoxSerial { vmid: guest.vmid }
                                 } else {
                                     EnvironmentTarget::ProxmoxLxc { vmid: guest.vmid }
                                 },
-                            )),
+                            ))),
                         });
                     }
                 }
@@ -227,7 +227,9 @@ pub fn environment_launch_items(entries: &[HostEnvironmentsEntry]) -> Vec<Enviro
                                 "vm".into(),
                                 where_.clone(),
                             ],
-                            launch: EnvironmentLaunch::Open(environment_entry(host, target)),
+                            launch: EnvironmentLaunch::Open(Box::new(environment_entry(
+                                host, target,
+                            ))),
                         });
                     }
                 }

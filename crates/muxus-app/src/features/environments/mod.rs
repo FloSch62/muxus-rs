@@ -34,7 +34,7 @@ use muxus_ui::gpui_kit::{
 use muxus_ui::theme::ActiveTheme;
 use muxus_ui::widgets::{Placement, Tooltip};
 
-use model::EnvironmentBadge;
+use model::EnvironmentCount;
 
 /// How often connected hosts are read again; 0 reads them only when they connect
 /// (`ENVIRONMENT_REFRESH_OPTIONS` of Settings → Behavior).
@@ -59,7 +59,7 @@ pub fn refresh_options() -> Vec<(u32, String)> {
 /// nothing, so the tree stays as it was (`EnvironmentBadges`).
 pub fn sidebar_mark(
     key: &str,
-    badges: &[EnvironmentBadge],
+    badges: &[EnvironmentCount],
     open: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     window: &Window,

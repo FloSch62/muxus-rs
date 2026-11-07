@@ -49,7 +49,7 @@ impl Runner {
 fn runner(shared: &Shared, source: &EnvironmentSource) -> ApiResult<Runner> {
     match source {
         EnvironmentSource::Local => Ok(Runner {
-            run: local_probe_runner(),
+            run: local_probe_runner(Some(shared.local_environment().vars)),
             lease: None,
         }),
         EnvironmentSource::Ssh { conn_id } => {
