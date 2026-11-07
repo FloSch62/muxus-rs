@@ -1,0 +1,42 @@
+[package]
+name = "muxus-webview"
+description = "Saved web pages in their own browser windows (port of electron/src/web-windows.ts)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# The browser window itself: wry and tao, on WebKitGTK (Linux), WKWebView (macOS) or
+# WebView2 (Windows). Linux builds need the WebKitGTK 4.1 development files
+# (libwebkit2gtk-4.1-dev) and the package then depends on its runtime. Without the
+# feature, Muxus opens pages in the system browser instead.
+webview = ["dep:wry", "dep:tao", "dep:gtk", "dep:webkit2gtk", "dep:sha2"]
+
+[dependencies]
+muxus-core.workspace = true
+async-channel = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+# `mac-proxy` lets WKWebView use the page's SOCKS5 proxy (macOS 14 and later).
+wry = { version = "0.57", optional = true, default-features = false, features = ["os-webview", "mac-proxy"] }
+# Without tao's D-Bus and X11 extras: GTK draws the window on X11 and Wayland alike.
+tao = { version = "0.37", optional = true, default-features = false, features = ["rwh_06"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The same versions wry builds on: the window's certificate prompt and its
+# keyboard shortcuts talk to WebKitGTK directly.
+gtk = { version = "0.18", optional = true }
+webkit2gtk = { version = "=2.0.2", optional = true, features = ["v2_38"] }
+sha2 = { version = "0.10", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[example]]
+name = "web_window"
+required-features = ["webview"]
+
+[lints]
+workspace = true

@@ -8,7 +8,9 @@ TypeScript disagree, the TypeScript wins.
 ## Stack
 
 - **UI:** [GPUI](https://www.gpui.rs) through `gpui-component` (pinned: `gpui-component = "=0.7.3"`,
-  which pins `gpui = { package = "gpui-pre", version = "=0.3.9" }`). No webview.
+  which pins `gpui = { package = "gpui-pre", version = "=0.3.9" }`). No webview in the app's
+  windows. Saved web pages open in browser windows of their own: `muxus --web-window` processes
+  running wry (WebKitGTK 4.1 on Linux) behind the `webview` feature (`muxus-webview`).
 - **Async backend:** tokio, owned by `muxus-session`. The UI never blocks on I/O. It talks to the
   backend through executor-agnostic channels (`async-channel`), so GPUI's executor and tokio never need
   to share a runtime.
@@ -29,7 +31,7 @@ A crate may depend only on crates in lower layers. `cargo xtask layering` enforc
 | L2 | `muxus-ssh`, `muxus-local`, `muxus-telnet`, `muxus-serial`, `muxus-rdp`, `muxus-vnc`, `muxus-mgmt`, `muxus-import`, `muxus-term` | `server/src/{ssh,forwards,x11,local,telnet,serial,remote-desktop,management}`, client import modules, `client/src/terminal` |
 | L3 | `muxus-session` | `server/src/{ws,routes,session-logging,login-sequence,diagnostics,stats}` |
 | L4 | `muxus-ui` | `client/src/theme.ts`, the shared MUI look |
-| L5 | `muxus-term-view` | `client/src/components/TerminalViewImpl.tsx` and its addons |
+| L5 | `muxus-term-view`, `muxus-webview` | `client/src/components/TerminalViewImpl.tsx` and its addons; `electron/src/web-windows.ts` |
 | L6 | `muxus-app` | `client/src` components and state, `electron/src` |
 
 L2 crates depend on `muxus-core` only. Terminal transports speak the byte-stream contract in
@@ -90,9 +92,13 @@ active tab is not bolded.
 
 ```bash
 cargo run                       # the app (default member: muxus-app)
+cargo run -p muxus-app --features webview  # with web page windows (needs libwebkit2gtk-4.1-dev)
 cargo test -p muxus-ssh         # one crate
 cargo xtask ci                  # fmt, clippy, tests, layering, style
 ```
+
+The Linux packages build with `--features webview`; without it saved web pages open in the system
+browser, and nothing needs WebKitGTK.
 
 `.cargo/config.toml` caps build jobs. Use `CARGO_TARGET_DIR` to give independent builds their own
 target directory.
