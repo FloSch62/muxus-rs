@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use rand::RngCore;
+use rand::TryRng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -26,7 +26,9 @@ pub fn text_safe_cookie(length: usize) -> Vec<u8> {
     let mut cookie = Vec::with_capacity(length);
     let mut random = vec![0u8; length];
     while cookie.len() < length {
-        rand::rngs::OsRng.fill_bytes(&mut random);
+        rand::rngs::SysRng
+            .try_fill_bytes(&mut random)
+            .expect("the operating system random source is unavailable");
         for &byte in &random {
             if byte == 0x1a || byte == 0x0d {
                 continue;

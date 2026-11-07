@@ -132,12 +132,12 @@ pub fn free_port() -> u16 {
     use std::sync::OnceLock;
     use std::sync::atomic::{AtomicU16, Ordering};
 
-    use rand::Rng;
+    use rand::RngExt;
     const FIRST: u16 = 20_000;
     const COUNT: u16 = 12_000;
     static START: OnceLock<u16> = OnceLock::new();
     static NEXT: AtomicU16 = AtomicU16::new(0);
-    let start = *START.get_or_init(|| rand::thread_rng().gen_range(0..COUNT));
+    let start = *START.get_or_init(|| rand::rng().random_range(0..COUNT));
     loop {
         let offset = NEXT.fetch_add(1, Ordering::Relaxed) % COUNT;
         let port = FIRST + (start + offset) % COUNT;

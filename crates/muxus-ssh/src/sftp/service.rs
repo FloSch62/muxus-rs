@@ -714,7 +714,7 @@ fn format_bytes(bytes: u64) -> String {
 
 fn random_hex<const N: usize>() -> String {
     let mut bytes = [0u8; N];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+    rand::Rng::fill_bytes(&mut rand::rng(), &mut bytes);
     hex::encode(bytes)
 }
 

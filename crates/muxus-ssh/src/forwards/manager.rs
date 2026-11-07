@@ -1057,10 +1057,10 @@ pub fn tunnel_profile(
 
 /// An 8-character id from nanoid's URL-safe alphabet.
 fn new_forward_id() -> String {
-    use rand::Rng;
+    use rand::RngExt;
     const ALPHABET: &[u8] = b"useandom-26T198340PX75pxJACKVERYMINDBUSHWOLF_GQZbfghjklqvwyzrict";
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..8)
-        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
+        .map(|_| ALPHABET[rng.random_range(0..ALPHABET.len())] as char)
         .collect()
 }

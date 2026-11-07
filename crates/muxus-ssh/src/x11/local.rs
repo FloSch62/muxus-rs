@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rand::RngCore;
+use rand::TryRng;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -457,7 +457,9 @@ impl LocalX11 {
     /// Per-transport state: one fake cookie and the handler for incoming X11 channels.
     pub fn attach(&self) -> X11Transport {
         let mut cookie = [0u8; 16];
-        rand::rngs::OsRng.fill_bytes(&mut cookie);
+        rand::rngs::SysRng
+            .try_fill_bytes(&mut cookie)
+            .expect("the operating system random source is unavailable");
         X11Transport {
             inner: Arc::new(TransportInner {
                 local: self.clone(),

@@ -15,7 +15,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 hmac = "0.13"
 indexmap = { version = "2", features = ["serde"] }
 keyring-core = "1"
-getrandom = "0.3"
+getrandom = "0.4"
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 scrypt = { version = "0.12", default-features = false }
 serde = { version = "1", features = ["derive"] }
