@@ -1291,7 +1291,41 @@ impl SftpPanel {
                 self.open_with = Some((dialog, subscription));
                 cx.notify();
             }
-            Some(OpenWithChooser::ProgramPicker) | None => {}
+            Some(OpenWithChooser::ProgramPicker) => {
+                // macOS: an application picked with the native file picker
+                // (`chooseLocalProgram`).
+                let picked = crate::util::file_dialog::pick_paths(
+                    muxus_ui::gpui_kit::PathPromptOptions {
+                        files: true,
+                        directories: false,
+                        multiple: false,
+                        prompt: Some("Open".into()),
+                    },
+                    cx,
+                );
+                cx.spawn_in(window, async move |this, cx| {
+                    let Some(program) = picked.await.and_then(|paths| paths.into_iter().next())
+                    else {
+                        return;
+                    };
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        if let Err(message) = super::local_open::check_picked_program(&program) {
+                            super::services::notify(Status::Error, message, cx);
+                            return;
+                        }
+                        let id =
+                            format!("{}{}", super::open_with::PICKED_PREFIX, program.display());
+                        this.open_locally(
+                            entry,
+                            muxus_core::api::LocalOpenTarget::Application { id },
+                            window,
+                            cx,
+                        );
+                    });
+                })
+                .detach();
+            }
+            None => {}
         }
     }
 

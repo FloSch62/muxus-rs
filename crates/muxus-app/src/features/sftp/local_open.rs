@@ -50,12 +50,55 @@ pub fn can_open_locally() -> bool {
 pub fn open_with_chooser() -> Option<OpenWithChooser> {
     if cfg!(windows) {
         Some(OpenWithChooser::System)
+    } else if cfg!(target_os = "macos") {
+        Some(OpenWithChooser::ProgramPicker)
     } else if cfg!(target_os = "linux") {
         Some(OpenWithChooser::ApplicationList)
     } else {
-        // macOS's program picker is not ported yet.
         None
     }
+}
+
+/// `muxus:local-open:choose-program`'s checks on a program picked with the file picker: on
+/// macOS any application bundle; elsewhere a desktop entry Muxus can start, or an executable.
+/// The error is the sentence the user sees.
+pub fn check_picked_program(file: &Path) -> Result<(), String> {
+    let name = file
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    if name.ends_with(".desktop") {
+        picked_desktop_entry(file).map(|_| ())
+    } else if super::linux_apps::find_program(&file.to_string_lossy(), "").is_some() {
+        Ok(())
+    } else {
+        Err(format!("{name} is not an executable program."))
+    }
+}
+
+/// A picked `.desktop` file as the program it describes.
+fn picked_desktop_entry(file: &Path) -> Result<super::linux_apps::DesktopApplication, String> {
+    let name = file
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let text = fs::metadata(file)
+        .ok()
+        .filter(|info| info.is_file() && info.len() <= 256 * 1024)
+        .and_then(|_| fs::read_to_string(file).ok())
+        .ok_or_else(|| format!("{name} could not be read."))?;
+    let environment: HashMap<String, String> = std::env::vars().collect();
+    super::linux_apps::desktop_application_from_text(
+        &text,
+        &name,
+        &file.to_string_lossy(),
+        &[],
+        &super::linux_apps::current_desktops(&environment),
+    )
+    .ok_or_else(|| format!("{name} does not describe a program Muxus can start."))
 }
 
 pub const LOCAL_COPY_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
@@ -404,11 +447,31 @@ pub fn open_local_copy(file: &Path, target: &LocalOpenTarget) -> Result<(), Stri
         }
         LocalOpenTarget::Application { id } => {
             if let Some(program) = id.strip_prefix(super::open_with::PICKED_PREFIX) {
-                return Command::new(program)
+                if cfg!(target_os = "macos") {
+                    // An application bundle the program picker chose.
+                    return run_opener(
+                        "/usr/bin/open",
+                        &["-a", program, &path],
+                        Duration::from_secs(10),
+                    );
+                }
+                if program.ends_with(".desktop") {
+                    let application = picked_desktop_entry(Path::new(program))?;
+                    return super::linux_apps::launch(&application, &path);
+                }
+                let environment: HashMap<String, String> = std::env::vars().collect();
+                let mut command = Command::new(program);
+                command
                     .arg(&path)
+                    .env_clear()
+                    .envs(launch_environment(&environment))
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
-                    .stderr(Stdio::null())
+                    .stderr(Stdio::null());
+                if let Some(home) = std::env::var_os("HOME") {
+                    command.current_dir(home);
+                }
+                return command
                     .spawn()
                     .map(|_| ())
                     .map_err(|error| error.to_string());
@@ -816,6 +879,39 @@ mod tests {
             assert_eq!(mode(&first.directory) & 0o777, 0o700);
             assert_eq!(mode(&first.file) & 0o077, 0);
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn checks_programs_picked_with_the_file_picker() {
+        let scratch = tempfile::tempdir().unwrap();
+        let entry = scratch.path().join("viewer.desktop");
+        fs::write(
+            &entry,
+            "[Desktop Entry]\nType=Application\nName=Viewer\nExec=viewer %f\n",
+        )
+        .unwrap();
+        assert_eq!(check_picked_program(&entry), Ok(()));
+        let link = scratch.path().join("site.desktop");
+        fs::write(
+            &link,
+            "[Desktop Entry]\nType=Link\nName=Site\nURL=https://example.com\n",
+        )
+        .unwrap();
+        assert_eq!(
+            check_picked_program(&link),
+            Err("site.desktop does not describe a program Muxus can start.".into())
+        );
+        assert_eq!(
+            check_picked_program(&scratch.path().join("gone.desktop")),
+            Err("gone.desktop could not be read.".into())
+        );
+        let script = scratch.path().join("notes.txt");
+        fs::write(&script, "x").unwrap();
+        assert_eq!(
+            check_picked_program(&script),
+            Err("notes.txt is not an executable program.".into())
+        );
     }
 
     #[test]

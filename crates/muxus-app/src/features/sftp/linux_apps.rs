@@ -936,7 +936,10 @@ pub fn detect_icon_theme(env: &HashMap<String, String>, home: &Path) -> Option<S
             return Some(theme.to_string());
         }
     }
-    let text = read_text(&config_home.join("gtk-3.0/settings.ini"), MAX_DESKTOP_FILE_BYTES)?;
+    let text = read_text(
+        &config_home.join("gtk-3.0/settings.ini"),
+        MAX_DESKTOP_FILE_BYTES,
+    )?;
     let groups = parse_key_file(&text);
     group(&groups, "Settings")
         .and_then(|settings| get(settings, "gtk-icon-theme-name"))
@@ -1657,11 +1660,23 @@ mod tests {
                  [scalable/apps]\nSize=48\nType=Scalable\nContext=Applications\n"
             )
         };
-        write(&system.join("icons/hicolor/index.theme"), &theme("hicolor", ""));
-        write(&system.join("icons/Yaru/index.theme"), &theme("Yaru", "Inherits=hicolor\n"));
+        write(
+            &system.join("icons/hicolor/index.theme"),
+            &theme("hicolor", ""),
+        );
+        write(
+            &system.join("icons/Yaru/index.theme"),
+            &theme("Yaru", "Inherits=hicolor\n"),
+        );
         write(&system.join("icons/hicolor/48x48/apps/viewer.png"), "png");
-        write(&system.join("icons/hicolor/scalable/apps/viewer.svg"), "<svg/>");
-        write(&system.join("icons/Yaru/scalable/apps/editor.svg"), "<svg/>");
+        write(
+            &system.join("icons/hicolor/scalable/apps/viewer.svg"),
+            "<svg/>",
+        );
+        write(
+            &system.join("icons/Yaru/scalable/apps/editor.svg"),
+            "<svg/>",
+        );
         write(&system.join("icons/hicolor/48x48/apps/editor.png"), "png");
         // The user's own icons win a tie.
         write(&home.join(".icons/hicolor/48x48/apps/editor.png"), "png");
@@ -1683,12 +1698,21 @@ mod tests {
             })
         };
         // PNG over SVG in one theme; the preferred theme before what it inherits.
-        assert_eq!(icon("viewer"), Some(system.join("icons/hicolor/48x48/apps/viewer.png")));
+        assert_eq!(
+            icon("viewer"),
+            Some(system.join("icons/hicolor/48x48/apps/viewer.png"))
+        );
         assert_eq!(icon("viewer.png"), icon("viewer"));
-        assert_eq!(icon("editor"), Some(system.join("icons/Yaru/scalable/apps/editor.svg")));
+        assert_eq!(
+            icon("editor"),
+            Some(system.join("icons/Yaru/scalable/apps/editor.svg"))
+        );
         assert_eq!(icon("old"), Some(system.join("pixmaps/old.png")));
         assert_eq!(icon("missing"), None);
-        assert_eq!(icon("/opt/app/icon.png"), Some(PathBuf::from("/opt/app/icon.png")));
+        assert_eq!(
+            icon("/opt/app/icon.png"),
+            Some(PathBuf::from("/opt/app/icon.png"))
+        );
         assert_eq!(icon("/opt/app/icon.xpm"), None);
         // Without the preferred theme, hicolor's PNG; the user's copy first.
         let plain = LinuxApplicationCatalog::read_with_icon_theme(&env, &home, None);
