@@ -78,12 +78,13 @@ content (`palette.rs`) and test data.
 | gNMI / NETCONF editors (general, login, TLS security cards, files with Browse, route, options) | `ManagementHostEditor.tsx`, `management-draft.ts` | done | |
 | VaultSecretField | `VaultSecretField.tsx` | partial | Field, missing-secret state and helper texts done; "New secret…" is listed but does not open the vault secret dialog yet |
 | TunnelEditorDialog (saved host or custom connection, rule, diagram, auto-start/reconnect, Save / Save & start) | `TunnelEditorDialog.tsx` | done | |
-| HostBulkEditDialog + plan | `HostBulkEditDialog.tsx`, `host-bulk-edit.ts` | done | |
+| HostBulkEditDialog + plan | `HostBulkEditDialog.tsx`, `host-bulk-edit.ts` | done | prompt waiting, anti-idle, Backspace/Enter, implicit CR and local echo in the appearance section (`dialogs/bulk_typing.rs`); system OpenSSH is not shown yet |
+| Prompt waiting, anti-idle, keyboard and echo controls | `PastePromptFields.tsx`, `AntiIdleFields.tsx`, `TerminalAppearanceSection.tsx` | done | `view/session_input.rs`, shared by the host editor (SSH, Telnet, serial) and the bulk editor; counted in the Terminal appearance badge |
 | HostOrganizationDialog | `HostOrganizationDialog.tsx`, `host-organization.ts` | done | helpers already in `hosts::organization` (shell) |
 | FolderDialog (new, edit with rename/re-parent/merge note, move hosts, style, shared credentials, folder password with master password, inherited login sequence) | `sidebar/FolderDialog.tsx` | done | |
 | LaunchGroupDialog (layout cards, live-session warning, launch toast) | `sidebar/LaunchGroupDialog.tsx` | done | |
 | Saved hosts helpers | `saved-hosts.ts` | done | already in `hosts::saved` (shell) |
-| v0.15 host settings in the drafts and bulk edit: prompt waiting, anti-idle, keys/echo, system OpenSSH, environment discovery, fallback jump routes and gateways | `draft.ts`, `native-draft.ts`, `desktop-draft.ts`, `management-draft.ts`, `host-bulk-edit.ts`, `SshGatewayRouteField.tsx` (`savedGatewayFallbacks`) | partial | Data only: loaded from the host, checked, saved (edit and duplicate keep them); no controls in the editor or bulk dialog yet. `web-draft.ts`, `name-range.ts`, `range-save.ts`, `authChoice` and `managementHostPrefill` are not ported |
+| v0.15 host settings in the drafts and bulk edit: prompt waiting, anti-idle, keys/echo, system OpenSSH, environment discovery, fallback jump routes and gateways | `draft.ts`, `native-draft.ts`, `desktop-draft.ts`, `management-draft.ts`, `host-bulk-edit.ts`, `SshGatewayRouteField.tsx` (`savedGatewayFallbacks`) | partial | Loaded from the host, checked, saved (edit and duplicate keep them). Prompt waiting, anti-idle and keys/echo have controls (row above); system OpenSSH, environment discovery and fallback routes have none yet. `web-draft.ts`, `name-range.ts`, `range-save.ts`, `authChoice` and `managementHostPrefill` are not ported |
 
 ## Tests
 
