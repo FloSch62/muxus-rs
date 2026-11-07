@@ -8,7 +8,7 @@ proxy on an SSH gateway. Ports `electron/src/web-windows.ts`, `client/src/web-ho
 data layer (schema v36 `web` kind, `WebProfile`) is tracked in `core-store.md`.
 
 ```bash
-cargo test -p muxus-webview                                         # 9 tests (12 with --features webview)
+cargo test -p muxus-webview                                         # 9 tests (13 with --features webview)
 cargo test -p muxus-app --lib -- web_draft web_hosts                # 9 tests, one over a test sshd
 cargo test -p muxus-ssh --lib forward_manager                       # port 0 and independent forwards
 # The page window alone, the way the app opens it (needs libwebkit2gtk-4.1-dev on Linux):
@@ -56,7 +56,7 @@ WebKitGTK; such a build opens pages the way the browser build of Muxus does.
 | Every request through the proxy, name lookups included; `localhost` is the gateway | `web-windows.ts` (`proxyRules`, `<-loopback>`) | done | wry `ProxyConfig::Socks5` (WebKitGTK network proxy settings, no ignore list); GLib's SOCKS5 sends host names (checked: CONNECT by name through a logging proxy) |
 | Window: 1200×800, title `<host> — <page title>`, Muxus icon | `web-windows.ts` | done | Icon by name (`muxus`, the packages' hicolor icon) on Linux |
 | Alt+Left/Right, Ctrl+[ / Ctrl+], F5 / Ctrl+R | `web-windows.ts` (`before-input-event`) | done (Linux) | WebKitGTK `key-press-event`; macOS/Windows use an injected key handler (Cmd on macOS), unverified |
-| Right-click menu (Back, Forward, Reload, Cut, Copy, Paste) | `web-windows.ts` (`context-menu`) | partial | WebKitGTK's own menu: it has these, plus WebKit's link and image items |
+| Right-click menu (Back, Forward, Reload, Cut, Copy, Paste) | `web-windows.ts` (`context-menu`) | done (Linux) | WebKitGTK `context-menu` signal: WebKit's menu (link, image and input method items) is replaced by the six items, Back/Forward while there is history that way, Cut/Copy/Paste as Chromium's `editFlags` put it (cut a selection in a field, copy a selection, paste into a field) from the hit test; Cut/Copy/Paste run WebKit's editing commands. Pages a page opened get the same menu (Electron shows none there). macOS/Windows: the engine's own menu (wry has no hook) |
 | Pages stay on http(s); pages they open (target=_blank) get a window in the host's session and proxy, with the same rules, and close with it | `web-windows.ts` (`guardContents`) | done (Linux) | Popups are GTK windows with a related wry view; macOS/Windows let the engine open them in the opener's environment (same cookies and proxy), without the navigation guard |
 | No camera, microphone, location or notifications | `web-windows.ts` (`setPermissionRequestHandler`) | done | wry permission handler denies everything |
 | Untrusted certificate: ask once per certificate, "Go back" / "Continue anyway", the answer holds until the window closes | `web-windows.ts` (`handleWebCertificateError`) | done (Linux) | GTK dialog on `load-failed-with-tls-errors`; a yes is `allow_tls_certificate_for_host` on the window's own WebContext (in memory, gone with the window process, shared by its popups); a no goes back, or shows a short refusal page. Fingerprint shown as SHA-256 hex. macOS/Windows: wry offers no hook, so such pages fail to load (gap) |
@@ -74,7 +74,9 @@ WebKitGTK; such a build opens pages the way the browser build of Muxus does.
   resolves, scripts run, the title follows the page, F5/Ctrl+R reload, a target=_blank link opens a
   popup through the same proxy, a self-signed HTTPS page asks and loads once accepted (and shows the
   refusal page when not), reopening only focuses, and closing reports the forward to stop; also
-  `muxus --web-window` from the app binary itself.
+  `muxus --web-window` from the app binary itself. The right-click menu was checked on page text,
+  on a field with selected text (Cut, Copy and Paste on) and after following a link (Back on;
+  choosing it goes back).
 - **Windows**: `cargo clippy -p muxus-webview --features webview --target x86_64-pc-windows-gnu`
   passes; never run.
 - **macOS**: not compiled here (a build script needs Apple's toolchain); never run. `mac-proxy`
@@ -83,7 +85,7 @@ WebKitGTK; such a build opens pages the way the browser build of Muxus does.
 ## Not ported / differences
 
 - Untrusted certificates on macOS and Windows (no wry hook): the page does not load.
-- The right-click menu is WebKit's, not the TypeScript's six items.
+- The right-click menu is the six items on Linux only; macOS and Windows show the engine's own.
 - WebKitGTK's own data layout per host; nothing migrates from Electron partitions.
 - A build without the `webview` feature (the default for `cargo build`, and the macOS/Windows
   packages for now) behaves like the browser build of Muxus.
