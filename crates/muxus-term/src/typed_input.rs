@@ -8,6 +8,8 @@ use muxus_core::paste_pacing::{
 use muxus_core::protocol::TerminalClientMessage;
 
 /// How saved text goes out: written at once, or through the backend pacer.
+// A short-lived value, sent right away; boxing the message would only add indirection.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedInput {
     Direct(String),

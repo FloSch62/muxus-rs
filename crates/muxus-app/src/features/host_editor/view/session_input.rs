@@ -51,10 +51,15 @@ pub fn typing_settings_count(
     .count()
 }
 
+type Getter<V, T> = Rc<dyn Fn(&V) -> Option<T>>;
+type Setter<V, T> = Rc<dyn Fn(&mut V, T, &mut Context<V>)>;
+/// Writes a chosen select value into the modes.
+type ApplyChoice = Rc<dyn Fn(&mut TerminalInputModes, &str)>;
+
 /// Reads the draft a field edits, and writes a changed one back.
 pub struct DraftAccess<V, T> {
-    get: Rc<dyn Fn(&V) -> Option<T>>,
-    set: Rc<dyn Fn(&mut V, T, &mut Context<V>)>,
+    get: Getter<V, T>,
+    set: Setter<V, T>,
 }
 
 impl<V, T> Clone for DraftAccess<V, T> {
@@ -390,7 +395,7 @@ pub fn input_modes_fields<V: Form>(
                   label: &'static str,
                   current: String,
                   choices: Vec<(String, String)>,
-                  apply: Rc<dyn Fn(&mut TerminalInputModes, &str)>| {
+                  apply: ApplyChoice| {
         let access = access.clone();
         form::select(
             view,

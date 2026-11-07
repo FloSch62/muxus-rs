@@ -43,6 +43,7 @@ use muxus_term_view::muxus_term::palette::{
     terminal_color_for_host, terminal_scheme, terminal_scheme_id_for_host,
     theme_with_color_overrides,
 };
+use muxus_term_view::muxus_term::paste::{flag_paste_characters, requires_paste_confirmation};
 use muxus_term_view::muxus_term::right_click::RightClickAction as TermRightClick;
 use muxus_term_view::muxus_term::scrollback::terminal_history_divider;
 use muxus_term_view::muxus_term::terminal::CursorShape;
@@ -1905,11 +1906,20 @@ impl AppShell {
         }
     }
 
-    /// `pasteText`: a paste the user made, previewed when it spans lines.
+    /// `pasteText`: a paste the user made, previewed when it spans lines or holds invisible or
+    /// look-alike characters, otherwise sent at the host's pace.
     pub fn paste_text(&mut self, tab_id: &str, text: &str, cx: &mut Context<Self>) {
-        if let Some(view) = self.terminal_of(tab_id) {
+        let Some(view) = self.terminal_of(tab_id) else {
+            return;
+        };
+        let preview = (self.prefs.paste_warn_multiline && requires_paste_confirmation(text))
+            || (self.prefs.paste_warn_lookalikes && !flag_paste_characters(text).is_empty());
+        if preview {
+            // The view asks for the preview (`ConfirmPaste`).
             view.update(cx, |view, cx| view.paste(text, cx));
+            return;
         }
+        self.paste_into_session(tab_id, text, None, true, cx);
     }
 
     /// The pacing a paste into this tab uses (`hostPastePacing`).

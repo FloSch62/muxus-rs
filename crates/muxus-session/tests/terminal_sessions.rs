@@ -1042,7 +1042,7 @@ async fn ios_console() -> (u16, Arc<Mutex<Vec<String>>>) {
                             }
                             b'\n' | 0 => {}
                             // Telnet negotiation and other controls carry no line text.
-                            byte if byte >= 0x20 && byte < 0x7f => line.push(byte),
+                            byte if (0x20..0x7f).contains(&byte) => line.push(byte),
                             _ => {}
                         }
                     }
