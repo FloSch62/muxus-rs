@@ -992,6 +992,8 @@ pub struct ProxyCommandStream {
     stdin: tokio::process::ChildStdin,
     child: Arc<Mutex<tokio::process::Child>>,
     stderr: Arc<Mutex<String>>,
+    /// The command's stderr reached its end: everything it said is in `stderr`.
+    stderr_closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ProxyCommandStream {
@@ -1023,8 +1025,10 @@ impl ProxyCommandStream {
             .ok_or_else(|| std::io::Error::other("no stdin"))?;
         let stderr_pipe = child.stderr.take();
         let stderr = Arc::new(Mutex::new(String::new()));
+        let stderr_closed = Arc::new(std::sync::atomic::AtomicBool::new(stderr_pipe.is_none()));
         if let Some(mut pipe) = stderr_pipe {
             let sink = stderr.clone();
+            let closed = stderr_closed.clone();
             tokio::spawn(async move {
                 use tokio::io::AsyncReadExt;
                 let mut buf = [0u8; 1024];
@@ -1042,6 +1046,7 @@ impl ProxyCommandStream {
                         s.drain(..cut);
                     }
                 }
+                closed.store(true, std::sync::atomic::Ordering::SeqCst);
             });
         }
         Ok(Self {
@@ -1049,6 +1054,7 @@ impl ProxyCommandStream {
             stdin,
             child: Arc::new(Mutex::new(child)),
             stderr,
+            stderr_closed,
         })
     }
 
@@ -1057,6 +1063,7 @@ impl ProxyCommandStream {
         ProxyCommandStatus {
             child: self.child.clone(),
             stderr: self.stderr.clone(),
+            stderr_closed: self.stderr_closed.clone(),
         }
     }
 
@@ -1070,6 +1077,7 @@ impl ProxyCommandStream {
 pub struct ProxyCommandStatus {
     child: Arc<Mutex<tokio::process::Child>>,
     stderr: Arc<Mutex<String>>,
+    stderr_closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ProxyCommandStatus {
@@ -1077,12 +1085,14 @@ impl ProxyCommandStatus {
     pub async fn failure(&self, wait: Duration) -> Option<String> {
         let deadline = tokio::time::Instant::now() + wait;
         loop {
-            if let Some(message) = self.exit_message() {
-                return Some(message);
+            let exited = lock(&self.child).try_wait().ok().flatten().is_some();
+            let late = tokio::time::Instant::now() >= deadline;
+            // The command's last words can still be in the pipe when it exits; they explain
+            // the failure, so read them to the end first.
+            if exited && (late || self.stderr_closed.load(std::sync::atomic::Ordering::SeqCst)) {
+                return self.exit_message();
             }
-            if lock(&self.child).try_wait().ok().flatten().is_some()
-                || tokio::time::Instant::now() >= deadline
-            {
+            if late {
                 return None;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
