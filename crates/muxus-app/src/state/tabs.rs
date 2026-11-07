@@ -79,6 +79,8 @@ pub struct TerminalTab {
     pub sftp_open: bool,
     /// Server-advertised capability for the current SSH transport.
     pub sftp_available: Option<bool>,
+    /// The session runs the computer's `ssh` program: no features of the built-in client.
+    pub system_open_ssh: Option<bool>,
     /// Most recent working directory reported by a live local or remote shell.
     pub terminal_cwd: Option<String>,
     /// Explicit opt-out from following the terminal in the attached SFTP panel.
@@ -140,6 +142,7 @@ impl TerminalTab {
             transfer_id: None,
             sftp_open: false,
             sftp_available: None,
+            system_open_ssh: None,
             terminal_cwd: None,
             sftp_follow_terminal: None,
             search_request: 0,
@@ -195,6 +198,7 @@ impl TerminalTab {
         self.conn_id = None;
         self.sftp_open = false;
         self.sftp_available = None;
+        self.system_open_ssh = None;
         self.terminal_cwd = None;
         self.search_request = 0;
         self.editor_paths = Vec::new();
@@ -221,6 +225,7 @@ pub struct TabPatch {
     pub transfer_id: Option<Option<String>>,
     pub sftp_open: Option<bool>,
     pub sftp_available: Option<Option<bool>>,
+    pub system_open_ssh: Option<Option<bool>>,
     pub terminal_cwd: Option<Option<String>>,
     pub sftp_follow_terminal: Option<Option<bool>>,
     pub color: Option<Option<String>>,
@@ -262,6 +267,7 @@ impl TabPatch {
         set!(transfer_id);
         set_session!(sftp_open);
         set_session!(sftp_available);
+        set_session!(system_open_ssh);
         set_session!(terminal_cwd);
         set_session!(sftp_follow_terminal);
         set!(color);

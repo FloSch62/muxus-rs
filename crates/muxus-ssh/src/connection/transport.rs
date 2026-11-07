@@ -567,6 +567,10 @@ impl HopTransport {
 pub struct ConnectError {
     pub message: String,
     pub kind: ConnectErrorKind,
+    /// Set when another jump route could avoid this failure: the jump hosts of the route that
+    /// failed, joined by ` → ` (empty for a direct connection). A target that refuses the login
+    /// is the same target on every route, so its failures leave this unset (`routeFailures`).
+    pub failed_route: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -588,6 +592,7 @@ impl ConnectError {
         Self {
             message: message.into(),
             kind,
+            failed_route: None,
         }
     }
 

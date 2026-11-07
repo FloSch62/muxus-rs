@@ -715,12 +715,16 @@ impl HostEditor {
         let config_backed = self.ssh.storage == Storage::Openssh;
         let entity = cx.entity().downgrade();
         let (console, sftp) = (entity.clone(), entity.clone());
-        let mut col = stack(2.).child(
+        let system = self.ssh.system_open_ssh;
+        let system_on_windows = self.system_open_ssh_on_windows();
+        let mut col = stack(2.).child(self.ssh_client_section(cx)).child(
             stack(0.5)
                 .child(heading(&theme, "Console compatibility", 600.))
                 .child(
-                    FormControlLabel::new("console-compat", FormControl::Switch(self.ssh.console_compatibility), "").label_element(para("Enable console compatibility mode", muxus_ui::widgets::typography::body1(), p.text.primary))
+                    // Greyed rather than cleared, so turning system OpenSSH off restores it.
+                    FormControlLabel::new("console-compat", FormControl::Switch(self.ssh.console_compatibility && !system), "").label_element(para("Enable console compatibility mode", muxus_ui::widgets::typography::body1(), p.text.primary))
                     .flush()
+                    .disabled(system)
                     .on_click(move |_, _, cx| {
                         let _ = console.update(cx, |this, cx| {
                             this.ssh.console_compatibility = !this.ssh.console_compatibility;
@@ -729,13 +733,18 @@ impl HostEditor {
                     }),
                 )
                 .child(para(
-                    "Skips SFTP, shell integration, and SendEnv/SetEnv requests. TTY settings still apply.",
+                    if system {
+                        "Not available with system OpenSSH: the ssh program decides what it requests."
+                    } else {
+                        "Skips SFTP, shell integration, and SendEnv/SetEnv requests. TTY settings still apply."
+                    },
                     body2(),
                     p.text.secondary,
                 ))
                 .child(
                     FormControlLabel::new("disable-sftp", FormControl::Switch(self.ssh.disable_sftp), "").label_element(para("Disable SFTP and shell integration only", muxus_ui::widgets::typography::body1(), p.text.primary))
                     .flush()
+                    .disabled(system_on_windows)
                     .on_click(move |_, _, cx| {
                         let _ = sftp.update(cx, |this, cx| {
                             this.ssh.disable_sftp = !this.ssh.disable_sftp;

@@ -14,7 +14,6 @@ use muxus_ui::theme::{ActiveTheme, Status, fonts};
 use muxus_ui::widgets::Alert;
 
 use super::HostEditor;
-use super::desktop::gateway_field;
 use super::form::{self, Choice};
 use super::ssh::{row, stack};
 use crate::features::host_editor::logic::js::digits_only;
@@ -403,8 +402,6 @@ impl HostEditor {
     ) -> AnyElement {
         let theme = *cx.theme();
         let gnmi = self.kind == SavedHostKind::Gnmi;
-        let data = self.data.clone();
-        let gateway = self.management.ssh_gateway.clone();
         stack(2.)
             .child(intro(
                 &theme,
@@ -415,18 +412,23 @@ impl HostEditor {
                     "Reach the device through an SSH jump host, like ssh -J. Jump hosts set in ssh_config for this host apply as well."
                 },
             ))
-            .child(gateway_field(
-                self,
+            .child(self.gateway_route_field(
                 "mgmt-gateway",
                 if gnmi { "SSH gateway" } else { "Jump host" },
-                gateway.as_ref(),
-                &data,
+                super::gateway_route::GatewayRoute {
+                    get: |this| {
+                        (
+                            this.management.ssh_gateway.clone(),
+                            this.management.ssh_gateway_fallbacks.clone(),
+                        )
+                    },
+                    set: |this, gateway, fallbacks| {
+                        this.management.ssh_gateway = gateway;
+                        this.management.ssh_gateway_fallbacks = fallbacks;
+                    },
+                },
                 window,
                 cx,
-                |this, gateway, cx| {
-                    this.management.ssh_gateway = gateway;
-                    this.changed(cx);
-                },
             ))
             .into_any_element()
     }

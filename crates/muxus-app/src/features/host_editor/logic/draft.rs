@@ -150,7 +150,8 @@ pub struct HostDraft {
     pub auth_mode: AuthMode,
     pub identity_files: Vec<String>,
     pub certificate_files: Vec<String>,
-    pub identities_only: bool,
+    /// As the host has it (unset when absent); [`auth_choice`] sets it.
+    pub identities_only: Option<bool>,
     pub identity_agent_mode: IdentityAgentMode,
     /// Custom agent socket path or environment indirection.
     pub identity_agent: String,
@@ -229,7 +230,7 @@ pub fn blank_draft(prefill_target: &str, group: &str, storage: Storage) -> HostD
         certificate_files: Vec::new(),
         // "Specific key file" is an exact-key mode. This stays dormant while the
         // default auth mode is selected, then serializes as IdentitiesOnly yes.
-        identities_only: true,
+        identities_only: Some(true),
         identity_agent_mode: IdentityAgentMode::Default,
         identity_agent: String::new(),
         forward_agent: false,
@@ -332,7 +333,7 @@ pub fn draft_from_entry(entry: &SshHostEntry, duplicate: bool) -> HostDraft {
         auth_mode: auth_mode_of(o.password_only, &o.identity_files, &o.certificate_files),
         identity_files: o.identity_files.clone().unwrap_or_default(),
         certificate_files: o.certificate_files.clone().unwrap_or_default(),
-        identities_only: o.identities_only.unwrap_or(false),
+        identities_only: o.identities_only,
         identity_agent_mode,
         identity_agent,
         forward_agent: o.forward_agent.unwrap_or(false),
@@ -410,7 +411,7 @@ pub fn draft_from_saved_ssh_profile(
         ),
         identity_files: profile.identity_files.clone().unwrap_or_default(),
         certificate_files: profile.certificate_files.clone().unwrap_or_default(),
-        identities_only: profile.identities_only.unwrap_or(false),
+        identities_only: profile.identities_only,
         identity_agent_mode,
         identity_agent,
         forward_agent: profile.forward_agent.unwrap_or(false),
@@ -599,7 +600,7 @@ pub fn draft_to_saved_ssh_input(
             },
             identity_files: key.then(|| trimmed_files(&draft.identity_files)),
             certificate_files: key.then(|| trimmed_files(&draft.certificate_files)),
-            identities_only: key.then_some(true),
+            identities_only: if key { draft.identities_only } else { None },
             identity_agent: identity_agent_option(draft),
             forward_agent: draft.forward_agent.then_some(true),
             forward_x11: forward_x11_option(draft.forward_x11),
@@ -643,10 +644,8 @@ pub fn draft_to_request(draft: &HostDraft, previous_alias: Option<&str>) -> Host
             },
             identity_files: key.then(|| trimmed_files(&draft.identity_files)),
             certificate_files: key.then(|| trimmed_files(&draft.certificate_files)),
-            // This editor mode promises that only the selected files are offered.
-            // OpenSSH still tries the agent first for IdentityFile alone, so the
-            // promise requires IdentitiesOnly yes.
-            identities_only: key.then_some(true),
+            // Set by auth_choice when the user picks keys; otherwise as the block has it.
+            identities_only: if key { draft.identities_only } else { None },
             identity_agent: identity_agent_option(draft),
             forward_agent: draft.forward_agent.then_some(true),
             forward_x11: forward_x11_option(draft.forward_x11),
@@ -754,6 +753,36 @@ fn remote_command_draft(value: Option<&str>) -> (RemoteCommandMode, String) {
         None => (RemoteCommandMode::Inherit, String::new()),
         Some(value) if value.to_lowercase() == "none" => (RemoteCommandMode::Shell, String::new()),
         Some(value) => (RemoteCommandMode::Command, value.to_owned()),
+    }
+}
+
+/// A change from the authentication controls (`authChoice`). Picking the specific-key mode or
+/// its files promises that only those files are offered, and OpenSSH still tries the agent
+/// first for IdentityFile alone, so the choice also sets IdentitiesOnly yes. A host saved
+/// without such a change keeps its own value.
+pub fn auth_choice(draft: &mut HostDraft) {
+    draft.identities_only = Some(true);
+}
+
+/// Sub-label of the specific-key choice (`keyModeHelp`). Choosing it sets IdentitiesOnly yes,
+/// but a host loaded in key mode without it only lists its files.
+pub fn key_mode_help(draft: &HostDraft) -> &'static str {
+    let exact = draft.auth_mode != AuthMode::Key || draft.identities_only == Some(true);
+    match (draft.storage, exact) {
+        (Storage::Openssh, true) => "Writes IdentityFile — exactly these keys are offered",
+        (Storage::Openssh, false) => "Writes IdentityFile",
+        (_, true) => "Exactly these keys are offered for this Muxus connection",
+        (_, false) => "These keys are offered for this Muxus connection",
+    }
+}
+
+/// Caption under the key files (`keyFilesCaption`). Without the host's own IdentitiesOnly yes,
+/// Host *, folder credentials or the agent source may still decide.
+pub fn key_files_caption(draft: &HostDraft) -> &'static str {
+    if draft.identities_only == Some(true) {
+        "Only these key files are offered for login (IdentitiesOnly yes). The agent can still be forwarded after connecting."
+    } else {
+        "IdentitiesOnly yes is not set here, so keys in the SSH agent are offered too unless another setting turns that off. Changing the key or certificate files sets it."
     }
 }
 
@@ -1037,7 +1066,8 @@ mod tests {
             options.certificate_files,
             Some(vec!["~/.ssh/cloud-cert.pub".into()])
         );
-        assert_eq!(options.identities_only, Some(true));
+        // The entry lists IdentityFile alone, and saving keeps it that way.
+        assert_eq!(options.identities_only, None);
         assert_eq!(
             options.identity_agent.as_deref(),
             Some("${ONEPASSWORD_SSH_AUTH_SOCK}")
@@ -1066,7 +1096,7 @@ mod tests {
         assert_eq!(draft.remote_command_mode, RemoteCommandMode::Inherit);
         assert_eq!(draft.request_tty, None);
         assert_eq!(draft.strict_host_key_checking, None);
-        assert!(draft.identities_only);
+        assert_eq!(draft.identities_only, Some(true));
         assert!(!draft.disable_sftp);
         assert!(!draft.console_compatibility);
         assert_eq!(draft.terminal_scheme, None);
@@ -1100,20 +1130,138 @@ mod tests {
 
     #[test]
     fn makes_the_specific_key_promise_independent_of_the_ssh_agent() {
-        // Old v0.3.0 drafts could carry false here. Saving the explicit editor
-        // mode must repair them instead of writing IdentityFile alone.
-        let draft = HostDraft {
-            auth_mode: AuthMode::Key,
-            identity_files: vec!["~/.ssh/id_ed25519".into()],
-            identities_only: false,
-            ..HostDraft::default()
-        };
-        let options = draft_to_request(&draft, None).options;
+        let mut created = blank_draft("", "", Storage::Openssh);
+        created.auth_mode = AuthMode::Key;
+        auth_choice(&mut created);
+        created.identity_files = vec!["~/.ssh/id_ed25519".into()];
+        auth_choice(&mut created);
+        let options = draft_to_request(&created, None).options;
         assert_eq!(
             options.identity_files,
             Some(vec!["~/.ssh/id_ed25519".into()])
         );
         assert_eq!(options.identities_only, Some(true));
+
+        // Hosts saved by v0.3.0 list IdentityFile alone. Choosing their keys again makes the
+        // promise, so the save repairs them.
+        let loaded = draft_from_entry(&entry(), false);
+        let mut more_keys = loaded.clone();
+        more_keys.identity_files.push("~/.ssh/backup".into());
+        auth_choice(&mut more_keys);
+        assert_eq!(
+            draft_to_request(&more_keys, Some("cloud"))
+                .options
+                .identities_only,
+            Some(true)
+        );
+        let mut no_certs = loaded.clone();
+        no_certs.certificate_files.clear();
+        auth_choice(&mut no_certs);
+        assert_eq!(
+            draft_to_request(&no_certs, Some("cloud"))
+                .options
+                .identities_only,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn keeps_identities_only_as_the_config_has_it_when_other_fields_change() {
+        // A hand-written IdentityFile without IdentitiesOnly still offers agent keys; saving an
+        // unrelated field must not take them away.
+        let mut plain = entry();
+        plain.options.identities_only = None;
+        let mut draft = draft_from_entry(&plain, false);
+        draft.terminal_scheme = Some("nord".into());
+        assert_eq!(draft.auth_mode, AuthMode::Key);
+        assert_eq!(
+            draft_to_request(&draft, Some("cloud"))
+                .options
+                .identities_only,
+            None
+        );
+        assert_eq!(
+            draft_to_request(&draft_from_entry(&plain, true), None)
+                .options
+                .identities_only,
+            None
+        );
+
+        let mut explicit_no = entry();
+        explicit_no.options.identities_only = Some(false);
+        let mut draft = draft_from_entry(&explicit_no, false);
+        draft.user = "ops".into();
+        assert_eq!(
+            draft_to_request(&draft, Some("cloud"))
+                .options
+                .identities_only,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn keeps_identities_only_as_a_saved_muxus_host_has_it_when_other_fields_change() {
+        for identities_only in [None, Some(false)] {
+            let saved: SavedHostProfile = serde_json::from_value(serde_json::json!({
+                "id": "imported-router", "kind": "ssh", "name": "Imported router",
+                "profile": {
+                    "kind": "ssh", "profileId": "imported-router",
+                    "target": "router.example.test", "useConfig": false,
+                    "identityFiles": ["~/.ssh/router"],
+                    "identitiesOnly": identities_only,
+                },
+                "metadata": { "profileId": "imported-router", "connectCount": 0 },
+                "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+            }))
+            .unwrap();
+            let mut draft = draft_from_saved_ssh_profile(&saved, false).unwrap();
+            draft.terminal_background_color = Some("#101820".into());
+            let SavedHostSessionProfile::Ssh(profile) =
+                draft_to_saved_ssh_input(&draft, Some("imported-router")).profile
+            else {
+                panic!("an SSH profile");
+            };
+            assert_eq!(profile.identity_files, Some(vec!["~/.ssh/router".into()]));
+            assert_eq!(profile.identities_only, identities_only);
+        }
+    }
+
+    #[test]
+    fn promises_exactly_these_keys_only_where_the_draft_sets_identities_only_yes() {
+        let mut plain = entry();
+        plain.options.identities_only = None;
+        let loaded = draft_from_entry(&plain, false);
+        let mut explicit_no = entry();
+        explicit_no.options.identities_only = Some(false);
+        let explicit_no = draft_from_entry(&explicit_no, false);
+        let muxus = HostDraft {
+            storage: Storage::Muxus,
+            ..loaded.clone()
+        };
+        for draft in [&loaded, &explicit_no, &muxus] {
+            assert!(!key_mode_help(draft).to_lowercase().contains("exactly"));
+            // Host *, folder credentials or the agent source may still turn agent keys off.
+            assert_eq!(
+                key_files_caption(draft),
+                "IdentitiesOnly yes is not set here, so keys in the SSH agent are offered too unless another setting turns that off. Changing the key or certificate files sets it."
+            );
+        }
+        assert_eq!(key_mode_help(&loaded), "Writes IdentityFile");
+
+        // Choosing keys, or the mode from another one, makes the promise.
+        let mut chosen = loaded.clone();
+        chosen.identity_files = vec!["~/.ssh/cloud".into()];
+        auth_choice(&mut chosen);
+        assert_eq!(
+            key_mode_help(&chosen),
+            "Writes IdentityFile — exactly these keys are offered"
+        );
+        assert!(key_files_caption(&chosen).starts_with("Only these key files are offered"));
+        let blank_muxus = blank_draft("", "", Storage::Muxus);
+        assert_eq!(
+            key_mode_help(&blank_muxus),
+            "Exactly these keys are offered for this Muxus connection"
+        );
     }
 
     #[test]

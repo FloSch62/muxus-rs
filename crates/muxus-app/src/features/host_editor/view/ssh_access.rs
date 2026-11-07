@@ -17,7 +17,8 @@ use muxus_ui::widgets::{IconButton, Tooltip};
 use super::form::{self, AutocompleteHandlers, Choice, Form, Suggestion};
 use super::ssh::{caption_block, row, stack};
 use crate::features::host_editor::logic::draft::{
-    AuthMode, HostDraft, IdentityAgentMode, RouteMode, Storage, draft_aliases,
+    AuthMode, HostDraft, IdentityAgentMode, RouteMode, Storage, auth_choice, draft_aliases,
+    key_files_caption, key_mode_help,
 };
 use crate::features::host_editor::logic::help::{
     agent_detection_status, agent_source_help, host_verification_help,
@@ -47,6 +48,9 @@ pub struct SshPending {
     pub key: String,
     pub certificate: String,
     pub hop: String,
+    /// A fallback route being typed, and whether its field is open.
+    pub fallback: String,
+    pub adding_fallback: bool,
 }
 
 /// A view that edits an SSH [`HostDraft`] (the host editor, the tunnel editor).
@@ -82,6 +86,7 @@ pub fn auth_section<V: SshForm>(
             .on_click(move |_, _, cx| {
                 let _ = entity.update(cx, |this, cx| {
                     this.ssh_draft_mut().auth_mode = mode;
+                    auth_choice(this.ssh_draft_mut());
                     this.ssh_changed(cx);
                 });
             })
@@ -102,11 +107,7 @@ pub fn auth_section<V: SshForm>(
                 "auth-key",
                 AuthMode::Key,
                 "Specific key file",
-                if config_backed {
-                    "Writes IdentityFile — exactly these keys are offered"
-                } else {
-                    "Exactly these keys are offered for this Muxus connection"
-                },
+                key_mode_help(view.ssh_draft()),
                 current,
             ))
             .child(radio(
@@ -127,7 +128,7 @@ pub fn auth_section<V: SshForm>(
     let mut agent = stack(1.5).child(caption_intro(
         &theme,
         "SSH agent",
-        if current == AuthMode::Key {
+        if current == AuthMode::Key && view.ssh_draft().identities_only == Some(true) {
             "Specific-key login does not use the agent. This source is still available for forwarding."
         } else {
             "Choose which local agent supplies keys for this host."
@@ -346,6 +347,7 @@ fn key_files<V: SshForm>(view: &mut V, window: &mut Window, cx: &mut Context<V>)
                 let _ = entity.update(cx, |this, cx| {
                     if index < this.ssh_draft_mut().identity_files.len() {
                         this.ssh_draft_mut().identity_files.remove(index);
+                        auth_choice(this.ssh_draft_mut());
                     }
                     this.ssh_changed(cx);
                 });
@@ -489,6 +491,7 @@ fn key_files<V: SshForm>(view: &mut V, window: &mut Window, cx: &mut Context<V>)
                         let _ = entity.update(cx, |this, cx| {
                             if index < this.ssh_draft_mut().certificate_files.len() {
                                 this.ssh_draft_mut().certificate_files.remove(index);
+                                auth_choice(this.ssh_draft_mut());
                             }
                             this.ssh_changed(cx);
                         });
@@ -530,10 +533,9 @@ fn key_files<V: SshForm>(view: &mut V, window: &mut Window, cx: &mut Context<V>)
                 ),
             ),
     );
-    panel = panel.child(certs).child(caption_block(
-        &theme,
-        "Only these key files are offered for login (IdentitiesOnly yes). The agent can still be forwarded after connecting.",
-    ));
+    panel = panel
+        .child(certs)
+        .child(caption_block(&theme, key_files_caption(view.ssh_draft())));
     panel.into_any_element()
 }
 
@@ -543,6 +545,7 @@ fn add_key<V: SshForm>(view: &mut V, value: String, window: &mut Window, cx: &mu
         return;
     }
     view.ssh_draft_mut().identity_files.push(value);
+    auth_choice(view.ssh_draft_mut());
     view.pending().key.clear();
     view.inputs().set("add-key", "", window, cx);
     view.ssh_changed(cx);
@@ -554,6 +557,7 @@ fn add_certificate<V: SshForm>(view: &mut V, window: &mut Window, cx: &mut Conte
         return;
     }
     view.ssh_draft_mut().certificate_files.push(file);
+    auth_choice(view.ssh_draft_mut());
     view.pending().certificate.clear();
     view.inputs().set("add-certificate", "", window, cx);
     view.ssh_changed(cx);
@@ -763,11 +767,14 @@ pub fn route_section<V: SshForm>(
             );
         }
         let self_aliases = draft_aliases(view.ssh_draft());
+        let unavailable = |hop: &str| {
+            super::route_fallbacks::hop_unavailable(view.ssh_draft(), hop, &saved, &hosts)
+        };
         let mut suggestions: Vec<Suggestion> = hosts
             .iter()
             .map(|h| h.alias.clone())
             .filter(|a| !self_aliases.contains(a) && !view.ssh_draft().proxy_jump.contains(a))
-            .map(|a| Suggestion::new(a.clone(), a))
+            .map(|a| Suggestion::new(a.clone(), a.clone()).disabled(unavailable(&a)))
             .collect();
         let self_id = view.self_profile_id();
         let mut saved_options: Vec<_> = if view.ssh_draft().storage == Storage::Muxus {
@@ -790,6 +797,7 @@ pub fn route_section<V: SshForm>(
             .map(|hop| {
                 Suggestion::new(hop.clone(), jump_hop_label(&hop, Some(&saved)))
                     .group("Saved in Muxus")
+                    .disabled(unavailable(&hop))
             })
             .collect();
         if !saved_hops.is_empty() {
@@ -860,6 +868,10 @@ pub fn route_section<V: SshForm>(
             },
         ));
         col = col.child(list);
+        let draft = view.ssh_draft();
+        if !draft.proxy_jump.is_empty() || !draft.proxy_jump_fallbacks.is_empty() {
+            col = col.child(super::route_fallbacks::fallback_routes(view, window, cx));
+        }
     }
 
     if mode == RouteMode::Command {

@@ -196,6 +196,8 @@ pub struct Suggestion {
     /// The group heading it is listed under (`groupBy`).
     pub group: Option<SharedString>,
     pub leading: Option<&'static str>,
+    /// Listed but not pickable (`getOptionDisabled`).
+    pub disabled: bool,
 }
 
 impl Suggestion {
@@ -206,11 +208,17 @@ impl Suggestion {
             detail: None,
             group: None,
             leading: None,
+            disabled: false,
         }
     }
 
     pub fn detail(mut self, detail: impl Into<SharedString>) -> Self {
         self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
         self
     }
 
@@ -310,7 +318,10 @@ pub fn autocomplete<V: Form>(
 
     let count = shown.len();
     let nav_key = menu_key.clone();
-    let picks: Vec<String> = shown.iter().map(|s| s.value.clone()).collect();
+    let picks: Vec<Option<String>> = shown
+        .iter()
+        .map(|s| (!s.disabled).then(|| s.value.clone()))
+        .collect();
     let on_pick = handlers.on_pick.clone();
     let mut root = div()
         .w_full()
@@ -346,7 +357,7 @@ pub fn autocomplete<V: Form>(
                     }
                     "enter" if open => {
                         if let Some(index) = menus.highlighted
-                            && let Some(value) = picks.get(index).cloned()
+                            && let Some(Some(value)) = picks.get(index).cloned()
                         {
                             menus.close();
                             on_pick(this, value, window, cx);
@@ -381,6 +392,7 @@ pub fn autocomplete<V: Form>(
                 suggestion.label,
             )
             .highlighted(highlighted == Some(index))
+            .disabled(suggestion.disabled)
             .on_click(move |_, window, cx| {
                 let _ = entity.update(cx, |this, cx| {
                     this.menus().close();

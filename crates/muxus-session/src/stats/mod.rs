@@ -528,6 +528,20 @@ pub async fn read_remote_host_stats(
     })
 }
 
+/// The same reading through anything that can feed a script to the host's sh (a system
+/// OpenSSH session's shared login).
+pub async fn read_host_stats_with<F, Fut>(run_script: F) -> Result<HostStatsReading, String>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: Future<Output = Result<String, String>>,
+{
+    let output = run_script(HOST_STATS_SCRIPT.to_string()).await?;
+    Ok(match parse_host_stats(&output) {
+        Some(sample) => HostStatsReading::Supported(Box::new(sample)),
+        None => HostStatsReading::Unsupported,
+    })
+}
+
 /// Read the machine local terminals run on.
 pub async fn read_local_host_stats() -> HostStatsSample {
     #[cfg(unix)]
@@ -592,7 +606,7 @@ pub fn host_stats_response(reading: &HostStatsReading, sampled_at_ms: i64) -> Ho
             sample: sample.as_ref().clone(),
         },
         HostStatsReading::Unsupported => HostStatsResponse::Unsupported {
-            message: "The host did not run the statistics command.".into(),
+            message: "The host does not run the statistics command.".into(),
         },
     }
 }

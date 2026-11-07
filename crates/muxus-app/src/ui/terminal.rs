@@ -523,6 +523,7 @@ impl AppShell {
                     status: Some(TabStatus::Connecting),
                     conn_id: Some(None),
                     sftp_available: Some(None),
+                    system_open_ssh: Some(None),
                     sftp_open: Some(false),
                     terminal_cwd: Some(None),
                     ..Default::default()
@@ -1172,9 +1173,19 @@ impl AppShell {
             TerminalServerMessage::Ready {
                 conn_id,
                 sftp_available,
+                system_open_ssh,
                 summary,
                 ..
-            } => self.on_session_ready(tab_id, kind, conn_id, sftp_available, summary, cx),
+            } => {
+                self.tabs.update(
+                    tab_id,
+                    TabPatch {
+                        system_open_ssh: Some(system_open_ssh),
+                        ..Default::default()
+                    },
+                );
+                self.on_session_ready(tab_id, kind, conn_id, sftp_available, summary, cx)
+            }
             TerminalServerMessage::LoginSequence {
                 state,
                 step,
@@ -1974,7 +1985,8 @@ impl AppShell {
         );
         let attached = tab.status == TabStatus::Connected
             || (tab.status == TabStatus::Connecting && tab.conn_id.is_some());
-        if !supports || !attached {
+        // `ssh` only sends BREAK through an escape sequence, which its sessions here turn off.
+        if !supports || !attached || tab.system_open_ssh == Some(true) {
             return false;
         }
         self.send_to_session(

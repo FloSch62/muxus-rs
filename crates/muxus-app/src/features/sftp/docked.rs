@@ -237,6 +237,7 @@ impl DockedFileBrowser {
                     options.terminal_path = tab.terminal_cwd.clone();
                     options.follow_terminal_folder = tab.follow_terminal_folder;
                     options.follow_toggle = true;
+                    options.follow_terminal_folder_unavailable = tab.facts.system_open_ssh;
                     options.movable = true;
                     options.opens_in_new_window = true;
                     options.sidebar_on_left = self.sidebar_on_left;

@@ -11,15 +11,16 @@ use muxus_core::js::js_trim;
 use muxus_core::protocol::{
     AuthPromptInfo, AuthPromptResponse, DesktopCertificateChallenge, DesktopCredentialType,
     DesktopCredentials, DesktopProfile, ExitReason, HostKeyChallenge, RdpProfile,
-    RememberPasswordOffer, SavedHostSessionProfile, SshGateway, SshProfile, VncProfile,
+    RememberPasswordOffer, SavedHostSessionProfile, SshGateway, VncProfile,
 };
 use muxus_mgmt::dial::{DialError, DialFailure};
 use muxus_rdp::passwords::{
     DesktopPasswords, DesktopPrompts, LogonAnswer, LogonPrompt, VaultPasswordRef,
 };
 use muxus_rdp::{PresentedCertificate, RdpError, RdpFailureKind, SocketFailure};
+use muxus_ssh::connection::gateways::connect_gateway;
 use muxus_ssh::connection::{
-    BoxFuture, Cancelled, ConnectIo, ConnectOptions, ConnectionLeaseOwner, MuxedConnectionLease,
+    BoxFuture, Cancelled, ConnectIo, ConnectionLeaseOwner, MuxedConnectionLease,
     SshConnectionManager,
 };
 use muxus_store::Database;
@@ -81,6 +82,8 @@ struct State {
     recorded: bool,
     /// Why the attempt in flight has to end, decided inside a handler (a cancelled logon).
     abort: Option<String>,
+    /// The SSH gateway in use: the first that answered, when fallbacks are listed.
+    used_gateway: Option<SshGateway>,
     connection: Option<DesktopConnection>,
 }
 
@@ -120,6 +123,15 @@ fn profile_gateway(profile: &DesktopProfile) -> Option<&SshGateway> {
         DesktopProfile::Rdp(p) => p.ssh_gateway.as_ref(),
         DesktopProfile::Vnc(p) => p.ssh_gateway.as_ref(),
     }
+}
+
+/// The primary gateway, then its fallbacks, in the order to try them.
+fn gateway_candidates(profile: &DesktopProfile) -> Vec<SshGateway> {
+    let fallbacks = match profile {
+        DesktopProfile::Rdp(p) => p.ssh_gateway_fallbacks.as_deref(),
+        DesktopProfile::Vnc(p) => p.ssh_gateway_fallbacks.as_deref(),
+    };
+    muxus_core::gateways::gateway_candidates(profile_gateway(profile), fallbacks)
 }
 
 fn profile_id(profile: &DesktopProfile) -> Option<&str> {
@@ -371,12 +383,14 @@ impl Session {
         };
         self.state().profile = Some(profile.clone());
         self.emit(DesktopEvent::Dialing(profile.clone()));
-        let gateway = match profile_gateway(&profile) {
-            Some(gateway) => match self.dial_gateway(gateway).await {
+        let candidates = gateway_candidates(&profile);
+        let gateway = if candidates.is_empty() {
+            None
+        } else {
+            match self.dial_gateway(&candidates).await {
                 Ok(lease) => Some(lease),
                 Err(message) => return (message, ExitReason::Failed),
-            },
-            None => None,
+            }
         };
         let gateway_closed = async {
             match &gateway {
@@ -443,26 +457,25 @@ impl Session {
         }
     }
 
-    async fn dial_gateway(self: &Arc<Self>, gateway: &SshGateway) -> Result<GatewayLease, String> {
-        let ssh = SshProfile {
-            profile_id: gateway.profile_id.clone(),
-            ..SshProfile::new(gateway.target.clone())
-        };
-        self.status(
-            &format!("Connecting to the SSH gateway {} …", gateway.target),
-            true,
-        );
+    /// Connect to the first gateway that answers; the next is tried when one fails.
+    async fn dial_gateway(
+        self: &Arc<Self>,
+        candidates: &[SshGateway],
+    ) -> Result<GatewayLease, String> {
         let io: Arc<dyn ConnectIo> = Arc::new(GatewayIo(Arc::downgrade(self)));
-        let lease = self
-            .connections
-            .connect(
-                &ssh,
-                io,
-                ConnectionLeaseOwner::Desktop,
-                ConnectOptions::default(),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
+        let closed = {
+            let session = Arc::downgrade(self);
+            move || session.upgrade().is_none_or(|session| session.is_closed())
+        };
+        let (lease, gateway) = connect_gateway(
+            &self.connections,
+            candidates,
+            io,
+            ConnectionLeaseOwner::Desktop,
+            &closed,
+        )
+        .await?;
+        self.state().used_gateway = Some(gateway.clone());
         let lease = GatewayLease {
             lease,
             target: gateway.target.clone(),
@@ -472,10 +485,18 @@ impl Session {
     }
 
     /// `profile:<id>` for a saved SSH gateway, `ssh:<alias>` for an ssh_config one, `""` for a
-    /// direct connection: pinned identities and saved passwords are kept apart per route.
+    /// direct connection: pinned identities and saved passwords are kept apart per route, and
+    /// belong to the gateway the session went through.
+    fn used_gateway(&self) -> Option<SshGateway> {
+        let state = self.state();
+        state
+            .used_gateway
+            .clone()
+            .or_else(|| state.profile.as_ref().and_then(profile_gateway).cloned())
+    }
+
     fn gateway_key(&self) -> String {
-        let profile = self.state().profile.clone();
-        match profile.as_ref().and_then(profile_gateway) {
+        match self.used_gateway().as_ref() {
             Some(SshGateway {
                 profile_id: Some(id),
                 ..
@@ -497,7 +518,7 @@ impl Session {
             host: host.to_owned(),
             port,
             gateway: self.gateway_key(),
-            gateway_label: profile_gateway(&profile).map(|gateway| gateway.target.clone()),
+            gateway_label: self.used_gateway().map(|gateway| gateway.target),
             domain: match &profile {
                 DesktopProfile::Rdp(p) => p.domain.clone().unwrap_or_default(),
                 DesktopProfile::Vnc(_) => String::new(),

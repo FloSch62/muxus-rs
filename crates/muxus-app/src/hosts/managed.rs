@@ -339,9 +339,12 @@ pub fn managed_host_key(host: &ManagedHost) -> String {
 
 /// Whether the host context menu may offer the SSH-backed file browser.
 pub fn managed_host_supports_sftp(host: &ManagedHost) -> bool {
+    // Console compatibility shapes the built-in client's session; system OpenSSH ignores it.
     let allowed = |metadata: Option<&HostMetadata>| {
-        metadata
-            .is_none_or(|m| m.disable_sftp != Some(true) && m.console_compatibility != Some(true))
+        metadata.is_none_or(|m| {
+            m.disable_sftp != Some(true)
+                && (m.system_open_ssh == Some(true) || m.console_compatibility != Some(true))
+        })
     };
     match host {
         ManagedHost::Ssh(entry) => allowed(entry.metadata.as_ref()),

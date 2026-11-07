@@ -22,6 +22,7 @@ pub mod security_key_agent;
 pub mod security_keys;
 pub mod sftp;
 pub mod shell;
+pub mod system_openssh;
 pub mod types;
 pub mod x11;
 

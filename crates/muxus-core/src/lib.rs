@@ -16,6 +16,7 @@ pub mod collate;
 pub mod connection_links;
 pub mod environments;
 pub mod folder_paths;
+pub mod gateways;
 pub mod gnmi_path;
 pub mod input_modes;
 pub mod js;

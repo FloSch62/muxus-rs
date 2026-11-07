@@ -35,6 +35,8 @@ use crate::login_sequence::{
     LoginSequenceHost, LoginSequenceSession, LoginSequenceSessionOptions, resolve_login_sequence,
 };
 
+mod system_ssh;
+
 type Writer = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
 type PasteWriter =
     Arc<dyn Fn(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
@@ -876,6 +878,11 @@ impl Session {
         handle_logging: LoggingControl,
     ) -> Result<(), String> {
         let shared = self.shared.clone();
+        if shared.connections.uses_system_open_ssh(&profile) {
+            return self
+                .system_ssh(profile, cols, rows, recorder, handle_logging)
+                .await;
+        }
         let io = Arc::new(SessionConnectIo {
             facade: self.facade.clone(),
             control: self.control.clone(),

@@ -57,7 +57,18 @@ pub struct ServerSpec {
     pub sftp_root: Option<std::path::PathBuf>,
     /// Answers to the `break` requests, in the order they arrive; accepted once these run out.
     pub break_answers: Vec<BreakAnswer>,
+    /// Let anyone in without credentials (the `none` method), as a test sshd for the `ssh`
+    /// program does.
+    pub accept_none: bool,
+    /// Answer `direct-tcpip` requests with a refusal (a jump host that cannot reach the target).
+    pub refuse_direct_tcpip: bool,
+    /// Run exec requests through this: it gets the command and everything the client sent
+    /// before EOF, and answers with output and exit status, or `None` for 127.
+    pub exec_handler: Option<ExecHandler>,
 }
+
+/// An exec request's command and input to its output and exit status.
+pub type ExecHandler = Arc<dyn Fn(&str, &[u8]) -> Option<(String, u32)> + Send + Sync>;
 
 impl Default for ServerSpec {
     fn default() -> Self {
@@ -93,6 +104,9 @@ impl ServerSpec {
             exec_output: None,
             sftp_root: None,
             break_answers: Vec::new(),
+            accept_none: false,
+            refuse_direct_tcpip: false,
+            exec_handler: None,
         }
     }
 
@@ -213,6 +227,7 @@ pub async fn start(spec: ServerSpec) -> TestServer {
                 channels: HashMap::new(),
                 ptys: HashMap::new(),
                 x11: HashMap::new(),
+                pending_exec: HashMap::new(),
             };
             let config = config.clone();
             let log_for_session = server_log.clone();
@@ -246,6 +261,8 @@ struct ServerHandler {
     ptys: HashMap<ChannelId, bool>,
     /// The fake X11 cookie (hex) a session channel asked to forward with.
     x11: HashMap<ChannelId, String>,
+    /// Exec requests waiting for their input's EOF: the command and the input so far.
+    pending_exec: HashMap<ChannelId, (String, Vec<u8>)>,
 }
 
 impl ServerHandler {
@@ -297,6 +314,10 @@ impl Handler for ServerHandler {
     type Error = russh::Error;
 
     async fn auth_none(&mut self, _user: &str) -> Result<Auth, Self::Error> {
+        if self.spec.accept_none {
+            self.event("auth none:accepted".into());
+            return Ok(Auth::Accept);
+        }
         Ok(self.reject())
     }
 
@@ -511,6 +532,10 @@ impl Handler for ServerHandler {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if let Some((_, input)) = self.pending_exec.get_mut(&channel) {
+            input.extend_from_slice(data);
+            return Ok(());
+        }
         // An echoing shell: what the client types comes back. Only session channels echo;
         // forwarded channels carry their own streams.
         if !self.ptys.contains_key(&channel) && !self.channels.contains_key(&channel) {
@@ -609,6 +634,26 @@ impl Handler for ServerHandler {
         Ok(())
     }
 
+    async fn channel_eof(
+        &mut self,
+        channel: ChannelId,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let Some((command, input)) = self.pending_exec.remove(&channel) else {
+            return Ok(());
+        };
+        let handler = self.spec.exec_handler.clone().expect("exec handler");
+        let (output, status) = handler(&command, &input).unwrap_or((String::new(), 127));
+        session.data(channel, output.into_bytes())?;
+        session.exit_status_request(channel, status)?;
+        session.eof(channel)?;
+        session.close(channel)?;
+        if self.channels.remove(&channel).is_some() {
+            self.sessions = self.sessions.saturating_sub(1);
+        }
+        Ok(())
+    }
+
     async fn exec_request(
         &mut self,
         channel: ChannelId,
@@ -620,6 +665,11 @@ impl Handler for ServerHandler {
         self.log.lock().unwrap().execs.push(command.clone());
         if self.spec.disconnect_on_exec {
             session.disconnect(russh::Disconnect::ProtocolError, "exec not supported", "en")?;
+            return Ok(());
+        }
+        if self.spec.exec_handler.is_some() {
+            session.channel_success(channel)?;
+            self.pending_exec.insert(channel, (command, Vec::new()));
             return Ok(());
         }
         session.channel_success(channel)?;
@@ -669,6 +719,12 @@ impl Handler for ServerHandler {
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
         self.event(format!("direct-tcpip {host_to_connect}:{port_to_connect}"));
+        if self.spec.refuse_direct_tcpip {
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
+        }
         let target = format!("{host_to_connect}:{port_to_connect}");
         match tokio::net::TcpStream::connect(&target).await {
             Ok(mut tcp) => {

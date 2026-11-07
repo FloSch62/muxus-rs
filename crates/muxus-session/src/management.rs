@@ -219,15 +219,24 @@ pub fn netconf_ssh_profile(profile: &NetconfProfile) -> SshProfile {
         .map(muxus_core::js::js_trim)
         .filter(|user| !user.is_empty())
         .map(str::to_owned);
+    let hop = |gateway: &SshGateway| match &gateway.profile_id {
+        Some(id) => saved_host_hop(id),
+        None => gateway.target.clone(),
+    };
     SshProfile {
         port: Some(profile.port),
         user,
-        proxy_jump: profile.ssh_gateway.as_ref().map(|gateway| {
-            vec![match &gateway.profile_id {
-                Some(id) => saved_host_hop(id),
-                None => gateway.target.clone(),
-            }]
-        }),
+        proxy_jump: profile
+            .ssh_gateway
+            .as_ref()
+            .map(|gateway| vec![hop(gateway)]),
+        // Fallback gateways become fallback jump routes: the SSH dial tries them in order.
+        proxy_jump_fallbacks: profile
+            .ssh_gateway
+            .as_ref()
+            .and(profile.ssh_gateway_fallbacks.as_ref())
+            .filter(|fallbacks| !fallbacks.is_empty())
+            .map(|fallbacks| fallbacks.iter().map(|gateway| vec![hop(gateway)]).collect()),
         ..SshProfile::new(profile.host.clone())
     }
 }
@@ -587,6 +596,41 @@ mod tests {
         let ssh = netconf_ssh_profile(&saved);
         assert_eq!(ssh.user, None);
         assert_eq!(ssh.proxy_jump, Some(vec![saved_host_hop("p1")]));
+        assert_eq!(ssh.proxy_jump_fallbacks, None);
+    }
+
+    #[test]
+    fn turns_fallback_gateways_into_fallback_jump_routes() {
+        let gateway = |target: &str, profile_id: Option<&str>| SshGateway {
+            target: target.into(),
+            profile_id: profile_id.map(str::to_owned),
+        };
+        let profile = NetconfProfile {
+            profile_id: None,
+            host: "router1".into(),
+            port: 830,
+            username: None,
+            ssh_gateway: Some(gateway("bastion-a", None)),
+            ssh_gateway_fallbacks: Some(vec![
+                gateway("bastion-b", None),
+                gateway("bastion-c", Some("p2")),
+            ]),
+        };
+        let ssh = netconf_ssh_profile(&profile);
+        assert_eq!(ssh.proxy_jump, Some(vec!["bastion-a".to_owned()]));
+        assert_eq!(
+            ssh.proxy_jump_fallbacks,
+            Some(vec![
+                vec!["bastion-b".to_owned()],
+                vec![saved_host_hop("p2")]
+            ])
+        );
+        // Fallbacks without a first gateway mean nothing.
+        let direct = NetconfProfile {
+            ssh_gateway: None,
+            ..profile
+        };
+        assert_eq!(netconf_ssh_profile(&direct).proxy_jump_fallbacks, None);
     }
 
     async fn sandbox() -> (tempfile::TempDir, Backend) {

@@ -927,3 +927,58 @@ fn glob_matching_handles_backtracking() {
     assert!(glob_match("*.lab", "x.y.lab"));
     let _ = Path::new("/");
 }
+
+#[test]
+fn reads_a_block_identities_only_as_openssh_does_in_the_listing_and_at_connect() {
+    let f = Fixture::new();
+    let hosts = f.hosts(&lines(&[
+        "Host spelled",
+        "  IdentitiesOnly TRUE",
+        "Host off",
+        "  IdentitiesOnly False",
+        "Host repeated",
+        "  IdentitiesOnly yes",
+        "  IdentitiesOnly no",
+        "Host reversed",
+        "  IdentitiesOnly no",
+        "  IdentitiesOnly yes",
+        "Host unknown",
+        "  IdentitiesOnly maybe",
+        "  IdentitiesOnly yes",
+    ]));
+    // The first line wins; later ones never apply, so none is kept as an extra.
+    let read: Vec<(String, Option<bool>, bool, bool)> = hosts
+        .iter()
+        .map(|h| {
+            (
+                h.alias.clone(),
+                h.options.identities_only,
+                h.resolved.identities_only,
+                h.options.extras.is_none(),
+            )
+        })
+        .collect();
+    let expected = [
+        ("spelled", true),
+        ("off", false),
+        ("repeated", true),
+        ("reversed", false),
+        ("unknown", false),
+    ]
+    .map(|(alias, value)| (alias.to_string(), Some(value), value, true));
+    assert_eq!(read, expected);
+}
+
+#[test]
+fn reads_the_first_identities_only_obtained_with_true_meaning_yes() {
+    let f = Fixture::new();
+    let doc = f.doc(&lines(&[
+        "Host web",
+        "  IdentityFile /a",
+        "",
+        "Host *",
+        "  IdentitiesOnly True",
+        "  IdentitiesOnly no",
+    ]));
+    assert!(resolve_host(&doc, "web", None).identities_only);
+}

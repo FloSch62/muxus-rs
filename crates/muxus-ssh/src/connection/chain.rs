@@ -411,5 +411,30 @@ pub fn find_metadata_alias(doc: &ConfigDocument, requested_host: &str) -> Option
         .then(|| requested_host.to_string())
 }
 
+/// The listed host a target names, as the sidebar lists hosts (`listedMetadataAlias`): every
+/// block's first fresh concrete alias, sorted, the first whose aliases include `target`.
+pub fn listed_metadata_alias(doc: &ConfigDocument, target: &str) -> Option<String> {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut listed: Vec<(&str, Vec<&str>)> = Vec::new();
+    for block in &doc.blocks {
+        let concrete: Vec<&str> = block
+            .patterns
+            .iter()
+            .map(String::as_str)
+            .filter(|p| is_concrete_alias(p))
+            .collect();
+        let Some(first) = concrete.iter().find(|a| !seen.contains(*a)).copied() else {
+            continue;
+        };
+        seen.extend(concrete.iter().copied());
+        listed.push((first, concrete));
+    }
+    listed.sort_by(|a, b| muxus_core::collate::locale_compare(a.0, b.0));
+    listed
+        .into_iter()
+        .find(|(_, aliases)| aliases.contains(&target))
+        .map(|(alias, _)| alias.to_string())
+}
+
 #[cfg(test)]
 mod tests;

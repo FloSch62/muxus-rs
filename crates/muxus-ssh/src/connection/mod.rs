@@ -4,6 +4,7 @@
 pub mod auth;
 pub mod chain;
 pub mod deadline;
+pub mod gateways;
 pub mod health;
 pub mod io;
 pub mod jump_hops;

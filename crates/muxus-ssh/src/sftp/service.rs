@@ -18,7 +18,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::sync::mpsc;
 
 use super::fs::{RemoteFs, SftpError, SftpResult, WriteError};
-use super::lease::SftpWindowLease;
+use super::lease::{SftpLease, SftpWindowLease};
 use super::paths;
 use super::progress::{ByteProgress, ProgressMeter, UploadStep};
 use super::types::{
@@ -27,7 +27,7 @@ use super::types::{
 };
 use crate::Problem;
 use crate::connection::leases::ConnectionLeaseOwner;
-use crate::connection::manager::{ConnectionLease, SshConnectionManager};
+use crate::connection::manager::SshConnectionManager;
 
 /// Directory-tree deletes stop after this many entries — runaway guard.
 pub const MAX_RECURSIVE_DELETE: usize = 10_000;
@@ -146,14 +146,19 @@ impl SftpService {
         SftpWindowLease::acquire(&self.manager, conn_id)
     }
 
-    /// An SFTP lease for one operation, plus the connection's shared session.
-    async fn acquire(&self, conn_id: &str) -> Result<(ConnectionLease, RemoteFs), Problem> {
+    /// A further lease on the connection, for work that outlives the operation's own.
+    fn lease(&self, conn_id: &str) -> Option<SftpLease> {
+        SftpLease::acquire(&self.manager, conn_id, ConnectionLeaseOwner::Sftp)
+    }
+
+    /// An SFTP lease for one operation, plus the connection's shared session. A system OpenSSH
+    /// session's connId reaches the login its terminal shares.
+    async fn acquire(&self, conn_id: &str) -> Result<(SftpLease, RemoteFs), Problem> {
         let lease = self
-            .manager
-            .acquire(conn_id, ConnectionLeaseOwner::Sftp)
+            .lease(conn_id)
             .ok_or_else(|| Problem::not_found("connection not found"))?;
         // A failed session open drops (releases) the lease again.
-        let fs = RemoteFs::open_on(lease.connection().clone())
+        let fs = RemoteFs::open_on(lease.source())
             .await
             .map_err(Problem::internal)?;
         Ok((lease, fs))
@@ -415,7 +420,7 @@ impl SftpService {
         let mode = existing.and_then(|attrs| attrs.permissions);
         let upload = StreamUpload {
             fs: &fs,
-            lease: self.manager.acquire(conn_id, ConnectionLeaseOwner::Sftp),
+            lease: self.lease(conn_id),
             file,
             overwrite,
             mode,
@@ -458,7 +463,7 @@ impl SftpService {
         );
         let upload = StreamUpload {
             fs: &fs,
-            lease: self.manager.acquire(conn_id, ConnectionLeaseOwner::Sftp),
+            lease: self.lease(conn_id),
             file: &file,
             overwrite: false,
             mode: Some(CLIPBOARD_IMAGE_MODE),
@@ -528,7 +533,7 @@ pub struct SftpDownload {
     chunks: mpsc::Receiver<SftpResult<Vec<u8>>>,
     buffer: Vec<u8>,
     position: usize,
-    lease: Arc<ConnectionLease>,
+    lease: Arc<SftpLease>,
 }
 
 impl std::fmt::Debug for SftpDownload {
@@ -543,7 +548,7 @@ impl std::fmt::Debug for SftpDownload {
 
 impl SftpDownload {
     fn start(
-        lease: ConnectionLease,
+        lease: SftpLease,
         fs: &RemoteFs,
         handle: String,
         name: String,
@@ -777,7 +782,7 @@ fn write_exclusive() -> OpenFlags {
 struct StreamUpload<'a> {
     fs: &'a RemoteFs,
     /// Keeps the transport up for the clean-up of a dropped upload.
-    lease: Option<ConnectionLease>,
+    lease: Option<SftpLease>,
     file: &'a str,
     overwrite: bool,
     mode: Option<u32>,
@@ -844,7 +849,7 @@ impl StreamUpload<'_> {
 struct TempFileGuard {
     fs: Option<RemoteFs>,
     path: String,
-    lease: Option<ConnectionLease>,
+    lease: Option<SftpLease>,
 }
 
 impl TempFileGuard {
