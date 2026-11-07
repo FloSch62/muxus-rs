@@ -1,6 +1,8 @@
 //! The language features Monaco gives the remote editor, kept per open file: detected links
 //! (underlined; Ctrl/Cmd+hover and click open them), occurrence and selection highlights, and
-//! JSON problem markers. They feed the overview ruler and the status bar's problem count.
+//! problem markers (JSON's checks, the syntax errors of the tree-sitter parse) with the marker
+//! navigation of F8. They feed the overview ruler, the minimap and the status bar's problem
+//! count.
 
 use std::cell::RefCell;
 use std::ops::Range;
@@ -14,10 +16,14 @@ use muxus_ui::gpui_kit::base::input::{
 use muxus_ui::gpui_kit::{App, Entity, HighlightStyle, Task, UnderlineStyle, Window, px};
 use muxus_ui::syntax::MonacoColors;
 
-use super::json::{Problem, Severity, json_problems};
+use super::json::json_problems;
 use super::links::{DetectedLink, detect_links, link_at};
-use super::occurrences::{MAX_SEARCHED_BYTES, Occurrences, occurrences};
+use super::markers::{Marker, MarkerNavigation, Severity, sort_markers};
+use super::minimap::MinimapData;
+use super::occurrences::{MAX_SEARCHED_BYTES, Occurrences, occurrences, word_at};
 use super::overlays::{Lane, Mark, OverlayData, lines_of};
+use super::syntax_problems::syntax_markers;
+use crate::util::code_editor::SharedProbe;
 
 /// Ctrl/Cmd+hover over a link underlines it, a click opens it (Monaco's link opener, through
 /// the editor's go-to-definition gesture).
@@ -49,6 +55,19 @@ impl DefinitionProvider for LinkDefinitions {
     }
 }
 
+/// Monaco's marker navigation widget, open under a problem.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProblemWidget {
+    pub marker: Marker,
+    /// The problem's number (from 1) and how many there are.
+    pub number: usize,
+    pub total: usize,
+    /// Where it opened: the cursor, or the problem's start.
+    pub position: usize,
+    /// The problem is gone (the text changed under it).
+    pub stale: bool,
+}
+
 /// One file's links, highlights and problems.
 pub struct DocumentFeatures {
     links: Rc<RefCell<Vec<DetectedLink>>>,
@@ -57,7 +76,16 @@ pub struct DocumentFeatures {
     occurrences: Occurrences,
     /// The selection the highlights were found for.
     selection: Option<Range<usize>>,
-    problems: Vec<Problem>,
+    /// The problems, in the order F8 visits them.
+    markers: Vec<Marker>,
+    /// F8's place among the markers, and its widget while open.
+    navigation: MarkerNavigation,
+    widget: Option<ProblemWidget>,
+    /// The editor's highlighter, and the version of its parse the markers were found in.
+    probe: SharedProbe,
+    analyzed_version: u64,
+    /// Moves with every look at a changed text.
+    revision: u64,
     line_starts: Vec<usize>,
     dark: bool,
 }
@@ -69,8 +97,8 @@ fn line_starts(text: &str) -> Vec<usize> {
 }
 
 impl DocumentFeatures {
-    /// Hook the link opener into `editor`.
-    pub fn install(editor: &Entity<EditorState>, cx: &mut App) -> Self {
+    /// Hook the link opener into `editor`, whose highlighter reports to `probe`.
+    pub fn install(editor: &Entity<EditorState>, probe: SharedProbe, cx: &mut App) -> Self {
         let links = Rc::new(RefCell::new(Vec::new()));
         let provider = Rc::new(LinkDefinitions(links.clone()));
         editor.update(cx, |state, _| {
@@ -88,10 +116,26 @@ impl DocumentFeatures {
             occurrence_decorations: None,
             occurrences: Occurrences::default(),
             selection: None,
-            problems: Vec::new(),
+            markers: Vec::new(),
+            navigation: MarkerNavigation::default(),
+            widget: None,
+            probe,
+            analyzed_version: 0,
+            revision: 0,
             line_starts: vec![0],
             dark: false,
         }
+    }
+
+    /// The highlighter parsed again since the markers were found (it parses a newly set
+    /// grammar when the editor next renders, after the text was looked at).
+    pub fn probe_moved(&self) -> bool {
+        self.probe.borrow().version() != self.analyzed_version
+    }
+
+    /// The probe of the editor's highlighter and the parse the markers come from.
+    pub fn probe(&self) -> (SharedProbe, u64) {
+        (self.probe.clone(), self.analyzed_version)
     }
 
     /// The text changed (or was loaded): find links and problems again, and the highlights.
@@ -104,6 +148,7 @@ impl DocumentFeatures {
     ) {
         let rope = editor.read(cx).text().clone();
         let text = rope.to_string();
+        self.revision += 1;
         self.line_starts = line_starts(&text);
         let links = if text.len() <= MAX_SEARCHED_BYTES {
             detect_links(&text)
@@ -131,25 +176,63 @@ impl DocumentFeatures {
                 }));
             }
         }
-        self.problems = if language == "json" && text.len() <= MAX_SEARCHED_BYTES {
-            json_problems(&text)
+        let mut markers: Vec<Marker> = if language == "json" {
+            if text.len() <= MAX_SEARCHED_BYTES {
+                json_problems(&text).into_iter().map(Marker::from).collect()
+            } else {
+                Vec::new()
+            }
         } else {
-            Vec::new()
+            let probe = self.probe.borrow();
+            match probe.tree() {
+                // The tree is the text's only when they are as long (the highlighter may not
+                // have parsed a text just set).
+                Some(tree) if tree.root_node().end_byte() == text.len() => {
+                    syntax_markers(tree, &text, probe.grammar(), language)
+                }
+                _ => Vec::new(),
+            }
         };
+        self.analyzed_version = self.probe.borrow().version();
+        sort_markers(&mut markers);
+        if markers != self.markers {
+            self.navigation.reset();
+            // The widget follows the problem at its place, or shows the old one as stale.
+            if let Some(widget) = &mut self.widget {
+                match markers.iter().position(|marker| {
+                    marker.range.start <= widget.position && widget.position <= marker.range.end
+                }) {
+                    Some(index) => {
+                        widget.marker = markers[index].clone();
+                        widget.number = index + 1;
+                        widget.total = markers.len();
+                        widget.stale = false;
+                    }
+                    None => widget.stale = true,
+                }
+            }
+        }
+        self.markers = markers;
         let diagnostics: Vec<Diagnostic> = self
-            .problems
+            .markers
             .iter()
-            .map(|problem| {
-                Diagnostic::new(
-                    rope.offset_to_position(problem.range.start)
-                        ..rope.offset_to_position(problem.range.end),
-                    problem.message,
+            .map(|marker| {
+                let mut diagnostic = Diagnostic::new(
+                    rope.offset_to_position(marker.range.start)
+                        ..rope.offset_to_position(marker.range.end),
+                    marker.message.clone(),
                 )
-                .with_severity(match problem.severity {
+                .with_severity(match marker.severity {
                     Severity::Error => DiagnosticSeverity::Error,
                     Severity::Warning => DiagnosticSeverity::Warning,
-                })
-                .with_source("json")
+                });
+                if let Some(source) = marker.source {
+                    diagnostic = diagnostic.with_source(source);
+                }
+                if let Some(code) = &marker.code {
+                    diagnostic = diagnostic.with_code(code.clone());
+                }
+                diagnostic
             })
             .collect();
         editor.update(cx, |state, cx| {
@@ -168,6 +251,7 @@ impl DocumentFeatures {
     pub fn cursor_moved(&mut self, editor: &Entity<EditorState>, dark: bool, cx: &mut App) -> bool {
         let state = editor.read(cx);
         let selection = state.selected_range();
+        self.navigation.follow_cursor(&self.markers, state.cursor());
         if self.selection.as_ref() == Some(&selection) && self.dark == dark {
             return false;
         }
@@ -213,23 +297,50 @@ impl DocumentFeatures {
     /// The problem count for the status bar: (errors, warnings).
     pub fn problem_counts(&self) -> (usize, usize) {
         let errors = self
-            .problems
+            .markers
             .iter()
-            .filter(|problem| problem.severity == Severity::Error)
+            .filter(|marker| marker.severity == Severity::Error)
             .count();
-        (errors, self.problems.len() - errors)
+        (errors, self.markers.len() - errors)
     }
 
-    /// Where the next problem after `offset` starts (`editor.action.marker.next`, F8), round
-    /// to the first.
-    pub fn next_problem(&self, offset: usize) -> Option<usize> {
-        let mut starts: Vec<usize> = self.problems.iter().map(|p| p.range.start).collect();
-        starts.sort_unstable();
-        starts
-            .iter()
-            .find(|&&start| start > offset)
-            .or(starts.first())
-            .copied()
+    /// The problems, in the order F8 visits them.
+    pub fn markers(&self) -> &[Marker] {
+        &self.markers
+    }
+
+    /// F8 / Shift+F8 (`editor.action.marker.next`/`prev`): the next or previous problem from
+    /// the one shown, or from the cursor at `offset` in `text`; its widget opens on it.
+    /// Returns the problem.
+    pub fn step_marker(&mut self, forward: bool, offset: usize, text: &str) -> Option<&Marker> {
+        let index = self
+            .navigation
+            .step(&self.markers, forward, offset, |at| word_at(text, at))?;
+        let marker = self.markers.get(index)?.clone();
+        // The widget sits at the cursor when the cursor is in the problem, else at its start.
+        let position = if marker.range.start <= offset && offset <= marker.range.end {
+            offset
+        } else {
+            marker.range.start
+        };
+        self.widget = Some(ProblemWidget {
+            marker,
+            number: index + 1,
+            total: self.markers.len(),
+            position,
+            stale: false,
+        });
+        self.markers.get(index)
+    }
+
+    /// The problem widget, while it is open.
+    pub fn widget(&self) -> Option<&ProblemWidget> {
+        self.widget.as_ref()
+    }
+
+    /// Escape, the widget's close button. Whether it was open.
+    pub fn close_widget(&mut self) -> bool {
+        self.widget.take().is_some()
     }
 
     /// What the overview ruler and the line box draw for the editor's state now.
@@ -247,10 +358,10 @@ impl DocumentFeatures {
                 color: colors.overview_ruler_occurrence,
             })
             .collect();
-        marks.extend(self.problems.iter().map(|problem| Mark {
+        marks.extend(self.markers.iter().map(|marker| Mark {
             lane: Lane::Right,
-            lines: lines_of(&self.line_starts, &problem.range),
-            color: match problem.severity {
+            lines: lines_of(&self.line_starts, &marker.range),
+            color: match marker.severity {
                 Severity::Error => colors.overview_ruler_error,
                 Severity::Warning => colors.warning,
             },
@@ -261,6 +372,27 @@ impl DocumentFeatures {
             line_count: state.text().lines_len().max(1),
             selection_empty: state.selected_range().is_empty(),
             previewed_line: None,
+            probe: Some((self.probe.clone(), self.analyzed_version)),
+            minimap_room: None,
+        }
+    }
+
+    /// What the minimap draws: the text's colors, problems and highlights.
+    pub fn minimap_data(&self, tab_size: usize) -> MinimapData {
+        let grammar = self.probe.borrow().grammar().to_string();
+        MinimapData {
+            probe: self.probe.clone(),
+            revision: self.revision,
+            grammar,
+            markers: self.markers.clone(),
+            occurrences: self
+                .occurrences
+                .words
+                .iter()
+                .chain(&self.occurrences.selections)
+                .cloned()
+                .collect(),
+            tab_size,
         }
     }
 }

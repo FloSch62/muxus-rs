@@ -1,0 +1,218 @@
+[
+ [
+  "a{color:red;background:blue}\n",
+  2,
+  true,
+  "a {\n  color: red;\n  background: blue\n}"
+ ],
+ [
+  "a,b>c{color:red}d{margin:0 auto!important}",
+  4,
+  true,
+  "a,\nb>c {\n    color: red\n}\n\nd {\n    margin: 0 auto !important\n}"
+ ],
+ [
+  "@media (max-width:600px){a{color:red}b{x:y}}\n\n\n\nc{}\n",
+  2,
+  true,
+  "@media (max-width:600px) {\n  a {\n    color: red\n  }\n\n  b {\n    x: y\n  }\n}\n\n\n\nc {}"
+ ],
+ [
+  "/* head */a{color:red;/* c */ b:c}\n// line\n",
+  2,
+  false,
+  "/* head */\na {\n\tcolor: red;\n\t/* c */\n\tb: c\n}\n\n// line"
+ ],
+ [
+  "a:hover::before{content:\"x\";background:url( 'a b.png' )}",
+  2,
+  true,
+  "a:hover::before {\n  content: \"x\";\n  background: url('a b.png')\n}"
+ ],
+ [
+  "$var: 10px;\n.a{ &:hover{color:$var} .b &{x:y} }\n@mixin m($a){width:$a}\n",
+  2,
+  true,
+  "$var: 10px;\n\n.a {\n  &:hover {\n    color: $var\n  }\n\n  .b & {\n    x: y\n  }\n}\n\n@mixin m($a) {\n  width: $a\n}"
+ ],
+ [
+  "@import url(foo.css);@font-face{font-family:X;src:url(x.woff)}",
+  2,
+  true,
+  "@import url(foo.css);\n\n@font-face {\n  font-family: X;\n  src: url(x.woff)\n}"
+ ],
+ [
+  ".grid{grid-template-areas:\"a b\"\n \"c d\";}",
+  2,
+  true,
+  ".grid {\n  grid-template-areas: \"a b\"\n    \"c d\";\n}"
+ ],
+ [
+  "  a { color : red ; }\n",
+  2,
+  true,
+  "  a {\n    color: red;\n  }"
+ ],
+ [
+  "a{\r\n  color: red;\r\n}\r\n",
+  2,
+  true,
+  "a {\n  color: red;\n}"
+ ],
+ [
+  "@keyframes k{from{opacity:0}to{opacity:1}}",
+  3,
+  true,
+  "@keyframes k {\n   from {\n      opacity: 0\n   }\n\n   to {\n      opacity: 1\n   }\n}"
+ ],
+ [
+  "a[href='x'],a[data-x=\"y\"]{b:c}",
+  2,
+  true,
+  "a[href='x'],\na[data-x=\"y\"] {\n  b: c\n}"
+ ],
+ [
+  ".a{transition:a 1s,b 2s;font:12px/1.5 \"Helvetica Neue\",Arial}",
+  2,
+  true,
+  ".a {\n  transition: a 1s, b 2s;\n  font: 12px/1.5 \"Helvetica Neue\", Arial\n}"
+ ],
+ [
+  "@supports (display:grid){.a{display:grid}}",
+  2,
+  true,
+  "@supports (display:grid) {\n  .a {\n    display: grid\n  }\n}"
+ ],
+ [
+  "a{color:red}\n\n\nb{color:blue}",
+  2,
+  true,
+  "a {\n  color: red\n}\n\n\nb {\n  color: blue\n}"
+ ],
+ [
+  ".a { .b { c: d; } }",
+  2,
+  true,
+  ".a {\n  .b {\n    c: d;\n  }\n}"
+ ],
+ [
+  "a{}",
+  2,
+  true,
+  "a {}"
+ ],
+ [
+  ".a{width:calc(100% - (2 * 10px))}",
+  2,
+  true,
+  ".a {\n  width: calc(100% - (2 * 10px))\n}"
+ ],
+ [
+  "@charset \"utf-8\";\n@import 'a.css';\nbody{margin:0}",
+  2,
+  true,
+  "@charset \"utf-8\";\n@import 'a.css';\n\nbody {\n  margin: 0\n}"
+ ],
+ [
+  "a > b + c ~ d{x:y}",
+  2,
+  true,
+  "a>b+c~d {\n  x: y\n}"
+ ],
+ [
+  "@include foo;\n.a{@include bar(1px, 2px);}",
+  2,
+  true,
+  "@include foo;\n\n.a {\n  @include bar(1px, 2px);\n}"
+ ],
+ [
+  ".a{ color: red; /* trailing */ }",
+  2,
+  true,
+  ".a {\n  color: red;\n  /* trailing */\n}"
+ ],
+ [
+  "a\\:b{c:d}",
+  2,
+  true,
+  "a\\:b {\n  c: d\n}"
+ ],
+ [
+  "$map: (key1: value1, key2: value2);",
+  2,
+  true,
+  "$map: (\n  key1: value1,\n  key2: value2\n);"
+ ],
+ [
+  ".x{-webkit-box-shadow:0 0 0 rgba(0,0,0,.5)}",
+  8,
+  false,
+  ".x {\n\t-webkit-box-shadow: 0 0 0 rgba(0, 0, 0, .5)\n}"
+ ],
+ [
+  "@media screen and (min-width: 100px) and (max-width:200px){.a,.b{c:d}}",
+  2,
+  true,
+  "@media screen and (min-width: 100px) and (max-width:200px) {\n\n  .a,\n  .b {\n    c: d\n  }\n}"
+ ],
+ [
+  "a{b:c;;d:e}",
+  2,
+  true,
+  "a {\n  b: c;\n  ;\n  d: e\n}"
+ ],
+ [
+  "",
+  2,
+  true,
+  ""
+ ],
+ [
+  "\n\n",
+  2,
+  true,
+  ""
+ ],
+ [
+  "a { color: red",
+  2,
+  true,
+  "a {\n  color: red"
+ ],
+ [
+  ".a{\n\n\n  b: c;\n\n\n  d: e;\n}",
+  2,
+  true,
+  ".a {\n\n\n  b: c;\n\n\n  d: e;\n}"
+ ],
+ [
+  "/* beautify ignore:start */\na{b:c}\n/* beautify ignore:end */\nd{e:f}",
+  2,
+  true,
+  "/* beautify ignore:start */\na{b:c}\n/* beautify ignore:end */\nd {\n  e: f\n}"
+ ],
+ [
+  "@page :first{margin:1in}",
+  2,
+  true,
+  "@page :first {\n  margin: 1in\n}"
+ ],
+ [
+  ".a::after{content:'\\201C'}",
+  2,
+  true,
+  ".a::after {\n  content: '\\201C'\n}"
+ ],
+ [
+  "@{var}: x;\n.@{name}-x{a:b}",
+  2,
+  true,
+  "@{var}: x;\n\n.@{name}-x {\n  a: b\n}"
+ ],
+ [
+  "#{$sel} .a{b:c}",
+  2,
+  true,
+  "#{$sel} .a {\n  b: c\n}"
+ ]
+]

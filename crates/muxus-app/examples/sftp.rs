@@ -11,6 +11,9 @@
 //! (`remote-editor.png`), `sidebar` (docked in the sidebar), `window` (the
 //! SFTP window). `MUXUS_THEME=dark` for the dark variants. Everything lives in
 //! a scratch folder; nothing touches the real home directory.
+//!
+//! `MUXUS_EDITOR_FILE=<local file>` copies that file into the remote home and
+//! opens it in the `remote-editor` scene instead of `docker-compose.yml`.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -82,6 +85,10 @@ fn seed_remote(root: &Path) -> PathBuf {
     )
     .unwrap();
     std::fs::write(home.join("logs/error.log"), "no errors in the last 24h\n").unwrap();
+    if let Ok(file) = std::env::var("MUXUS_EDITOR_FILE") {
+        let file = Path::new(&file);
+        std::fs::copy(file, home.join(file.file_name().unwrap())).unwrap();
+    }
     let when = Local
         .with_ymd_and_hms(2026, 7, 25, 20, 17, 0)
         .single()
@@ -362,10 +369,16 @@ fn main() {
                         })
                         .detach();
                     // As the shot does: double-click docker-compose.yml.
+                    let name = std::env::var("MUXUS_EDITOR_FILE")
+                        .ok()
+                        .and_then(|file| {
+                            Some(Path::new(&file).file_name()?.to_string_lossy().into_owned())
+                        })
+                        .unwrap_or_else(|| "docker-compose.yml".into());
                     workspace.update(cx, |workspace, cx| {
-                        workspace.open("/home/deploy/docker-compose.yml".into(), window, cx)
+                        workspace.open(format!("/home/deploy/{name}"), window, cx)
                     });
-                    panel.update(cx, |panel, cx| panel.select("docker-compose.yml", cx));
+                    panel.update(cx, |panel, cx| panel.select(&name, cx));
                 }
                 let scene = cx.new(|_| Scene {
                     panel,

@@ -51,6 +51,18 @@ pub struct MonacoColors {
     pub quick_input_focus: Hsla,
     pub quick_input_focus_ink: Hsla,
     pub widget_shadow: Hsla,
+    /// The problem widget (F8, a peek view): `peekViewTitleLabel.foreground`,
+    /// `peekViewTitleDescription.foreground`, `icon.foreground` and
+    /// `toolbar.hoverBackground` for its buttons.
+    pub peek_title: Hsla,
+    pub peek_description: Hsla,
+    pub icon_foreground: Hsla,
+    pub toolbar_hover: Hsla,
+    /// The minimap's slider (`minimapSlider.background`, `.hoverBackground`,
+    /// `.activeBackground`: the scrollbar slider's at half).
+    pub minimap_slider: Hsla,
+    pub minimap_slider_hover: Hsla,
+    pub minimap_slider_active: Hsla,
 }
 
 impl MonacoColors {
@@ -84,6 +96,13 @@ impl MonacoColors {
                 quick_input_focus: hex("#04395e"),
                 quick_input_focus_ink: hex("#ffffff"),
                 widget_shadow: hex("#0000005c"),
+                peek_title: hex("#ffffff"),
+                peek_description: hex("#ccccccb3"),
+                icon_foreground: hex("#c5c5c5"),
+                toolbar_hover: hex("#5a5d5e50"),
+                minimap_slider: hex("#79797933"),
+                minimap_slider_hover: hex("#64646459"),
+                minimap_slider_active: hex("#bfbfbf33"),
             }
         } else {
             Self {
@@ -114,6 +133,13 @@ impl MonacoColors {
                 quick_input_focus: hex("#0060c0"),
                 quick_input_focus_ink: hex("#ffffff"),
                 widget_shadow: hex("#00000029"),
+                peek_title: hex("#000000"),
+                peek_description: hex("#616161"),
+                icon_foreground: hex("#424242"),
+                toolbar_hover: hex("#b8b8b850"),
+                minimap_slider: hex("#64646433"),
+                minimap_slider_hover: hex("#64646459"),
+                minimap_slider_active: hex("#0000004d"),
             }
         }
     }
