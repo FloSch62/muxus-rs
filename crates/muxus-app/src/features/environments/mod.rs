@@ -11,7 +11,8 @@
 //! - [`hub`]: one per window; reads hosts as tabs connect and on the refresh
 //!   interval (`useEnvironmentDiscovery.ts`).
 //! - [`panel`], [`sections`], [`kubernetes`], [`tree`]: the panel.
-//! - [`topology`]: a lab's topology, drawn natively.
+//! - [`topology`]: a lab's topology, drawn natively; [`viewer`]: in the
+//!   containerlab viewer, in a window of its own (with page windows).
 //! - [`logos`]: the tools' own logos; [`sidebar_mark`]: the mark at the end of
 //!   a host's sidebar row (`EnvironmentBadges.tsx`).
 
@@ -26,6 +27,7 @@ pub mod sections;
 pub mod sessions;
 pub mod topology;
 pub mod tree;
+pub mod viewer;
 
 use muxus_ui::gpui_kit::{
     AnyElement, App, ClickEvent, ElementId, InteractiveElement, IntoElement, ParentElement,

@@ -144,6 +144,11 @@ pub fn install(backend: &Backend, cx: &mut App) {
     muxus_app::features::remote_desktop::init(cx);
     crate::ui::compare::install(backend, cx);
     crate::ui::web_hosts::install(backend, cx);
+    // Lab topologies in the containerlab viewer, in the same window processes as web pages.
+    muxus_app::features::environments::viewer::install(
+        backend.paths().user_data.join("web-pages"),
+        cx,
+    );
     let mut hooks: SettingsHooks = settings_hooks(cx);
     hooks.open_log_viewer = Some(std::rc::Rc::new(|_, cx| {
         with_active_shell(cx, |shell, window, cx| shell.open_log_viewer(window, cx));

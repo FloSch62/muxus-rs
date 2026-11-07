@@ -47,6 +47,12 @@ pub(super) fn attach(webview: &WebView) {
     });
 }
 
+/// No right-click menu at all: the topology window is the app's dialog, and the app shows
+/// none there.
+pub(super) fn without_context_menu(webview: &WebView) {
+    webview.connect_context_menu(|_, _, _, _| true);
+}
+
 /// What the page's edit state allows, as Chromium's `editFlags` put it: cut a selection in a
 /// field, copy any selection, paste into a field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

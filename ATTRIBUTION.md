@@ -22,6 +22,12 @@ derived from someone else's code or design.
 | `TabPin.svg` | The pin glyph drawn inline in Muxus' `TabStrip.tsx`. | MIT, same author |
 | `WindowMinimize.svg`, `WindowMaximize.svg`, `WindowRestore.svg`, `WindowClose.svg` | Drawn for this project after the window controls the Electron build shows on Linux. | MIT |
 
+## Web assets (`crates/muxus-webview/assets`)
+
+| Asset | Source | License |
+|---|---|---|
+| `clab-viewer/` (`viewer.html`, `styles.css`, `assets/*.js`) | The containerlab topology viewer, the `dist` build of `@containerlab/clab-viewer` 0.2.0 by SRL Labs, less the files the Muxus client leaves out too (`client/clab-viewer-plugin.ts`). Served by the topology window of a build with the `webview` feature. | MIT (`crates/muxus-webview/assets/clab-viewer/LICENSE`) |
+
 ## Design and code
 
 | What | Source | License |

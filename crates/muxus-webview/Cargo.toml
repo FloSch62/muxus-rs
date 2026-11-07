@@ -38,5 +38,9 @@ tempfile = "3"
 name = "web_window"
 required-features = ["webview"]
 
+[[example]]
+name = "topology_window"
+required-features = ["webview"]
+
 [lints]
 workspace = true

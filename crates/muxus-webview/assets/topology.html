@@ -1,0 +1,284 @@
+<!doctype html>
+<!--
+  A running lab's topology (ClabTopologyDialog.tsx): the dialog's header and node bar around
+  the containerlab viewer in a frame, which speaks the viewer's postMessage protocol exactly as
+  the dialog does. The window serves this page, lab.json (the lab and the app's colors) and the
+  viewer build from a scheme of its own; window.ipc reaches the window process.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Topology</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        color: var(--foreground);
+        font-family: Inter, system-ui, sans-serif;
+        font-size: 14px;
+        font-weight: 450;
+        letter-spacing: -0.1px;
+        overflow: hidden;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+      .titles {
+        flex: 1;
+        min-width: 0;
+      }
+      .title {
+        font-size: 16px;
+        line-height: 1.75;
+        font-weight: 700;
+      }
+      .noWrap {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .caption {
+        display: block;
+        font-size: 12px;
+        line-height: 1.66;
+        font-weight: 400;
+        color: var(--secondary);
+      }
+      .mono {
+        font-family: 'JetBrains Mono', monospace;
+      }
+      main {
+        flex: 1;
+        min-height: 0;
+        position: relative;
+      }
+      iframe {
+        border: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      .alert {
+        margin: 16px;
+        padding: 6px 16px;
+        border-radius: 8px;
+        font-size: 14px;
+        line-height: 1.43;
+        background: var(--warning-background);
+        color: var(--warning-text);
+      }
+      footer {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 16px;
+        border-top: 1px solid var(--border);
+      }
+      footer[hidden],
+      .alert[hidden] {
+        display: none;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        flex: none;
+        box-sizing: border-box;
+      }
+      .dot.up {
+        background: var(--success);
+      }
+      .dot.off {
+        border: 1.5px solid var(--disabled);
+      }
+      .name {
+        font-size: 14px;
+        line-height: 1.43;
+        font-weight: 600;
+      }
+      .spacer {
+        flex: 1;
+      }
+      button {
+        display: inline-flex;
+        align-items: center;
+        border: 0;
+        border-radius: 8px;
+        padding: 4px 10px;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 550;
+        line-height: 1.75;
+        background: var(--accent);
+        color: var(--accent-text);
+        cursor: pointer;
+      }
+      button:disabled {
+        background: var(--disabled-background);
+        color: var(--disabled-text);
+        cursor: default;
+      }
+      button svg {
+        width: 18px;
+        height: 18px;
+        margin: 0 8px 0 -2px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="titles">
+        <div id="title" class="title noWrap"></div>
+        <span id="subtitle" class="caption mono noWrap"></span>
+      </div>
+    </header>
+    <main>
+      <div id="warning" class="alert" hidden></div>
+      <iframe id="viewer"></iframe>
+    </main>
+    <footer id="node" hidden>
+      <span id="node-dot" class="dot"></span>
+      <span id="node-name" class="name"></span>
+      <span id="node-kind" class="caption"></span>
+      <span id="node-ipv4" class="caption mono"></span>
+      <span class="spacer"></span>
+      <button id="node-open" type="button"></button>
+    </footer>
+    <template id="icon-ssh"><!--LoginOutlined--></template>
+    <template id="icon-shell"><!--TerminalOutlined--></template>
+    <script>
+      (async () => {
+        const lab = await (await fetch('lab.json')).json();
+        const origin = window.location.origin;
+        const frame = document.getElementById('viewer');
+        const warning = document.getElementById('warning');
+        let mode = lab.theme.mode;
+
+        const colors = {
+          background: 'background',
+          foreground: 'foreground',
+          surface: 'surface',
+          border: 'border',
+          accent: 'accent',
+          'accent-text': 'accentText',
+          secondary: 'secondary',
+          disabled: 'disabled',
+          success: 'success',
+          'disabled-background': 'disabledBackground',
+          'disabled-text': 'disabledText',
+          'warning-background': 'warningBackground',
+          'warning-text': 'warningText',
+        };
+        const paint = (theme) => {
+          for (const [variable, key] of Object.entries(colors)) {
+            document.documentElement.style.setProperty(`--${variable}`, theme[key]);
+          }
+          document.documentElement.style.colorScheme = theme.mode;
+        };
+        paint(lab.theme);
+        // The viewer's colors: the app's background, text, paper, divider and primary.
+        const appearance = (theme) => ({
+          background: theme.background,
+          foreground: theme.foreground,
+          surface: theme.surface,
+          border: theme.border,
+          accent: theme.accent,
+        });
+
+        document.title = lab.title;
+        document.getElementById('title').textContent = lab.title;
+        document.getElementById('subtitle').textContent = lab.subtitle;
+        frame.title = `Topology of ${lab.title}`;
+
+        // The node bar for the selected node, as the dialog shows it.
+        const bar = document.getElementById('node');
+        const button = document.getElementById('node-open');
+        let selected = null;
+        const showNode = (id) => {
+          selected = lab.nodes.find((node) => node.name === id) ?? null;
+          bar.hidden = !selected;
+          if (!selected) return;
+          document.getElementById('node-dot').className = `dot ${selected.running ? 'up' : 'off'}`;
+          document.getElementById('node-name').textContent = selected.name;
+          document.getElementById('node-kind').textContent = selected.kind;
+          const ipv4 = document.getElementById('node-ipv4');
+          ipv4.textContent = selected.ipv4 ?? '';
+          ipv4.hidden = !selected.ipv4;
+          const icon = document.getElementById(selected.ssh ? 'icon-ssh' : 'icon-shell');
+          button.replaceChildren(
+            icon.content.cloneNode(true),
+            document.createTextNode(selected.ssh ? 'SSH as admin' : 'Open shell'),
+          );
+          button.disabled = selected.disabled;
+          if (selected.reason) button.title = selected.reason;
+          else button.removeAttribute('title');
+        };
+        button.addEventListener('click', () => {
+          if (selected && !selected.disabled) {
+            window.ipc.postMessage(JSON.stringify({ type: 'open', name: selected.name }));
+          }
+        });
+
+        // The frame says it is ready; it gets the lab in return, and tells us what is selected.
+        window.addEventListener('message', (event) => {
+          const target = frame.contentWindow;
+          if (!target || event.source !== target || event.origin !== origin) return;
+          const data = event.data;
+          if (!data || typeof data.type !== 'string') return;
+          if (data.type === 'clab-viewer:ready') {
+            target.postMessage(
+              {
+                type: 'clab-viewer:render',
+                yaml: lab.yaml,
+                ...(lab.annotations ? { annotations: lab.annotations } : {}),
+                theme: mode,
+                options: {
+                  controls: true,
+                  background: 'dots',
+                  linkLabels: 'on-select',
+                  linkHover: true,
+                  fitPadding: 0.6,
+                  appearance: appearance(lab.theme),
+                },
+              },
+              origin,
+            );
+          } else if (data.type === 'clab-viewer:select') {
+            showNode(typeof data.id === 'string' ? data.id : null);
+          } else if (data.type === 'clab-viewer:error') {
+            warning.textContent =
+              typeof data.message === 'string' ? data.message : 'The topology could not be drawn.';
+            warning.hidden = false;
+          }
+        });
+
+        // A theme switch reaches a drawn topology without drawing it again. The dialog sends
+        // the mode only; a window stays open longer, so the canvas gets the new colors too
+        // (the viewer takes `appearance` with a theme message).
+        window.muxusTopology = {
+          setTheme(theme) {
+            mode = theme.mode;
+            lab.theme = theme;
+            paint(theme);
+            frame.contentWindow?.postMessage(
+              { type: 'clab-viewer:theme', theme: mode, appearance: appearance(theme) },
+              origin,
+            );
+          },
+        };
+
+        frame.src = `viewer.html?${new URLSearchParams({ parentOrigin: origin }).toString()}`;
+      })();
+    </script>
+  </body>
+</html>

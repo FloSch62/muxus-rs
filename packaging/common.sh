@@ -68,6 +68,9 @@ install_licenses() {
     if LC_ALL=C readelf -d "$BINARY" 2>/dev/null | grep -q 'libwebkit2gtk-4\.1'; then
         features="muxus-app/webview"
         list="$OUT/THIRD_PARTY_LICENSES-webview.txt"
+        # The containerlab viewer the topology window serves is built into such a binary.
+        install -m 0644 "$ROOT/crates/muxus-webview/assets/clab-viewer/LICENSE" \
+            "$dir/clab-viewer-LICENSE.txt"
     fi
     if [ ! -f "$list" ] || [ "$ROOT/Cargo.lock" -nt "$list" ]; then
         python3 -I "$PACKAGING/third_party_licenses.py" "$list" --target "$RUST_TARGET" --features "$features"

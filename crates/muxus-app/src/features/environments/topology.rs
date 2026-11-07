@@ -1,9 +1,12 @@
 //! A running lab's topology (`components/environments/ClabTopologyDialog.tsx`).
 //!
 //! The TypeScript client draws it with the containerlab viewer, a React app in
-//! a frame. Without a web view, Muxus draws the topology itself: the nodes of
-//! the lab's `.clab.yml`, placed where its saved annotations put them (else on
-//! a circle), and the links between them. Selecting a node offers to open it.
+//! a frame. A build with page windows does the same in a window of its own
+//! ([`super::viewer`]): this dialog reads the lab's topology file, hands it to
+//! the window and closes. Without a web view (or should the window not start),
+//! Muxus draws the topology itself: the nodes of the lab's `.clab.yml`, placed
+//! where its saved annotations put them (else on a circle), and the links
+//! between them. Selecting a node offers to open it.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -22,16 +25,20 @@ use muxus_ui::widgets::dialog::dialog_paper;
 use muxus_ui::widgets::layer::modal_layer;
 use muxus_ui::widgets::progress::CircularProgress;
 use muxus_ui::widgets::{Button, IconButton};
+use muxus_webview::TopologyWindowRequest;
 
 use super::model::{EnvironmentHost, is_running};
 use super::sessions::{containerlab_node_entry, node_uses_ssh};
 use super::tree::{Health, status_dot};
+use super::viewer::{self, topology_request};
 use crate::state::tabs::SessionSetEntry;
 
 /// What the dialog asks the panel to do.
 pub enum TopologyEvent {
     Close,
     Open(Box<SessionSetEntry>),
+    /// The topology is read: show it in the containerlab viewer's window instead.
+    Window(Box<TopologyWindowRequest>),
 }
 
 /// The nodes and links of a containerlab topology file.
@@ -256,6 +263,15 @@ pub struct TopologyDialog {
 impl EventEmitter<TopologyEvent> for TopologyDialog {}
 
 impl TopologyDialog {
+    /// The host the lab runs on.
+    pub fn host(&self) -> &EnvironmentHost {
+        &self.host
+    }
+
+    pub fn lab(&self) -> &ContainerlabLab {
+        &self.lab
+    }
+
     pub fn new(
         host: EnvironmentHost,
         lab: ContainerlabLab,
@@ -277,6 +293,12 @@ impl TopologyDialog {
                 Err(message) => Err(message),
             };
             let _ = this.update(cx, |this, cx| {
+                if let Ok(response) = &result
+                    && viewer::available(cx)
+                {
+                    let request = topology_request(&this.host, &this.lab, response, cx.theme());
+                    cx.emit(TopologyEvent::Window(Box::new(request)));
+                }
                 this.state = match result {
                     Ok(response) => {
                         let topology = parse_topology(&response.yaml);

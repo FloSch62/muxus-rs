@@ -8,7 +8,7 @@ proxy on an SSH gateway. Ports `electron/src/web-windows.ts`, `client/src/web-ho
 data layer (schema v36 `web` kind, `WebProfile`) is tracked in `core-store.md`.
 
 ```bash
-cargo test -p muxus-webview                                         # 9 tests (13 with --features webview)
+cargo test -p muxus-webview                                         # 15 tests (22 with --features webview)
 cargo test -p muxus-app --lib -- web_draft web_hosts                # 9 tests, one over a test sshd
 cargo test -p muxus-ssh --lib forward_manager                       # port 0 and independent forwards
 # The page window alone, the way the app opens it (needs libwebkit2gtk-4.1-dev on Linux):

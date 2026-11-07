@@ -16,6 +16,7 @@ use serde_json::Value;
 
 use crate::protocol::{WEB_WINDOW_ARG, WebWindowCommand, WebWindowEvent, WebWindowLaunch, line};
 use crate::request::{WebWindowResult, is_window_key, parse_web_window_request};
+use crate::topology::{TopologyTheme, TopologyWindowRequest, is_valid_topology_request};
 
 /// A page window that closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +27,14 @@ pub struct ClosedWebWindow {
     pub forward_id: Option<String>,
     /// Why the window could not be shown, when it could not.
     pub error: Option<String>,
+}
+
+/// A node a topology window asks to open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenedNode {
+    /// The window's key.
+    pub key: String,
+    pub name: String,
 }
 
 struct OpenWindow {
@@ -42,6 +51,8 @@ struct Inner {
     next_serial: AtomicU64,
     closed_tx: async_channel::Sender<ClosedWebWindow>,
     closed_rx: async_channel::Receiver<ClosedWebWindow>,
+    nodes_tx: async_channel::Sender<OpenedNode>,
+    nodes_rx: async_channel::Receiver<OpenedNode>,
 }
 
 /// Every page window of the app, by saved host.
@@ -89,6 +100,7 @@ impl WebWindows {
         data_root: impl Into<PathBuf>,
     ) -> Self {
         let (closed_tx, closed_rx) = async_channel::unbounded();
+        let (nodes_tx, nodes_rx) = async_channel::unbounded();
         Self {
             inner: Arc::new(Inner {
                 program: program.into(),
@@ -98,6 +110,8 @@ impl WebWindows {
                 next_serial: AtomicU64::new(1),
                 closed_tx,
                 closed_rx,
+                nodes_tx,
+                nodes_rx,
             }),
         }
     }
@@ -147,6 +161,63 @@ impl WebWindows {
                 data_directory.display()
             )
         })?;
+        let launch = WebWindowLaunch {
+            request: serde_json::to_value(&request).unwrap_or(Value::Null),
+            data_directory,
+            topology: None,
+        };
+        self.spawn(windows, request.key, &launch, request.forward_id)
+    }
+
+    /// Show a lab's topology in a window of its own (see [`crate::topology`]), or bring the
+    /// lab's open window to the front.
+    pub fn open_topology(
+        &self,
+        request: &TopologyWindowRequest,
+    ) -> Result<WebWindowResult, String> {
+        if !is_valid_topology_request(request) {
+            return Ok(WebWindowResult::Invalid);
+        }
+        let mut windows = lock(&self.inner.windows);
+        if let Some(window) = windows.get_mut(&request.key)
+            && send(window, WebWindowCommand::Focus)
+        {
+            return Ok(WebWindowResult::Focused);
+        }
+        let launch = WebWindowLaunch {
+            request: Value::Null,
+            data_directory: PathBuf::new(),
+            topology: Some(request.clone()),
+        };
+        self.spawn(windows, request.key.clone(), &launch, None)
+    }
+
+    /// Nodes topology windows ask to open, by window key.
+    pub fn opened_nodes(&self) -> async_channel::Receiver<OpenedNode> {
+        self.inner.nodes_rx.clone()
+    }
+
+    /// Tell every open window the app's theme changed (topology windows follow it).
+    pub fn set_theme(&self, theme: &TopologyTheme) {
+        let mut windows = lock(&self.inner.windows);
+        for window in windows.values_mut() {
+            send(
+                window,
+                WebWindowCommand::Theme {
+                    theme: Box::new(theme.clone()),
+                },
+            );
+        }
+    }
+
+    /// Start the window process, hand it its launch line and watch it until it exits.
+    fn spawn(
+        &self,
+        mut windows: MutexGuard<'_, HashMap<String, OpenWindow>>,
+        key: String,
+        launch: &WebWindowLaunch,
+        forward_id: Option<String>,
+    ) -> Result<WebWindowResult, String> {
         let mut child = Command::new(&self.inner.program)
             .args(&self.inner.args)
             .stdin(Stdio::piped())
@@ -159,10 +230,7 @@ impl WebWindows {
             let _ = child.wait();
             return Err("Could not open the page window.".into());
         };
-        let launch = line(&WebWindowLaunch {
-            request: serde_json::to_value(&request).unwrap_or(Value::Null),
-            data_directory,
-        });
+        let launch = line(launch);
         if let Err(error) = stdin
             .write_all(launch.as_bytes())
             .and_then(|()| stdin.flush())
@@ -172,18 +240,25 @@ impl WebWindows {
             return Err(format!("Could not open the page window: {error}"));
         }
         let serial = self.inner.next_serial.fetch_add(1, Ordering::Relaxed);
-        windows.insert(request.key.clone(), OpenWindow { serial, stdin });
+        windows.insert(key.clone(), OpenWindow { serial, stdin });
         drop(windows);
 
         let inner = Arc::downgrade(&self.inner);
         let closed_tx = self.inner.closed_tx.clone();
-        let (key, forward_id) = (request.key, request.forward_id);
+        let nodes_tx = self.inner.nodes_tx.clone();
         let watch = move || {
             let mut error = None;
             for text in BufReader::new(stdout).lines() {
                 let Ok(text) = text else { break };
-                if let Ok(WebWindowEvent::Error { message }) = serde_json::from_str(&text) {
-                    error = Some(message);
+                match serde_json::from_str(&text) {
+                    Ok(WebWindowEvent::Error { message }) => error = Some(message),
+                    Ok(WebWindowEvent::OpenNode { name }) => {
+                        let _ = nodes_tx.try_send(OpenedNode {
+                            key: key.clone(),
+                            name,
+                        });
+                    }
+                    _ => {}
                 }
             }
             let status = child.wait();
@@ -365,5 +440,74 @@ done
 
     fn windows_crashing(scratch: &Path) -> (WebWindows, PathBuf) {
         windows("read launch; exit 3", scratch)
+    }
+
+    /// A stand-in topology window: the user opens a node, and the window closes.
+    const TOPOLOGY_WINDOW: &str = r#"
+read -r launch
+printf '%s\n' "$launch" > "$0.launch"
+echo '{"event":"opened"}'
+read cmd
+echo "$cmd" >> "$0.commands"
+echo '{"event":"openNode","name":"srl1"}'
+exit 0
+"#;
+
+    #[test]
+    fn shows_a_topology_and_hears_which_node_to_open() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (windows, log) = windows(TOPOLOGY_WINDOW, scratch.path());
+        let request = crate::topology::tests::request();
+
+        assert_eq!(windows.open_topology(&request), Ok(WebWindowResult::Opened));
+        let launch: WebWindowLaunch =
+            serde_json::from_str(wait_for(&log.with_extension("launch"), "topology").trim())
+                .unwrap();
+        assert_eq!(launch.topology.as_ref(), Some(&request));
+        // No folder of its own: the viewer keeps nothing.
+        assert!(!scratch.path().join("web-pages").exists());
+
+        // The same lab again only focuses its window; a theme change reaches it.
+        assert_eq!(
+            windows.open_topology(&request),
+            Ok(WebWindowResult::Focused)
+        );
+        wait_for(&log.with_extension("commands"), "focus");
+
+        let opened = windows.opened_nodes();
+        let mut node = None;
+        for _ in 0..200 {
+            if let Ok(found) = opened.try_recv() {
+                node = Some(found);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(
+            node,
+            Some(OpenedNode {
+                key: "topology-1".into(),
+                name: "srl1".into()
+            })
+        );
+        let closed = next_closed(&windows);
+        assert_eq!((closed.key.as_str(), closed.error), ("topology-1", None));
+
+        let mut bad = request;
+        bad.key = "a b".into();
+        assert_eq!(windows.open_topology(&bad), Ok(WebWindowResult::Invalid));
+    }
+
+    #[test]
+    fn passes_a_theme_change_to_every_window() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (windows, log) = windows(WINDOW, scratch.path());
+        assert_eq!(windows.open(&request(None)), Ok(WebWindowResult::Opened));
+        windows.set_theme(&crate::topology::tests::theme());
+        let commands = wait_for(&log.with_extension("commands"), "theme");
+        let command: WebWindowCommand = serde_json::from_str(commands.trim()).unwrap();
+        assert!(matches!(command, WebWindowCommand::Theme { .. }));
+        windows.close_all();
+        next_closed(&windows);
     }
 }
