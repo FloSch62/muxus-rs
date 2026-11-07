@@ -237,6 +237,8 @@ pub struct Emulator {
     /// Absolute top line of every image seen on screen, so it stays put in the scrollback.
     image_tops: HashMap<u64, (u64, usize)>,
     scrollback_limit: usize,
+    /// A received LF also returns to the start of the line (a host's implicit CR).
+    implicit_cr: bool,
 }
 
 impl std::fmt::Debug for Emulator {
@@ -283,6 +285,7 @@ impl Emulator {
             bell_count: 0,
             image_tops: HashMap::new(),
             scrollback_limit: config.scrollback,
+            implicit_cr: false,
         };
         emulator.init_pen();
         emulator.apply_palette();
@@ -329,6 +332,23 @@ impl Emulator {
     /// Whether programs may write the clipboard through OSC 52 (reads are never allowed).
     pub fn set_allow_osc52_write(&mut self, allow: bool) {
         self.allow_osc52_write = allow;
+    }
+
+    /// A host's implicit CR, xterm.js `convertEol`: a received LF also returns to the start of
+    /// the line. It is the terminal's LNM mode, so a device can still switch it with CSI 20 h/l.
+    pub fn set_implicit_cr(&mut self, on: bool) {
+        self.implicit_cr = on;
+        self.apply_implicit_cr();
+    }
+
+    fn apply_implicit_cr(&mut self) {
+        if self.core.line_feed_new_line_mode() != self.implicit_cr {
+            self.core.process(if self.implicit_cr {
+                b"\x1b[20h"
+            } else {
+                b"\x1b[20l"
+            });
+        }
     }
 
     /// The cell size in logical pixels, for CSI 14/16 t reports and images.
@@ -410,6 +430,10 @@ impl Emulator {
                 Segment::Osc { code, data } => self.handle_osc(code, &data),
                 Segment::EraseDisplay => self.erase_display(),
                 Segment::Reset { hard } => {
+                    if hard && self.implicit_cr {
+                        // The option outlives a reset, as xterm.js's does.
+                        self.apply_implicit_cr();
+                    }
                     if hard {
                         self.mouse_protocol = MouseProtocol::None;
                         self.mouse_encoding = MouseEncoding::Default;
@@ -1223,5 +1247,22 @@ mod tests {
         term.write(b"one\r\n\r\ntwo\r\n$ ");
         assert_eq!(term.buffer_text(), "one\n\ntwo\n$ \n");
         assert_eq!(term.recent_lines(2), ["two", "$ "]);
+    }
+
+    #[test]
+    fn an_implicit_cr_returns_each_received_line_feed_to_the_start_of_the_line() {
+        let mut term = emulator(10, 3);
+        term.write(b"ab\ncd");
+        assert_eq!(screen(&term)[1], "  cd");
+        let mut term = emulator(10, 3);
+        term.set_implicit_cr(true);
+        term.write(b"ab\ncd");
+        assert_eq!(screen(&term)[1], "cd");
+        // It outlives a reset, and switches off again.
+        term.write(b"\x1bcx\ny");
+        assert_eq!(screen(&term)[1], "y");
+        term.set_implicit_cr(false);
+        term.write(b"\nz");
+        assert_eq!(screen(&term)[2], " z");
     }
 }

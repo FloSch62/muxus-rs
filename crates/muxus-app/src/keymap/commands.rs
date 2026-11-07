@@ -393,6 +393,23 @@ fn build_commands() -> Vec<KeyCommand> {
             ],
         ),
         command(
+            "terminal.send-text-file",
+            "Send text file…",
+            Terminal,
+            &[],
+            &[
+                "file",
+                "config",
+                "configuration",
+                "upload",
+                "type",
+                "serial",
+                "telnet",
+                "ssh",
+                "console",
+            ],
+        ),
+        command(
             "terminal.cancel-login-sequence",
             "Cancel login sequence",
             Terminal,

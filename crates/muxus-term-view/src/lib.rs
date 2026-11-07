@@ -20,6 +20,7 @@ mod view;
 pub use muxus_term;
 pub use view::{TerminalView, new_terminal_view};
 
+use muxus_core::input_modes::TerminalInputModes;
 use muxus_core::stream::TerminalSize;
 use muxus_term::keywords::KeywordHighlightRule;
 use muxus_term::links::LinkActivation;
@@ -79,6 +80,10 @@ pub struct TerminalSettings {
     pub allow_osc52_write: bool,
     /// Ask before pasting text with line breaks ([`TerminalViewEvent::ConfirmPaste`]).
     pub paste_warn_multiline: bool,
+    /// Ask before pasting text with invisible or look-alike characters, even a single line.
+    pub paste_warn_lookalikes: bool,
+    /// What the host's Backspace and Enter keys send, its implicit CR and local echo.
+    pub input_modes: TerminalInputModes,
     /// The effective keyword-highlighting rules (global, profile and host rules resolved).
     pub keyword_rules: Vec<KeywordHighlightRule>,
     pub minimum_contrast_ratio: f64,
@@ -105,6 +110,8 @@ impl Default for TerminalSettings {
             file_links: false,
             allow_osc52_write: true,
             paste_warn_multiline: true,
+            paste_warn_lookalikes: true,
+            input_modes: TerminalInputModes::default(),
             keyword_rules: Vec::new(),
             minimum_contrast_ratio: TERMINAL_MINIMUM_CONTRAST_RATIO,
             is_mac: cfg!(target_os = "macos"),
@@ -130,15 +137,20 @@ pub enum TerminalViewEvent {
         position: gpui_kit::Point<gpui_kit::Pixels>,
         selection: String,
     },
-    /// A multi-line paste waits for the app's confirmation; call
-    /// [`TerminalView::paste_confirmed`] with the (possibly edited) text.
+    /// A multi-line paste, or one with invisible or look-alike characters, waits for the app's
+    /// confirmation; call [`TerminalView::paste_confirmed`] with the (possibly edited) text.
     ConfirmPaste(String),
+    /// The user pasted this text, already sent to the session (multi-execution pastes it into the
+    /// mirrored terminals, each with its own host's keys).
+    Pasted(String),
     /// The clipboard held no text (an image, or nothing): the app may upload an image and paste
     /// its path.
     ClipboardWithoutText,
     /// The grid changed size (sent to the transport as well).
     Resized(TerminalSize),
-    /// The user typed or pasted this, already sent to the session (multi-execution mirrors it).
+    /// The user typed this, already sent to the session with the host's keys; the bytes are the
+    /// keystrokes as typed (multi-execution mirrors them through
+    /// [`TerminalView::send_keyboard_input`], so each host applies its own keys).
     Input(Vec<u8>),
     /// The user typed into an ended session (the app offers to reconnect).
     InputAfterExit(Vec<u8>),

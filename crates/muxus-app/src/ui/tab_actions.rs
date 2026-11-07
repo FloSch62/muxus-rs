@@ -739,6 +739,26 @@ impl AppShell {
                         }
                     })),
             );
+            paper = paper.child(
+                item(
+                    "tab-send-text-file",
+                    "Send text file…",
+                    "UploadFileOutlined",
+                )
+                .chord(muxus_app::keymap::hints::chord_label(
+                    "terminal.send-text-file",
+                    &Default::default(),
+                ))
+                .disabled(!attached)
+                .on_click(cx.listener({
+                    let id = id.clone();
+                    move |this, _, window, cx| {
+                        this.menu = None;
+                        this.request_send_text_file(&id, window, cx);
+                        cx.notify();
+                    }
+                })),
+            );
         }
         let others: Vec<String> = self
             .tabs

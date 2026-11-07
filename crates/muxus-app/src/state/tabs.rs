@@ -118,6 +118,9 @@ pub struct TerminalTab {
     pub restored: bool,
     /// The host's login sequence while it runs: the current step and what it does.
     pub login_sequence: Option<LoginSequenceProgress>,
+    /// The last stopped paste of the session this tab noted; it moves with the tab to another
+    /// window.
+    pub paste_stop_noted: Option<u64>,
 }
 
 impl TerminalTab {
@@ -161,6 +164,7 @@ impl TerminalTab {
             disconnect_reason: None,
             restored: false,
             login_sequence: None,
+            paste_stop_noted: None,
         }
     }
 
@@ -234,6 +238,7 @@ pub struct TabPatch {
     pub disconnect_reason: Option<Option<DisconnectReason>>,
     pub fresh_transport: Option<Option<String>>,
     pub login_sequence: Option<Option<LoginSequenceProgress>>,
+    pub paste_stop_noted: Option<Option<u64>>,
 }
 
 impl TabPatch {
@@ -275,6 +280,7 @@ impl TabPatch {
         set!(disconnect_reason);
         set!(fresh_transport);
         set!(login_sequence);
+        set!(paste_stop_noted);
     }
 }
 

@@ -88,7 +88,19 @@ impl AppShell {
         {
             view.update(cx, |view, cx| view.close_search(window, cx));
         }
-        let pacing = self.paste_pacing(tab_id);
+        // A bracketed paste keeps the delays alone: it shows no prompt after each line.
+        let bracketed = self
+            .terminal_of(tab_id)
+            .is_some_and(|view| view.read(cx).emulator().bracketed_paste());
+        let pacing =
+            muxus_core::paste_pacing::paste_pacing_for(&self.paste_pacing(tab_id), bracketed);
+        let mirrored = self
+            .multi_exec
+            .read(cx)
+            .state()
+            .mirrored_tab_ids(tab_id)
+            .len()
+            .saturating_sub(1);
         let (family, size, line_height) = (
             self.prefs.font_family.clone(),
             self.prefs.mono_font_size as f32,
@@ -96,7 +108,17 @@ impl AppShell {
         );
         let tab = tab_id.to_string();
         let dialog = cx.new(|cx| {
-            PasteDialog::new(tab, text, pacing, 0, &family, size, line_height, window, cx)
+            PasteDialog::new(
+                tab,
+                text,
+                pacing,
+                mirrored,
+                &family,
+                size,
+                line_height,
+                window,
+                cx,
+            )
         });
         let subscription = cx.subscribe_in(&dialog, window, Self::on_paste_dialog_event);
         self.menu = None;
@@ -118,7 +140,7 @@ impl AppShell {
             line_delay_ms,
         } = event
         {
-            self.paste_into_session(&tab_id, text, Some(*line_delay_ms), cx);
+            self.paste_into_session(&tab_id, text, Some(*line_delay_ms), true, cx);
         }
         self.focus_terminal(&tab_id, window, cx);
         cx.notify();
@@ -378,6 +400,19 @@ impl AppShell {
                         cx.notify();
                     })),
             );
+            paper = paper.child(
+                MenuItem::new("send-text-file", "Send text file…")
+                    .icon("UploadFileOutlined")
+                    .chord(chord("terminal.send-text-file"))
+                    .disabled(!can_break)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.menu = None;
+                        if let Some(id) = this.tabs.active_id.clone() {
+                            this.request_send_text_file(&id, window, cx);
+                        }
+                        cx.notify();
+                    })),
+            );
         }
         paper
             .child(menu_divider(&theme))
@@ -491,6 +526,13 @@ impl AppShell {
                 Some(id) => {
                     let id = id.clone();
                     self.send_break(&id, cx)
+                }
+                None => false,
+            },
+            "terminal.send-text-file" => match &active {
+                Some(id) => {
+                    let id = id.clone();
+                    self.request_send_text_file(&id, window, cx)
                 }
                 None => false,
             },

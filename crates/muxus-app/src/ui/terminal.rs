@@ -28,10 +28,10 @@ use muxus_app::session::recovery::{
 };
 use muxus_app::session::{LinkEvent, LinkInput, LinkWriter};
 use muxus_app::state::tabs::{DisconnectReason, TabPatch, TabStatus, TerminalTab};
-use muxus_core::paste_pacing::{MAX_PACED_PASTE_LENGTH, PastePacing};
+use muxus_core::input_modes::host_terminal_input_modes;
+use muxus_core::paste_pacing::{MAX_PACED_PASTE_LENGTH, PastePacing, paste_pacing_for};
 use muxus_core::protocol::{
-    ConnectionHealth, ExitReason, LoginSequenceState, PasteProgressState, TerminalClientMessage,
-    TerminalServerMessage,
+    ConnectionHealth, ExitReason, LoginSequenceState, TerminalClientMessage, TerminalServerMessage,
 };
 use muxus_core::stream::{
     TerminalSize, TransportChannels, TransportEnds, TransportEvent, TransportInput,
@@ -51,6 +51,9 @@ use muxus_ui::gpui_kit::{AppContext, ClipboardItem, Context, Entity, Subscriptio
 use muxus_ui::theme::{ActiveTheme, Status};
 
 use crate::ui::shell::{AppShell, ShellMenu};
+
+#[path = "terminal_typing.rs"]
+mod typing;
 
 /// Type-ahead held for a session that has not finished connecting.
 const PENDING_INPUT_LIMIT: usize = 64 * 1024;
@@ -100,6 +103,10 @@ struct LiveSession {
     /// The login sequence's reattach command waits for it to finish.
     pending_reattach: Option<&'static str>,
     ended: bool,
+    /// A paced paste went out and the backend has not reported it finished.
+    paced_paste_pending: bool,
+    /// The backend reports a paced paste running.
+    paste_running: bool,
     _tasks: Vec<Task<()>>,
 }
 
@@ -309,6 +316,9 @@ impl AppShell {
             },
             allow_osc52_write: prefs.allow_osc52_clipboard_write,
             paste_warn_multiline: prefs.paste_warn_multiline,
+            paste_warn_lookalikes: prefs.paste_warn_lookalikes,
+            // Keys and echo follow the host's setting live, like its pacing.
+            input_modes: host_terminal_input_modes(metadata.as_ref()),
             keyword_rules: resolve_keyword_highlights(
                 &prefs.keyword_highlights,
                 host_rules,
@@ -742,6 +752,7 @@ impl AppShell {
         .then(|| tab.terminal_cwd.clone())
         .flatten();
         // A tab moved from another window takes over the live session there.
+        let attaching = terminal.attach.is_some();
         let connect = match terminal.attach.take() {
             Some(terminal_id) => TerminalClientMessage::Attach {
                 terminal_id,
@@ -906,12 +917,16 @@ impl AppShell {
             transient_status: false,
             pending_reattach: None,
             ended: false,
+            paced_paste_pending: false,
+            paste_running: false,
             _tasks: vec![events, inputs],
         });
         self.tabs.update(
             tab_id,
             TabPatch {
                 login_sequence: Some(None),
+                // A session this tab takes over keeps the stop it noted.
+                paste_stop_noted: (!attaching).then_some(None),
                 ..Default::default()
             },
         );
@@ -1291,9 +1306,13 @@ impl AppShell {
                 }
                 false
             }
-            TerminalServerMessage::PasteProgress { state, .. } => {
-                // The progress overlay is not drawn yet; a finished paste needs nothing.
-                let _ = state == PasteProgressState::Running;
+            TerminalServerMessage::PasteProgress {
+                state,
+                message,
+                stop_id,
+                ..
+            } => {
+                self.on_paste_progress(tab_id, state, message, stop_id, cx);
                 false
             }
         }
@@ -1748,10 +1767,15 @@ impl AppShell {
                     );
                 }
             }
-            // Typing and pastes reach the other terminals of a multi-execution group.
+            // Typing and pastes reach the other terminals of a multi-execution group, each
+            // sent with its own host's keys.
             TerminalViewEvent::Input(data) => {
                 let data = data.clone();
                 self.mirror_input(tab_id, &data, cx);
+            }
+            TerminalViewEvent::Pasted(text) => {
+                let text = text.clone();
+                self.mirror_paste(tab_id, &text, cx);
             }
             // The client keeps the tab title the host gave it and has no bell.
             TerminalViewEvent::TitleChanged(_)
@@ -1900,16 +1924,21 @@ impl AppShell {
             self.prefs.paste_char_delay_ms.max(0.0) as u32,
             metadata.as_ref().and_then(|m| m.paste_line_delay_ms),
             metadata.as_ref().and_then(|m| m.paste_char_delay_ms),
+            metadata.as_ref().and_then(|m| m.paste_prompt_wait.as_ref()),
         )
     }
 
-    /// `pasteIntoSession`: send a confirmed paste, paced by the backend when
-    /// the host (or the preview) asks for a delay.
+    /// `pasteIntoSession`: send a confirmed paste, paced by the backend when the host (or the
+    /// preview) asks for a delay or waits for the prompt. Bracketed paste mode is this
+    /// terminal's own, so the markers fit the program reading it; outside it, line breaks go
+    /// out as the host's Enter key. The user's own paste (`source`) is mirrored to the
+    /// multi-execution group, where each terminal pastes it at its own host's pace.
     pub fn paste_into_session(
         &mut self,
         tab_id: &str,
         text: &str,
         line_delay_ms: Option<u32>,
+        source: bool,
         cx: &mut Context<Self>,
     ) {
         if text.is_empty() {
@@ -1918,23 +1947,31 @@ impl AppShell {
         let Some(view) = self.terminal_of(tab_id) else {
             return;
         };
-        let mut pacing = self.paste_pacing(tab_id);
+        let bracketed = view.read(cx).emulator().bracketed_paste();
+        let mut pacing = paste_pacing_for(&self.paste_pacing(tab_id), bracketed);
         if let Some(delay) = line_delay_ms {
             pacing.line_delay_ms = delay;
         }
+        let enter_key = self.input_modes(tab_id).enter_key;
         if !pacing.is_paced() {
-            view.update(cx, |view, cx| view.paste_confirmed(text, cx));
+            let sent = view.update(cx, |view, cx| view.send_paste(text, cx));
+            if !sent && source {
+                self.reconnect_tab(tab_id, cx);
+            } else if source {
+                self.mirror_paste(tab_id, text, cx);
+            }
             return;
         }
         if text.encode_utf16().count() > MAX_PACED_PASTE_LENGTH {
-            self.show_toast(
-                Status::Error,
-                "This paste is too long to send with a delay. Paste it in parts.",
-                cx,
-            );
+            if source {
+                self.show_toast(
+                    Status::Error,
+                    "This paste is too long to send with a delay. Paste it in parts.",
+                    cx,
+                );
+            }
             return;
         }
-        let bracketed = view.read(cx).emulator().bracketed_paste();
         let sent = self.send_to_session(
             tab_id,
             LinkInput::message(TerminalClientMessage::Paste {
@@ -1942,18 +1979,24 @@ impl AppShell {
                 bracketed,
                 line_delay_ms: pacing.line_delay_ms,
                 char_delay_ms: pacing.char_delay_ms,
-                prompt: None,
-                enter_key: None,
+                prompt: pacing.prompt.clone(),
+                enter_key: (enter_key != muxus_core::api::TerminalEnterKey::Cr)
+                    .then_some(enter_key),
             }),
             cx,
         );
         if sent {
+            self.mark_paced_paste(tab_id);
             view.update(cx, |view, cx| {
+                view.echo_input(text, cx);
+                // A paste typed in follows the output, like typing does.
                 let _ = view.send_input(Vec::<u8>::new());
                 cx.notify();
             });
-            self.mirror_paste(tab_id, text, cx);
-        } else {
+            if source {
+                self.mirror_paste(tab_id, text, cx);
+            }
+        } else if source {
             self.reconnect_tab(tab_id, cx);
         }
     }
