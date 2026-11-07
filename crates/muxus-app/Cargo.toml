@@ -26,6 +26,7 @@ muxus-import.workspace = true
 muxus-store.workspace = true
 muxus-local.workspace = true
 muxus-mgmt.workspace = true
+muxus-os.workspace = true
 muxus-session.workspace = true
 muxus-ssh.workspace = true
 muxus-term.workspace = true

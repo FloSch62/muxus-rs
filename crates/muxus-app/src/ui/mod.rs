@@ -53,7 +53,8 @@ mod window_features;
 use std::sync::Arc;
 
 use muxus_app::data_source::{BackendSource, DataSource, LocalSource, LoginEnvironment};
-use muxus_app::features::desktop::events as desktop_events;
+use muxus_app::features::desktop::events::{self as desktop_events, DesktopEvent};
+use muxus_app::features::desktop::launch_menu_os;
 use muxus_app::features::desktop::main_log::{
     MainLogLevel, init_main_log, install_crash_capture, main_log,
 };
@@ -64,6 +65,9 @@ use muxus_app::model::demo::{demo_catalog, demo_folder_styles};
 use muxus_app::model::demo_shell::DemoSource;
 use muxus_app::sidebar::folder_prefs::FolderPrefs;
 use muxus_session::data_dir::DataLocation;
+use muxus_session::updater::store::{
+    DistributionMetadata, is_store_distribution, running_from_windows_store,
+};
 use muxus_session::{Backend, BackendOptions, UPDATE_FEED_VAR};
 use muxus_ui::gpui_kit::{AppContext, Bounds, WindowBounds, WindowOptions, size};
 use muxus_ui::theme::Mode;
@@ -135,8 +139,10 @@ pub fn run() {
     // first (`main.ts`): a second launch hands its command line over and exits before it
     // could seed or open the database the first one is using.
     let mut primary = None;
+    let location = DataLocation::from_process();
+    // A development build has a taskbar identity of its own (`main.ts`).
+    let development = location.paths.development;
     if use_backend {
-        let location = DataLocation::from_process();
         if let Err(error) = location.create_folder() {
             eprintln!(
                 "could not create {}: {error}",
@@ -231,6 +237,17 @@ pub fn run() {
             };
             muxus_ui::init(mode, cx);
             muxus_app::features::desktop::app_menu::install(cx);
+            // The taskbar jump list (Windows) or Dock menu (macOS). Windows need the jump
+            // list's AppUserModelID before the first of them opens; the menu itself follows
+            // once the backend runs.
+            let launch_menu = launch_menu_os::launch_menu_kind(is_store_distribution(
+                &DistributionMetadata::built_in(),
+                running_from_windows_store(),
+            ));
+            let app_user_model_id = launch_menu_os::app_user_model_id(development);
+            if launch_menu == Some(launch_menu_os::LaunchMenuKind::JumpList) {
+                launch_menu_os::set_app_user_model_id(&app_user_model_id, cx);
+            }
             if let Some(instance) = primary {
                 let events = instance.events();
                 cx.set_global(InstanceGuard(instance));
@@ -243,6 +260,15 @@ pub fn run() {
                     backend: backend.clone(),
                 });
                 features::install(&backend, cx);
+                if let Some(kind) = launch_menu {
+                    launch_menu_os::start_launch_menu(
+                        backend.clone(),
+                        kind,
+                        app_user_model_id.clone(),
+                        |launch, cx| desktop::deliver(DesktopEvent::Launch(launch), cx),
+                        cx,
+                    );
+                }
                 // The release feed still names the Electron builds; a Rust build offers
                 // updates only from a feed it is pointed at.
                 if std::env::var(UPDATE_FEED_VAR).is_ok_and(|feed| !feed.trim().is_empty()) {

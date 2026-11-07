@@ -19,23 +19,27 @@ use crate::ui::shell::AppShell;
 pub fn listen(events: DesktopEvents, cx: &mut App) {
     cx.spawn(async move |cx: &mut AsyncApp| {
         while let Some(event) = events.recv().await {
-            cx.update(|cx| {
-                // A running Muxus asked for another, empty window (`--new-window`).
-                if matches!(event, DesktopEvent::Launch(CommandLineLaunch::NewWindow)) {
-                    crate::ui::open_main_window(crate::ui::MainWindowLaunch::Blank, cx);
-                    return;
-                }
-                let Some(shell) = active_shell(cx) else {
-                    return;
-                };
-                focus_shell_window(&shell, cx);
-                if let DesktopEvent::Launch(launch) = event {
-                    shell.update(cx, |shell, cx| shell.run_launch(launch, cx));
-                }
-            });
+            cx.update(|cx| deliver(event, cx));
         }
     })
     .detach();
+}
+
+/// Perform one launch or focus request (`deliverCommandLineLaunch`): from a later process, or
+/// from a Dock menu entry.
+pub fn deliver(event: DesktopEvent, cx: &mut App) {
+    // A running Muxus asked for another, empty window (`--new-window`).
+    if matches!(event, DesktopEvent::Launch(CommandLineLaunch::NewWindow)) {
+        crate::ui::open_main_window(crate::ui::MainWindowLaunch::Blank, cx);
+        return;
+    }
+    let Some(shell) = active_shell(cx) else {
+        return;
+    };
+    focus_shell_window(&shell, cx);
+    if let DesktopEvent::Launch(launch) = event {
+        shell.update(cx, |shell, cx| shell.run_launch(launch, cx));
+    }
 }
 
 impl AppShell {
