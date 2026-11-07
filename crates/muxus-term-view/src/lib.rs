@@ -13,6 +13,7 @@
 //! sync with [`TerminalView::set_settings`] and reacts to [`TerminalViewEvent`]s. Keyboard
 //! shortcuts are the app's: bind the [actions](crate#actions) in the `Terminal` key context.
 
+mod box_drawing;
 mod keys;
 mod paint;
 mod view;
@@ -78,6 +79,9 @@ pub struct TerminalSettings {
     /// File paths are clickable (local shells, SSH sessions with SFTP).
     pub file_links: bool,
     pub allow_osc52_write: bool,
+    /// Programs' OSC 7501 status reports are passed on and the protocol's query is answered
+    /// (`showProgramStatus`).
+    pub program_status: bool,
     /// Ask before pasting text with line breaks ([`TerminalViewEvent::ConfirmPaste`]).
     pub paste_warn_multiline: bool,
     /// Ask before pasting text with invisible or look-alike characters, even a single line.
@@ -109,6 +113,7 @@ impl Default for TerminalSettings {
             link_activation: LinkActivation::Alt,
             file_links: false,
             allow_osc52_write: true,
+            program_status: true,
             paste_warn_multiline: true,
             paste_warn_lookalikes: true,
             input_modes: TerminalInputModes::default(),
@@ -163,4 +168,7 @@ pub enum TerminalViewEvent {
     },
     /// The transport failed.
     Failed(String),
+    /// A program reported its status (OSC 7501), or a new prompt or a reset ended what
+    /// programs reported (`attachProgramStatus`).
+    ProgramStatus(muxus_term::program_status::ProgramStatusSignal),
 }

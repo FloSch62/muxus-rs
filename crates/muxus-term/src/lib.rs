@@ -17,6 +17,7 @@ pub mod mouse;
 pub mod osc52;
 pub mod palette;
 pub mod paste;
+pub mod program_status;
 pub mod right_click;
 pub mod scheme_import;
 pub mod scrollback;

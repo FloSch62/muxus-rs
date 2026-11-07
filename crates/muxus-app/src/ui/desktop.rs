@@ -20,6 +20,11 @@ pub fn listen(events: DesktopEvents, cx: &mut App) {
     cx.spawn(async move |cx: &mut AsyncApp| {
         while let Some(event) = events.recv().await {
             cx.update(|cx| {
+                // A running Muxus asked for another, empty window (`--new-window`).
+                if matches!(event, DesktopEvent::Launch(CommandLineLaunch::NewWindow)) {
+                    crate::ui::open_main_window(crate::ui::MainWindowLaunch::Blank, cx);
+                    return;
+                }
                 let Some(shell) = active_shell(cx) else {
                     return;
                 };
@@ -74,6 +79,7 @@ impl AppShell {
             }
             // The workspace runtime restores or creates it (its initial selection).
             crate::ui::MainWindowLaunch::Workspace { name, .. } => self.workspace_name = name,
+            crate::ui::MainWindowLaunch::Blank => {}
         }
     }
 

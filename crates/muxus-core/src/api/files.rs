@@ -27,7 +27,7 @@ pub struct SftpEntry {
     pub mode: Option<u32>,
     pub owner: Option<String>,
     pub group: Option<String>,
-    /// Short-lived, single-file capability for native drag-out downloads.
+    /// Single-file capability for native drag-out downloads, valid while the connection lasts.
     pub download_ticket: Option<String>,
 }
 

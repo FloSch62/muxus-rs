@@ -21,6 +21,7 @@ mod panes;
 mod paste_dialog;
 mod perf;
 mod prefs;
+mod program_status;
 mod prompts;
 mod scenes;
 mod session_views;
@@ -357,6 +358,8 @@ pub enum MainWindowLaunch {
         id: Option<String>,
         name: String,
     },
+    /// Another, empty window (`--new-window`, the launcher's New Window action).
+    Blank,
 }
 
 /// What every main window is built from.
@@ -404,7 +407,9 @@ pub fn open_main_window(launch: MainWindowLaunch, cx: &mut muxus_ui::gpui_kit::A
                         name: name.clone(),
                     }
                 }
-                MainWindowLaunch::Host(_) | MainWindowLaunch::Session { .. } => {
+                MainWindowLaunch::Host(_)
+                | MainWindowLaunch::Session { .. }
+                | MainWindowLaunch::Blank => {
                     muxus_app::features::workspaces::WorkspaceInitialSelection::Blank
                 }
             };

@@ -31,7 +31,9 @@ splits the output at the sequences Muxus handles itself:
   (queries answered empty on the same transport); **OSC 10/11/12** are answered from the theme and
   set overrides; **XTWINOPS** answers only 14/16/18 t like xterm with Muxus's `windowOptions`;
   **DECSET 9/1000/1002/1003/1006/1016** drive xterm's mouse protocols; **DECSCUSR** overrides the
-  cursor preference.
+  cursor preference; **OSC 7501** (program status) is parsed and passed on as
+  `EmulatorEvent::ProgramStatus`, its support query answered inline. An OSC reply first flushes
+  the engine's own pending answers, so a query fenced with DA1 is answered in order.
 - Unicode 11 widths (the unicode11 addon), kitty keyboard flags from the engine.
 
 ## Status
@@ -41,6 +43,9 @@ splits the output at the sequences Muxus handles itself:
 | Built-in schemes, exact colors, host overrides, font/background color overrides | `terminal/palette.ts` | done | All 15 schemes; `ResolvedPalette` adds the 256-color table and opaque selection. |
 | Custom schemes: validation, copy, Muxus export, Windows Terminal and iTerm2 import, merge | `terminal/custom-schemes.ts` | done | The WeakMap conversion cache is not needed (conversion is pure). |
 | Key encoding (legacy xterm, kitty keyboard protocol, KP_Enter fix, keydown/keypress flow) | `terminal/keyboard-input.ts`, xterm `Keyboard.ts`, `KittyKeyboard.ts`, `CoreBrowserTerminal._keyDown` | done | Ported from xterm.js; GPUI keystrokes are mapped to DOM `key`/`code`/`keyCode`. Win32 input mode (off in Muxus) is not ported. |
+| Option+Left/Right word jumps on macOS (ESC b / ESC f; Kitty event-type encodings untouched) | `terminal/keyboard-input.ts` (c6d0a8f) | done | `normalize_terminal_keyboard_input`; the terminal-keyboard tests are ported. Not run on a Mac. |
+| Program status (OSC 7501): parsing, records, clears by id, eviction, prompt/RIS/session end, summary, labels, support query | `terminal/program-status.ts` (783bb5f) | done | `muxus_term::program_status`; `program-status.test.ts` ported (parsing, records, summary, wiring). The query is answered only while `TerminalSettings::program_status` is on. The tab marks are the app's (`docs/parity/ui-shell.md`). |
+| Box Drawing and Block Elements (U+2500–259F) drawn on the cell grid, clipped to the cell, edges on whole device pixels | `TerminalViewImpl` box-drawing face (1bb4f3c, e4312ab), xterm `customGlyphs` | done | `muxus-term-view/src/box_drawing.rs` draws them as the WebGL renderer does (xterm's definitions, MIT), with Muxus' pixel-rounding patch; nothing reaches the next row. Lines and blocks are quads; arcs and diagonals are antialiased paths. The shades ░▒▓ are 25/50/75 % fills instead of xterm's 2×2 dither. |
 | Muxus key bindings (copy, paste, find, clear, zoom, page scroll) | `keymap/bindings.ts` | partial | Exposed as GPUI actions in the `Terminal` key context; the app binds them from the keymap (the example binds Ctrl+Shift+C/V/F/K and Ctrl+=/-/0). |
 | Terminal fit, cell metrics | `terminal/terminal-fit.ts`, xterm `DomRenderer`, `FitAddon` | done | Font height as Chromium measures it (rounded ascent + descent rounded up), DOM renderer device-pixel rounding, scrollbar width reserved, 90 ms resize settle except the first fit. |
 | Font catalog and fallback stack | `terminal/font-catalog.ts`, `state/prefs.ts` (`terminalFontStack`) | done | Font enumeration (`listLocalFontFamilies`) is the app's. |

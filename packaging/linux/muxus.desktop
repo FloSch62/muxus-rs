@@ -11,3 +11,9 @@ Keywords=ssh;telnet;serial;sftp;terminal;rdp;vnc;
 MimeType=x-scheme-handler/ssh;x-scheme-handler/telnet;
 StartupWMClass=muxus
 StartupNotify=true
+# Listed in the launcher's menu; GNOME also takes it for its own New Window.
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=@EXEC@ --new-window

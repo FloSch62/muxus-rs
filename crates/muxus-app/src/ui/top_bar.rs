@@ -39,6 +39,8 @@ impl AppShell {
         } else {
             layout::TOP_BAR_HEIGHT
         };
+        // The traffic lights stay centered in the bar, focus mode's shorter one included.
+        muxus_ui::widgets::window_frame::place_traffic_lights(window, height);
         let active_tab = self.tabs.active_tab().cloned();
         let ssh_ready = active_tab
             .as_ref()

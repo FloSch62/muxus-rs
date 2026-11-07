@@ -191,3 +191,93 @@ fn a_restored_tab_replays_its_stored_output(cx: &mut TestAppContext) {
     let notice = text.find("[restored session]").unwrap();
     assert!(replay < notice, "{text}");
 }
+
+/// A program reporting with OSC 7501 marks its tab: work in progress until the next prompt,
+/// a finished result until the tab is looked at.
+#[gpui::test]
+fn programs_mark_their_tab_until_it_is_looked_at(cx: &mut TestAppContext) {
+    use muxus_term::program_status::ProgramState;
+
+    let fx = Fixture::start(|_| {});
+    let window = main_window(&fx, cx);
+    let build = window
+        .update(cx, |shell, window, cx| {
+            let build = shell
+                .tabs
+                .open(muxus_app::model::ssh_profile("box"), "build");
+            shell.tabs_changed(cx);
+            window.refresh();
+            build
+        })
+        .unwrap();
+    wait_until(cx, Duration::from_secs(20), "the session", |cx| {
+        window
+            .update(cx, |shell, window, _| {
+                window.refresh();
+                shell
+                    .tabs
+                    .tab(&build)
+                    .is_some_and(|tab| tab.status == muxus_app::state::tabs::TabStatus::Connected)
+            })
+            .unwrap()
+    });
+    // The user is in another window.
+    window
+        .update(cx, |shell, _, _| shell.window_active = false)
+        .unwrap();
+    let output = |cx: &mut TestAppContext, data: &str| {
+        window
+            .update(cx, |shell, window, cx| {
+                let view = shell.terminals[&build].view.clone();
+                view.update(cx, |view, cx| view.write_output(data.as_bytes(), cx));
+                window.refresh();
+            })
+            .unwrap();
+        cx.run_until_parked();
+    };
+    let shown = |cx: &mut TestAppContext| {
+        window
+            .update(cx, |shell, _, _| {
+                shell
+                    .program_status
+                    .summary(&build)
+                    .map(|record| (record.state, record.app))
+            })
+            .unwrap()
+    };
+
+    output(cx, "\x1b]7501;state=working:app=make\x07");
+    assert_eq!(
+        shown(cx),
+        Some((ProgramState::Working, Some("make".into())))
+    );
+    // A new prompt ends the work in progress.
+    output(cx, "\x1b]133;A\x07");
+    assert_eq!(shown(cx), None);
+
+    // The build finishes while nobody looks: the result stays, past the next prompt.
+    output(cx, "\x1b]7501;state=error:app=make\x07\x1b]133;A\x07");
+    assert_eq!(shown(cx), Some((ProgramState::Error, Some("make".into()))));
+    // Coming back to the window with the tab active is looking at it.
+    window
+        .update(cx, |shell, window, _| {
+            shell.window_active = true;
+            window.refresh();
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(shown(cx), None);
+    // A result that finishes in the tab being watched never shows.
+    output(cx, "\x1b]7501;state=done:id=again\x07");
+    assert_eq!(shown(cx), None);
+
+    // Turned off, reports are not taken in.
+    window
+        .update(cx, |shell, _, cx| {
+            shell.prefs.show_program_status = false;
+            shell.refresh_terminal_settings(cx);
+        })
+        .unwrap();
+    output(cx, "\x1b]7501;state=blocked:id=x\x07");
+    assert_eq!(shown(cx), None);
+}

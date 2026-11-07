@@ -96,6 +96,11 @@ fn canonical_code(token: &str) -> String {
 }
 
 pub fn parse_chord(text: &str) -> Option<Chord> {
+    parse_chord_on(text, IS_MAC)
+}
+
+/// [`parse_chord`] as another platform reads it (`Mod` is Command on macOS).
+pub fn parse_chord_on(text: &str, is_mac: bool) -> Option<Chord> {
     let mut parts: Vec<&str> = text
         .split('+')
         .map(str::trim)
@@ -115,7 +120,7 @@ pub fn parse_chord(text: &str) -> Option<Chord> {
     for part in parts {
         match part.to_lowercase().as_str() {
             "mod" => {
-                if IS_MAC {
+                if is_mac {
                     chord.meta = true;
                 } else {
                     chord.ctrl = true;

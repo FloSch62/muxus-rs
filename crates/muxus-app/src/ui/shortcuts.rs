@@ -72,18 +72,23 @@ impl AppShell {
             HELD_BUTTON.with(|held| held.borrow_mut().take());
         }
         let index = BindingIndex::new(&self.keybinding_overrides());
+        let in_terminal = window
+            .context_stack()
+            .iter()
+            .any(|context| context.contains(TERMINAL_KEY_CONTEXT));
         for command in index.commands_for_event(&chord) {
+            // A command that types into the active session only answers keys the terminal
+            // itself would have taken, never one aimed at a dialog or the sidebar.
+            if command.types_into_session && !in_terminal {
+                continue;
+            }
             if self.run_command(&command.id, window, cx) {
                 cx.stop_propagation();
                 return;
             }
         }
         // A button types into the focused session, so its shortcut answers only there.
-        let terminal_focused = window
-            .context_stack()
-            .iter()
-            .any(|context| context.contains(TERMINAL_KEY_CONTEXT));
-        if !terminal_focused {
+        if !in_terminal {
             return;
         }
         let buttons = self.prefs.command_buttons.clone();

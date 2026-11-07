@@ -51,6 +51,25 @@ impl SftpLease {
             Self::System(lease) => lease.release(),
         }
     }
+
+    /// Completes when the connection underneath closes (`SftpConnection.onClose`). It holds
+    /// the connection, not this lease, so waiting keeps nothing open.
+    pub(crate) fn connection_closed(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
+        match self {
+            Self::Ssh(lease) => {
+                let connection = lease.connection().clone();
+                Box::pin(async move {
+                    connection.closed().await;
+                })
+            }
+            Self::System(lease) => {
+                let connection = lease.connection().clone();
+                Box::pin(async move { connection.closed().await })
+            }
+        }
+    }
 }
 
 /// Keeps a connection alive while a file browser (or editor) window shows it.

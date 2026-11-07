@@ -406,7 +406,13 @@ pub fn resolution_error<T>(
     let label = kind.label();
     match resolution {
         TargetResolution::Found(_) => None,
-        TargetResolution::NotFound => Some(format!("No {label} named “{name}” was found.")),
+        // Jump list entries name hosts and workspaces by ID, which means nothing to the user.
+        TargetResolution::NotFound if kind == CommandLineTargetKind::Folder => {
+            Some(format!("No folder named “{name}” was found."))
+        }
+        TargetResolution::NotFound => Some(format!(
+            "This {label} is no longer in Muxus. It may have been renamed or deleted."
+        )),
         TargetResolution::Ambiguous { .. } => Some(format!(
             "More than one {label} matches “{name}”. Use its exact {}.",
             if kind == CommandLineTargetKind::Folder {

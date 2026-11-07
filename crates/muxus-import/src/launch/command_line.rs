@@ -1,6 +1,7 @@
 //! Desktop command-line arguments (port of `electron/src/command-line.ts`):
 //! `--host`, `--folder`, `--workspace`, `--connect` with `--user`/`--port`,
-//! and ssh:// or telnet:// links handed over by the system URL handler.
+//! `--new-window`, and ssh:// or telnet:// links handed over by the system URL
+//! handler.
 
 use muxus_core::api::{AppWindowLaunch, CommandLineLaunch};
 use muxus_core::connection_links::{
@@ -27,6 +28,9 @@ enum TargetFlag {
     Workspace,
     Connect,
 }
+
+/// Takes no value; a running Muxus opens another, empty window.
+const NEW_WINDOW_FLAG: &str = "--new-window";
 
 fn target_flag(flag: &str) -> Option<TargetFlag> {
     match flag {
@@ -178,6 +182,14 @@ pub fn parse_command_line_launch<S: AsRef<str>>(argv: &[S]) -> Option<CommandLin
             index += 1;
             continue;
         }
+        if argument == NEW_WINDOW_FLAG {
+            if launch.is_some() {
+                return None;
+            }
+            launch = Some(CommandLineLaunch::NewWindow);
+            index += 1;
+            continue;
+        }
         let separator = argument.find('=');
         let flag = separator.map_or(argument, |separator| &argument[..separator]);
         let kind = target_flag(flag);
@@ -195,7 +207,12 @@ pub fn parse_command_line_launch<S: AsRef<str>>(argv: &[S]) -> Option<CommandLin
             Some(separator) => Some(&argument[separator + 1..]),
         };
         let value = raw_value.map(js::js_trim).unwrap_or("");
-        if value.is_empty() || value.starts_with("--") || js::utf16_len(value) > MAX_TARGET_LENGTH {
+        // A value starting with -- only after =, as generated IDs may: split from its flag,
+        // it is the next flag instead.
+        if value.is_empty()
+            || (separator.is_none() && value.starts_with("--"))
+            || js::utf16_len(value) > MAX_TARGET_LENGTH
+        {
             return None;
         }
         if let Some(option) = option {
@@ -238,6 +255,9 @@ pub fn parse_command_line_launch<S: AsRef<str>>(argv: &[S]) -> Option<CommandLin
 pub fn parse_command_line_launch_data(value: &serde_json::Value) -> Option<CommandLineLaunch> {
     let candidate = value.as_object()?;
     let kind = candidate.get("kind")?.as_str()?;
+    if kind == "new-window" {
+        return Some(CommandLineLaunch::NewWindow);
+    }
     if !matches!(kind, "host" | "folder" | "workspace" | "connect" | "url") {
         return None;
     }

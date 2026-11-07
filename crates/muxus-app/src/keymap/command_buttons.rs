@@ -55,6 +55,8 @@ pub fn command_button_commands(buttons: &[CommandButton]) -> Vec<KeyCommand> {
                 keywords: Vec::new(),
                 palette: false,
                 in_editor: false,
+                // Buttons answer only in a terminal by their category already.
+                types_into_session: false,
             })
         })
         .collect()

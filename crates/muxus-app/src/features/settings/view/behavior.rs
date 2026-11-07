@@ -24,6 +24,22 @@ impl SettingsWindow {
                 prefs.confirm_close_connected,
                 |p, value| p.confirm_close_connected = value,
             ))
+            .row(self.switch_row(
+                &theme,
+                "settings-close-tab-on-exit",
+                "Close the tab when its shell exits",
+                Some("After exit, logout or Ctrl+D, the tab closes instead of offering to reconnect. A shell that exits with an error, a lost connection, a serial console and a pinned tab stay open."),
+                prefs.close_tab_on_clean_exit,
+                |p, value| p.close_tab_on_clean_exit = value,
+            ))
+            .row(self.switch_row(
+                &theme,
+                "settings-program-status",
+                "Show program status on tabs",
+                Some("Programs that report their state with OSC 7501, such as coding agents and long builds, mark their tab while they work, when they wait for you, and when they finish or fail."),
+                prefs.show_program_status,
+                |p, value| p.show_program_status = value,
+            ))
             .render(&theme);
         let gesture = self.select_row(
             &theme,

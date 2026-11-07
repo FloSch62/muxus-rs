@@ -25,9 +25,10 @@ impl DesktopEvent {
 }
 
 /// The launch this process was started with (`initialCommandLineLaunch`); `argv` is the whole
-/// command line, executable first.
+/// command line, executable first. `--new-window` is none: starting up already opens a window,
+/// with the startup workspace as usual.
 pub fn initial_launch(argv: &[String]) -> Option<CommandLineLaunch> {
-    parse_command_line_launch(argv)
+    parse_command_line_launch(argv).filter(|launch| *launch != CommandLineLaunch::NewWindow)
 }
 
 /// Sends desktop events; cheap to clone, never blocks.
@@ -107,6 +108,10 @@ mod tests {
             })
         );
         assert_eq!(initial_launch(&["muxus".to_string()]), None);
+        assert_eq!(
+            initial_launch(&["muxus".to_string(), "--new-window".to_string()]),
+            None
+        );
     }
 
     #[test]

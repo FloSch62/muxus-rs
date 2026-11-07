@@ -29,6 +29,7 @@ derived from someone else's code or design.
 | Theme tokens and component geometry in `crates/muxus-ui` (palette augmentation, action colors, typography scale, shadows, Button/IconButton/TextField/Menu/Tooltip/Dialog/Tabs/Chip/Alert/Checkbox/Radio/Switch measurements) | MUI (`@mui/material`) defaults as configured by Muxus' `client/src/theme.ts`; values re-derived from MUI's documented defaults and measured in the running client. | MIT (MUI) |
 | `crates/muxus-ui/src/color.rs` (`lighten`, `darken`, `alpha`, contrast ratio) | Same formulas as MUI's `colorManipulator`. | MIT (MUI) |
 | Code editor colors in `crates/muxus-ui/src/syntax.rs` and `crates/muxus-app/src/util/code_editor.rs` (the `vs`/`vs-dark` token colors, bracket pair colors by depth, fold controls on hover) | Monaco Editor's built-in themes and defaults, as the Muxus client shows them; values only, no source copied. | MIT (Monaco Editor) |
+| Box Drawing and Block Elements shapes in `crates/muxus-term-view/src/box_drawing.rs` (the line paths, light and heavy weights, double-line gaps, arcs and eighth-cell blocks) | Adapted from xterm.js's `CustomGlyphDefinitions.ts` and `CustomGlyphRasterizer.ts` (`@xterm/addon-webgl`), with Muxus' patch that rounds block edges to whole device pixels. Copyright (c) 2021 The xterm.js authors. | MIT (xterm.js) |
 | GPUI and gpui-component (`gpui-kit`, `gpui-pre`) | Used as dependencies; the unstyled text input of `gpui-base` backs `TextField`. No source is copied. | Apache License 2.0 |
 
 ## Vendored crates (`vendor/`)

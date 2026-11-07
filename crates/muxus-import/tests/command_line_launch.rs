@@ -272,7 +272,10 @@ fn plans_each_request_kind_with_its_message() {
         catalogs,
     );
     assert_eq!(action, LaunchAction::Fail);
-    assert_eq!(message.as_deref(), Some("No host named “nope” was found."));
+    assert_eq!(
+        message.as_deref(),
+        Some("This host is no longer in Muxus. It may have been renamed or deleted.")
+    );
 
     let (action, message) = plan_command_line_launch(
         &CommandLineLaunch::Folder {
@@ -335,7 +338,7 @@ fn plans_each_request_kind_with_its_message() {
     );
     assert_eq!(
         message.as_deref(),
-        Some("No workspace named “day” was found.")
+        Some("This workspace is no longer in Muxus. It may have been renamed or deleted.")
     );
     assert_eq!(
         resolution_error(

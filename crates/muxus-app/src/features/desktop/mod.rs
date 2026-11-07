@@ -26,6 +26,7 @@
 pub mod app_menu;
 pub mod events;
 pub mod launch;
+pub mod launch_menu;
 pub mod links_view;
 pub mod main_log;
 pub mod single_instance;

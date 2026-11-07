@@ -130,17 +130,6 @@ const FILE_SECTIONS: &[(&str, SettingsSection)] = &[
 /// Fields of the profile or scheme picked in a list, found through their group.
 const LIST_EDITOR_ROWS: [&str; 3] = ["Scheme", "Profile", "Name"];
 
-/// Settings the index already lists whose rows other ports bring to these
-/// views. Being listed here lets a row be missing from the views; once the
-/// row is there, this list no longer matters for it.
-const NOT_YET_IN_VIEWS: &[(SettingsSection, &str)] = &[
-    (
-        SettingsSection::Behavior,
-        "Close the tab when its shell exits",
-    ),
-    (SettingsSection::Behavior, "Show program status on tabs"),
-];
-
 fn source(file: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src/features/settings")
@@ -220,14 +209,7 @@ fn lists_every_setting_row_and_group_in_the_section_that_shows_it() {
         unindexed.is_empty(),
         "rows missing from SETTINGS_SEARCH_INDEX: {unindexed:?}"
     );
-    let pending: BTreeSet<String> = NOT_YET_IN_VIEWS
-        .iter()
-        .map(|(section, label)| format!("{}|{label}", section.id()))
-        .collect();
-    let stale: Vec<&String> = indexed_rows
-        .difference(&source_rows)
-        .filter(|row| !pending.contains(*row))
-        .collect();
+    let stale: Vec<&String> = indexed_rows.difference(&source_rows).collect();
     assert!(stale.is_empty(), "indexed rows no view shows: {stale:?}");
     assert_eq!(indexed_groups, source_groups);
 }

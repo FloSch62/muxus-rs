@@ -692,23 +692,42 @@ fn kitty_csi_u_sequence(
 
 const KITTY_KEYPAD_ENTER: &str = "\u{e046}";
 
-/// Work around xterm's Kitty encoder exposing KP_Enter's private-use code point on macOS when no
-/// negotiated mode encoded it as a CSI-u sequence.
+/// Option+Left/Right as xterm encodes them (`CSI 1 ; 3 D` / `CSI 1 ; 3 C`), and the word motions
+/// they send instead.
+fn option_word_jump(code: &str) -> Option<(&'static str, &'static str)> {
+    match code {
+        "ArrowLeft" => Some(("\x1b[1;3D", "\x1bb")),
+        "ArrowRight" => Some(("\x1b[1;3C", "\x1bf")),
+        _ => None,
+    }
+}
+
+/// Patch up the bytes encoded for a keystroke before they reach the session:
+///
+/// - xterm's Kitty encoder exposes KP_Enter's private-use code point on macOS when no
+///   negotiated mode encoded it as a CSI-u sequence.
+/// - Option+Left/Right jump by word on macOS, as in Terminal.app and iTerm2. ESC b / ESC f are
+///   the word motions readline, zle, fish and network-device CLIs understand by default; the
+///   raw Alt+Arrow sequence is rarely bound.
 pub fn normalize_terminal_keyboard_input(
     data: &str,
     event: Option<&KeyboardEvent>,
     is_mac: bool,
 ) -> String {
-    if is_mac
-        && data == KITTY_KEYPAD_ENTER
-        && let Some(event) = event
-        && event.code == "NumpadEnter"
-        && !event.alt
-        && !event.ctrl
-        && !event.meta
-        && !event.shift
-    {
+    let Some(event) = event.filter(|event| is_mac && !event.ctrl && !event.meta && !event.shift)
+    else {
+        return data.into();
+    };
+    if !event.alt && data == KITTY_KEYPAD_ENTER && event.code == "NumpadEnter" {
         return "\r".into();
+    }
+    // Only the plain press encoding: Kitty modes that report event types or other key detail
+    // produce different bytes and pass through untouched.
+    if event.alt
+        && let Some((encoded, motion)) = option_word_jump(&event.code)
+        && data == encoded
+    {
+        return motion.into();
     }
     data.into()
 }
@@ -1038,6 +1057,91 @@ mod tests {
         assert_eq!(
             normalize_terminal_keyboard_input("\u{e046}", None, true),
             "\u{e046}"
+        );
+    }
+
+    fn option_arrow(code: &str, shift: bool) -> KeyboardEvent {
+        KeyboardEvent {
+            code: code.into(),
+            alt: true,
+            shift,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn turns_option_left_and_right_into_word_motions_on_macos() {
+        assert_eq!(
+            normalize_terminal_keyboard_input(
+                "\x1b[1;3D",
+                Some(&option_arrow("ArrowLeft", false)),
+                true
+            ),
+            "\x1bb"
+        );
+        assert_eq!(
+            normalize_terminal_keyboard_input(
+                "\x1b[1;3C",
+                Some(&option_arrow("ArrowRight", false)),
+                true
+            ),
+            "\x1bf"
+        );
+    }
+
+    #[test]
+    fn leaves_other_arrow_chords_and_non_macos_alt_arrow_untouched() {
+        assert_eq!(
+            normalize_terminal_keyboard_input(
+                "\x1b[1;3D",
+                Some(&option_arrow("ArrowLeft", false)),
+                false
+            ),
+            "\x1b[1;3D"
+        );
+        assert_eq!(
+            normalize_terminal_keyboard_input(
+                "\x1b[1;4D",
+                Some(&option_arrow("ArrowLeft", true)),
+                true
+            ),
+            "\x1b[1;4D"
+        );
+        assert_eq!(
+            normalize_terminal_keyboard_input("\x1b[D", Some(&key_event("ArrowLeft", false)), true),
+            "\x1b[D"
+        );
+        assert_eq!(
+            normalize_terminal_keyboard_input("\x1b[1;3D", None, true),
+            "\x1b[1;3D"
+        );
+    }
+
+    #[test]
+    fn preserves_kitty_encodings_that_report_key_event_types() {
+        let kitty_option_left_press = "\x1b[1;3:1D";
+        assert_eq!(
+            normalize_terminal_keyboard_input(
+                kitty_option_left_press,
+                Some(&option_arrow("ArrowLeft", false)),
+                true
+            ),
+            kitty_option_left_press
+        );
+    }
+
+    #[test]
+    fn option_left_reaches_the_shell_as_a_word_motion_through_the_key_flow() {
+        let ctx = KeyEncodeContext {
+            is_mac: true,
+            ..Default::default()
+        };
+        let mut left = option_arrow("ArrowLeft", false);
+        left.key = "ArrowLeft".into();
+        left.key_code = 37;
+        assert_eq!(
+            key_down(&left, None, &ctx, true),
+            KeyAction::Send("\x1bb".into())
         );
     }
 

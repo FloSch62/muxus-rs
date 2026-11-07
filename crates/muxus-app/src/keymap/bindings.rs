@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::chords::{ChordEvent, chord_signature, event_signature, parse_chord};
+use super::chords::{ChordEvent, IS_MAC, chord_signature, event_signature, parse_chord_on};
 use super::commands::{KEY_COMMANDS, KeyCommand};
 
 /// Command id → chords, replacing that command's defaults. An empty list
@@ -35,7 +35,7 @@ pub fn chords_are_default(command: &KeyCommand, chords: &[String]) -> bool {
 }
 
 fn same_chord(left: &str, right: &str) -> bool {
-    match (parse_chord(left), parse_chord(right)) {
+    match (parse_chord_on(left, IS_MAC), parse_chord_on(right, IS_MAC)) {
         (Some(left), Some(right)) => chord_signature(&left) == chord_signature(&right),
         _ => left == right,
     }
@@ -51,10 +51,20 @@ pub struct BindingIndex {
 
 impl BindingIndex {
     pub fn new(overrides: &KeybindingOverrides) -> Self {
+        Self::for_catalog(&KEY_COMMANDS, overrides, IS_MAC)
+    }
+
+    /// The index over another catalog, read as `is_mac` says (the keymap of another
+    /// platform, for tests).
+    pub fn for_catalog(
+        commands: &'static [KeyCommand],
+        overrides: &KeybindingOverrides,
+        is_mac: bool,
+    ) -> Self {
         let mut by_signature: HashMap<String, Vec<&'static KeyCommand>> = HashMap::new();
-        for command in KEY_COMMANDS.iter() {
+        for command in commands {
             for text in command_chords(command, overrides) {
-                let Some(chord) = parse_chord(text) else {
+                let Some(chord) = parse_chord_on(text, is_mac) else {
                     continue;
                 };
                 by_signature
@@ -91,7 +101,7 @@ pub fn build_binding_index(overrides: &KeybindingOverrides) -> BindingIndex {
 
 /// Commands that a chord would trigger, most relevant first.
 pub fn commands_for_chord(text: &str, overrides: &KeybindingOverrides) -> Vec<&'static KeyCommand> {
-    let Some(chord) = parse_chord(text) else {
+    let Some(chord) = parse_chord_on(text, IS_MAC) else {
         return Vec::new();
     };
     BindingIndex::new(overrides)
@@ -126,7 +136,7 @@ pub fn commands_for_event(
 
 #[cfg(all(test, not(target_os = "macos")))]
 mod tests {
-    use super::super::chords::key_event;
+    use super::super::chords::{key_event, parse_chord};
     use super::super::commands::key_command;
     use super::*;
 
@@ -374,5 +384,151 @@ mod tests {
             event_ids(alt("ArrowLeft", "ArrowLeft")),
             vec!["pane.focus.left"]
         );
+    }
+}
+
+/// The keymap as each platform builds it (`keymapOn` in keymap.test.ts): `Mod` and the
+/// macOS-only chords are fixed when the catalog is built.
+#[cfg(test)]
+mod platform_tests {
+    use super::super::chords::key_event;
+    use super::super::commands::build_commands_for;
+    use super::*;
+
+    fn catalog(is_mac: bool) -> &'static [KeyCommand] {
+        Box::leak(build_commands_for(is_mac).into_boxed_slice())
+    }
+
+    struct Keymap {
+        commands: &'static [KeyCommand],
+        index: BindingIndex,
+    }
+
+    fn keymap_on(is_mac: bool) -> Keymap {
+        let commands = catalog(is_mac);
+        Keymap {
+            commands,
+            index: BindingIndex::for_catalog(commands, &KeybindingOverrides::new(), is_mac),
+        }
+    }
+
+    impl Keymap {
+        fn command_ids(
+            &self,
+            code: &str,
+            ctrl: bool,
+            alt: bool,
+            shift: bool,
+            meta: bool,
+        ) -> Vec<&str> {
+            self.index
+                .commands_for_event(&key_event(code, code, ctrl, alt, shift, meta))
+                .iter()
+                .map(|command| command.id.as_str())
+                .collect()
+        }
+
+        fn conflicts(&self) -> Vec<&str> {
+            self.index
+                .signatures()
+                .filter(|(_, commands)| commands.len() > 1)
+                .flat_map(|(_, commands)| commands.iter().map(|command| command.id.as_str()))
+                .collect()
+        }
+
+        fn command(&self, id: &str) -> &KeyCommand {
+            self.commands
+                .iter()
+                .find(|command| command.id == id)
+                .unwrap()
+        }
+    }
+
+    // ---- line jumps ----
+
+    #[test]
+    fn line_jumps_take_exactly_command_left_and_right_on_macos() {
+        let mac = keymap_on(true);
+        assert_eq!(
+            mac.command_ids("ArrowLeft", false, false, false, true),
+            ["terminal.line-start"]
+        );
+        assert_eq!(
+            mac.command_ids("ArrowRight", false, false, false, true),
+            ["terminal.line-end"]
+        );
+        assert_eq!(
+            mac.command_ids("ArrowLeft", false, false, true, true),
+            ["pane.split.left"]
+        );
+        assert_eq!(
+            mac.command_ids("ArrowLeft", false, true, false, true),
+            ["pane.focus.left"]
+        );
+        assert!(
+            mac.command_ids("ArrowLeft", true, false, false, false)
+                .is_empty()
+        );
+        assert!(mac.conflicts().is_empty(), "{:?}", mac.conflicts());
+    }
+
+    #[test]
+    fn line_jumps_have_no_default_chord_on_windows_and_linux() {
+        let other = keymap_on(false);
+        assert!(
+            other
+                .command("terminal.line-start")
+                .default_chords
+                .is_empty()
+        );
+        assert!(other.command("terminal.line-end").default_chords.is_empty());
+        assert!(
+            other
+                .command_ids("ArrowLeft", true, false, false, false)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn line_jumps_only_answer_chords_pressed_in_a_focused_terminal() {
+        for is_mac in [true, false] {
+            let keymap = keymap_on(is_mac);
+            assert!(keymap.command("terminal.line-start").types_into_session);
+            assert!(keymap.command("terminal.line-end").types_into_session);
+            assert!(!keymap.command("terminal.copy").types_into_session);
+        }
+    }
+
+    // ---- pane focus keys ----
+
+    #[test]
+    fn pane_focus_leaves_option_arrow_to_word_jumps_on_macos() {
+        let mac = keymap_on(true);
+        // Two panes side by side must not turn the word jump into a focus change.
+        assert!(
+            mac.command_ids("ArrowLeft", false, true, false, false)
+                .is_empty()
+        );
+        assert!(
+            mac.command_ids("ArrowRight", false, true, false, false)
+                .is_empty()
+        );
+        for direction in ["Left", "Right", "Up", "Down"] {
+            assert_eq!(
+                mac.command_ids(&format!("Arrow{direction}"), false, true, false, true),
+                [format!("pane.focus.{}", direction.to_lowercase())]
+            );
+        }
+        assert!(mac.conflicts().is_empty());
+    }
+
+    #[test]
+    fn pane_focus_stays_on_alt_arrow_on_windows_and_linux() {
+        let other = keymap_on(false);
+        assert_eq!(
+            other.command_ids("ArrowLeft", false, true, false, false),
+            ["pane.focus.left"]
+        );
+        assert!(other.conflicts().is_empty());
     }
 }
