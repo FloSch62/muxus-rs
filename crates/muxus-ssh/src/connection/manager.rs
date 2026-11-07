@@ -1219,7 +1219,7 @@ impl SshConnectionManager {
         let result = self
             .dial_chain(
                 &chain,
-                &profile,
+                profile,
                 io.clone(),
                 owner,
                 &key,
