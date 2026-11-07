@@ -19,7 +19,8 @@ use crate::diagnostics::{
 };
 use crate::error::{ApiError, ApiResult};
 use crate::stats::{
-    HostStatsReading, host_stats_response, read_local_host_stats, read_remote_host_stats,
+    HostStatsReading, host_stats_response, read_host_stats_with, read_local_host_stats,
+    read_remote_host_stats,
 };
 
 /// The real network, `ping`, agent and disk, with the backend's own environment and home (so a
@@ -125,7 +126,10 @@ impl Backend {
     }
 
     /// `GET /api/host-stats/ssh/:connId`: the far end of a live SSH connection. Several windows
-    /// polling the same connection share one exec channel.
+    /// polling the same connection share one exec channel. A connection whose server never ran
+    /// a command (a router CLI, a console server) is not asked at all: some of them drop the
+    /// whole connection when another channel asks to exec. A system OpenSSH session reads over
+    /// the login its terminal shares, once the host has shown it runs commands.
     pub async fn ssh_host_stats(&self, conn_id: &str) -> ApiResult<HostStatsResponse> {
         let conn_id = conn_id.to_string();
         self.run(move |shared| async move {
@@ -134,9 +138,23 @@ impl Backend {
             let reading = shared
                 .host_stats
                 .read(&key, || async move {
+                    if let Some(system) = connections.system_sessions().acquire(&conn_id) {
+                        let session = system.connection().clone();
+                        if !session.runs_commands().await? {
+                            return Ok(HostStatsReading::Unsupported);
+                        }
+                        return read_host_stats_with(|script| {
+                            let session = session.clone();
+                            async move { session.run_script(&script).await }
+                        })
+                        .await;
+                    }
                     let lease = connections
                         .acquire(&conn_id, ConnectionLeaseOwner::Stats)
                         .ok_or_else(|| "\u{0}connection not found".to_string())?;
+                    if !lease.connection().ran_command() {
+                        return Ok(HostStatsReading::Unsupported);
+                    }
                     let command = ConnectionCommand(lease.connection().clone());
                     let reading = read_remote_host_stats(&command).await;
                     drop(lease);

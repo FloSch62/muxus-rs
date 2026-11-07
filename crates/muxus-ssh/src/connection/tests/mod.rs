@@ -2,6 +2,7 @@
 
 mod algorithms;
 mod auth;
+mod fallbacks;
 mod mux;
 mod session;
 

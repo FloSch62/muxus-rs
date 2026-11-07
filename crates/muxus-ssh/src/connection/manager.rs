@@ -38,7 +38,7 @@ use crate::known_hosts::KnownHostsStore;
 use crate::local_env::LocalEnv;
 use crate::remote_shell_integration::{
     MAX_PROBE_OUTPUT, OpenShellError, PROBE_TIMEOUT, RemoteFileKind, RemoteShellHost,
-    RemoteShellSftp, RemoteShellTransportLost, open_remote_shell,
+    RemoteShellSftp, RemoteShellTransportLost, ShellProbeMemo, open_remote_shell,
 };
 use crate::responsive_agent::{DEFAULT_AGENT_OPERATION_TIMEOUT, DEFAULT_AGENT_WAIT_STATUS};
 use crate::types::ConfigForward;
@@ -66,6 +66,11 @@ pub struct ManagerOptions {
     pub console_compatibility_for_host: Option<Lookup<bool>>,
     pub disable_sftp_for_profile: Option<Lookup<bool>>,
     pub console_compatibility_for_profile: Option<Lookup<bool>>,
+    /// Muxus-owned fallback jump routes for an ssh_config alias.
+    pub jump_fallbacks_for_host: Option<Lookup<Vec<Vec<String>>>>,
+    /// Hosts set to connect through the computer's `ssh` program, by alias and by saved host.
+    pub system_open_ssh_for_host: Option<Lookup<bool>>,
+    pub system_open_ssh_for_profile: Option<Lookup<bool>>,
     pub agent_operation_timeout: Duration,
     pub agent_wait_status: Option<Duration>,
     /// Local X server for X11 forwarding; absent disables it.
@@ -96,6 +101,9 @@ impl ManagerOptions {
             console_compatibility_for_host: None,
             disable_sftp_for_profile: None,
             console_compatibility_for_profile: None,
+            jump_fallbacks_for_host: None,
+            system_open_ssh_for_host: None,
+            system_open_ssh_for_profile: None,
             agent_operation_timeout: DEFAULT_AGENT_OPERATION_TIMEOUT,
             agent_wait_status: Some(DEFAULT_AGENT_WAIT_STATUS),
             x11: None,
@@ -142,6 +150,8 @@ pub struct ManagedConnection {
     closed: watch::Receiver<bool>,
     ending: AtomicBool,
     jump_route: Option<Arc<JumpHop>>,
+    /// What the shell probe learned about this transport.
+    shell_probe: ShellProbeMemo,
     /// The transport's X11 forwarding state (fake cookie, refusal).
     x11: Option<crate::x11::X11Transport>,
     sftp: tokio::sync::Mutex<Option<Arc<SftpChannel>>>,
@@ -250,6 +260,13 @@ impl ManagedConnection {
     /// *Forward lines resolved from ssh config: auto-started once the session is up.
     pub fn config_forwards(&self) -> Vec<ConfigForward> {
         lock(&self.config_forwards).clone()
+    }
+
+    /// Whether the server has run a shell command for Muxus on this transport. Only then may
+    /// optional extras open exec channels: some network devices drop the whole connection when
+    /// a second channel asks for one.
+    pub fn ran_command(&self) -> bool {
+        self.shell_probe.ran_command()
     }
 
     pub fn superseded(&self) -> bool {
@@ -421,7 +438,7 @@ impl ManagedConnection {
                 conn: self,
                 request,
             };
-            return open_remote_shell(&host, cwd).await;
+            return open_remote_shell(&host, cwd, Some(&self.shell_probe)).await;
         }
         // Console compatibility drops SendEnv/SetEnv: an env request before pty-req is an order
         // some appliances answer with a protocol-error disconnect, and a serial console has no
@@ -658,6 +675,12 @@ struct ManagerInner {
     /// Dial plans whose optional integration setup killed the remote transport; reset on app
     /// restart.
     automatic_plain_shell_keys: Mutex<HashSet<String>>,
+    /// The fallback route that worked last for a host (index into its routes), so a retry does
+    /// not wait on a dead primary.
+    last_working_route: Mutex<HashMap<String, usize>>,
+    /// Terminals running the computer's `ssh` program, whose login the file browser and the
+    /// status bar share.
+    system_sessions: crate::system_openssh::SystemOpenSshSessions,
 }
 
 /// Shares SSH transports between terminals, file browsers, forwards and editors.
@@ -688,6 +711,8 @@ impl SshConnectionManager {
                 pending_dials: Mutex::new(HashMap::new()),
                 next_dial: Mutex::new(0),
                 automatic_plain_shell_keys: Mutex::new(HashSet::new()),
+                last_working_route: Mutex::new(HashMap::new()),
+                system_sessions: crate::system_openssh::SystemOpenSshSessions::default(),
             }),
         }
     }
@@ -736,10 +761,50 @@ impl SshConnectionManager {
         self.inner.connections.get(id)
     }
 
-    /// Force-closes every transport and jump hop (application shutdown).
+    /// Force-closes every transport and jump hop (application shutdown), and ends every system
+    /// OpenSSH session.
     pub fn close_all(&self) {
         self.inner.connections.close_all();
         self.inner.jump_hops.close_all();
+        self.inner.system_sessions.close_all();
+    }
+
+    /// The live system OpenSSH sessions, by the connId their tabs were given.
+    pub fn system_sessions(&self) -> &crate::system_openssh::SystemOpenSshSessions {
+        &self.inner.system_sessions
+    }
+
+    /// The ssh_config alias whose Muxus metadata the window applies to a tab dialing this
+    /// profile (`listedMetadataAliasFor`).
+    pub fn listed_metadata_alias_for(&self, profile: &SshProfile) -> Option<String> {
+        if !crate::connection::profile::uses_config(profile) || profile.profile_id.is_some() {
+            return None;
+        }
+        super::chain::listed_metadata_alias(&(self.inner.options.load_config)(), &profile.target)
+    }
+
+    /// Whether a tab to this profile runs the computer's `ssh` program.
+    pub fn uses_system_open_ssh(&self, profile: &SshProfile) -> bool {
+        let o = &self.inner.options;
+        if let Some(id) = &profile.profile_id {
+            return Self::lookup_bool(&o.system_open_ssh_for_profile, Some(id));
+        }
+        if o.system_open_ssh_for_host.is_none() {
+            return false;
+        }
+        let alias = self.listed_metadata_alias_for(profile);
+        Self::lookup_bool(&o.system_open_ssh_for_host, alias.as_deref())
+    }
+
+    /// Whether a system OpenSSH host's settings leave SFTP on. Console compatibility shapes the
+    /// built-in client's session, so the host editor greys it out for these hosts.
+    pub fn sftp_allowed_for(&self, profile: &SshProfile) -> bool {
+        let o = &self.inner.options;
+        if let Some(id) = &profile.profile_id {
+            return !Self::lookup_bool(&o.disable_sftp_for_profile, Some(id));
+        }
+        let alias = self.listed_metadata_alias_for(profile);
+        !Self::lookup_bool(&o.disable_sftp_for_host, alias.as_deref())
     }
 
     fn chain_for(
@@ -833,7 +898,8 @@ impl SshConnectionManager {
     /// SSH connection, which also keeps Muxus inside server-side connection caps (MaxStartups,
     /// per-user limits). Concurrent dials to the same plan (workspace restore) collapse into one
     /// connection and one auth round-trip. A transport that still has to be dialed rides any jump
-    /// hop already connected for its route.
+    /// hop already connected for its route. A host with fallback jump routes tries them in
+    /// order when its route fails before the target answers.
     pub async fn connect(
         &self,
         profile: &SshProfile,
@@ -842,15 +908,183 @@ impl SshConnectionManager {
         opts: ConnectOptions,
     ) -> Result<MuxedConnectionLease, ConnectFailure> {
         let profile = self.resolve_profile(profile)?;
+        if self.uses_system_open_ssh(&profile) {
+            // Tunnels and the like need the built-in client, which this host was set up not to
+            // use.
+            return Err(ConnectFailure::Shell(SYSTEM_OPEN_SSH_NO_CONNECTION.into()));
+        }
         let doc = (self.inner.options.load_config)();
-        let chain = self.chain_for(&doc, &profile)?;
+        let fallbacks = self.jump_fallbacks_for(&doc, &profile);
+        if fallbacks.is_empty() {
+            let plan = self.route_plan(&doc, &profile, &opts)?;
+            return self.connect_route(&profile, io, owner, &opts, plan).await;
+        }
+
+        // Alternative jump routes: each is the same host with another ProxyJump chain. The route
+        // that worked last for this host goes first, so a retry (a reconnect, an overflow
+        // transport) does not wait on a dead primary.
+        let route_key = last_route_key(&profile);
+        let all: Vec<SshProfile> = std::iter::once(profile.clone())
+            .chain(fallbacks.into_iter().map(|proxy_jump| SshProfile {
+                proxy_jump: Some(proxy_jump),
+                proxy_command: None,
+                ..profile.clone()
+            }))
+            .collect();
+        let remembered = lock(&self.inner.last_working_route)
+            .get(&route_key)
+            .copied();
+        let order: Vec<usize> = match remembered {
+            Some(first) if first > 0 && first < all.len() => std::iter::once(first)
+                .chain((0..all.len()).filter(|i| *i != first))
+                .collect(),
+            _ => (0..all.len()).collect(),
+        };
+        // A route that cannot even be planned (a saved jump host that was deleted, a loop) is
+        // skipped like one that cannot be reached.
+        let plans: Vec<Result<RoutePlan, DialPlanError>> = order
+            .iter()
+            .map(|&i| self.route_plan(&doc, &all[i], &opts))
+            .collect();
+        if !opts.dedicated_transport && opts.fresh_transport.is_none() {
+            // A live transport over any route serves the request first.
+            for plan in plans.iter().flatten() {
+                if let Some(shared) = self.try_share(plan, owner, None) {
+                    io.status(
+                        &format!(
+                            "Reusing the SSH connection to {} (multiplexed).",
+                            shared.connection().host
+                        ),
+                        true,
+                    );
+                    return Ok(shared);
+                }
+            }
+        }
+        for (position, &index) in order.iter().enumerate() {
+            let route = &all[index];
+            let next = order.get(position + 1).map(|&i| &all[i]);
+            let (failed_route, failure) = match &plans[position] {
+                Err(err) => (
+                    Some(self.route_label(&doc, route)),
+                    ConnectFailure::Plan(err.clone()),
+                ),
+                Ok(plan) => {
+                    match self
+                        .connect_route(route, io.clone(), owner, &opts, plan.clone())
+                        .await
+                    {
+                        Ok(lease) => {
+                            lock(&self.inner.last_working_route).insert(route_key, index);
+                            if opts.fresh_transport.is_some() && !opts.dedicated_transport {
+                                // A forced reconnect replaces the transports of every route to
+                                // this host, not just the one it landed on.
+                                for other in plans.iter().flatten() {
+                                    if other.key != plan.key {
+                                        self.retire_replaced_transports(
+                                            &other.key,
+                                            &lease.connection().id,
+                                        );
+                                    }
+                                }
+                            }
+                            return Ok(lease);
+                        }
+                        Err(err) => {
+                            let failed = match &err {
+                                ConnectFailure::Connect(err) => err.failed_route.clone(),
+                                _ => None,
+                            };
+                            (failed, err)
+                        }
+                    }
+                }
+            };
+            let (Some(failed_route), Some(next)) = (failed_route, next) else {
+                return Err(failure);
+            };
+            let next_route = self.route_label(&doc, next);
+            tracing::info!(target = %profile.target, %failed_route, %next_route, err = %failure, "ssh jump route failed; trying the next one");
+            let failed = if failed_route.is_empty() {
+                "Direct connection".to_string()
+            } else {
+                format!("Route via {failed_route}")
+            };
+            io.status(
+                &format!("{failed} failed ({failure}) — trying via {next_route} …"),
+                false,
+            );
+        }
+        unreachable!("the last route returns its own failure")
+    }
+
+    /// Fallback jump routes for a host: a saved Muxus host keeps them in its profile, an
+    /// ssh_config alias in its Muxus metadata.
+    fn jump_fallbacks_for(&self, doc: &ConfigDocument, profile: &SshProfile) -> Vec<Vec<String>> {
+        if let Some(fallbacks) = &profile.proxy_jump_fallbacks {
+            return fallbacks.clone();
+        }
+        let Some(lookup) = &self.inner.options.jump_fallbacks_for_host else {
+            return Vec::new();
+        };
+        if !crate::connection::profile::uses_config(profile) {
+            return Vec::new();
+        }
+        // A caller that chose its own route (a NETCONF gateway, an explicit ProxyJump) gets that
+        // route, not the alias's saved alternatives.
+        if profile
+            .proxy_jump
+            .as_ref()
+            .is_some_and(|hops| !hops.is_empty())
+            || profile.proxy_command.is_some()
+        {
+            return Vec::new();
+        }
+        find_metadata_alias(doc, &parse_host_spec(&profile.target).host)
+            .map(|alias| lookup(&alias))
+            .unwrap_or_default()
+    }
+
+    /// "bastion-a → bastion-b" for the jump hosts a route dials, empty when direct.
+    fn route_label(&self, doc: &ConfigDocument, profile: &SshProfile) -> String {
+        match self.chain_for(doc, profile) {
+            Ok(chain) => chain_route_label(&chain),
+            Err(_) => profile.proxy_jump.clone().unwrap_or_default().join(" → "),
+        }
+    }
+
+    /// A live transport already dialed for this plan, leased to `owner`, with the plan's config
+    /// forwards merged in. A force-reconnect passes its token so it only ever joins its own
+    /// replacement.
+    fn try_share(
+        &self,
+        plan: &RoutePlan,
+        owner: ConnectionLeaseOwner,
+        fresh_token: Option<&str>,
+    ) -> Option<MuxedConnectionLease> {
+        let shared = self.acquire_shared(&plan.key, owner, &plan.target, fresh_token)?;
+        let conn = shared.connection();
+        let merged = merge_config_forwards(&conn.config_forwards(), &plan.target.resolved.forwards);
+        *lock(&conn.config_forwards) = merged;
+        Some(shared)
+    }
+
+    /// The dial plan and multiplexing key [`connect_route`](Self::connect_route) uses for one
+    /// route.
+    fn route_plan(
+        &self,
+        doc: &ConfigDocument,
+        profile: &SshProfile,
+        opts: &ConnectOptions,
+    ) -> Result<RoutePlan, DialPlanError> {
+        let chain = self.chain_for(doc, profile)?;
         let target = chain
             .last()
             .cloned()
             .ok_or_else(|| DialPlanError("empty dial plan".into()))?;
         let o = &self.inner.options;
-        let metadata_alias = if crate::connection::profile::uses_config(&profile) {
-            find_metadata_alias(&doc, &target.spec.host)
+        let metadata_alias = if crate::connection::profile::uses_config(profile) {
+            find_metadata_alias(doc, &target.spec.host)
         } else {
             None
         };
@@ -867,6 +1101,33 @@ impl SshConnectionManager {
             || Self::lookup_bool(&o.disable_sftp_for_host, metadata_alias.as_deref())
             || Self::lookup_bool(&o.disable_sftp_for_profile, profile.profile_id.as_deref());
         let key = mux_key(&chain, disable_sftp, console_compatibility);
+        Ok(RoutePlan {
+            chain,
+            target,
+            metadata_alias,
+            console_compatibility,
+            disable_sftp,
+            key,
+        })
+    }
+
+    /// [`connect`](Self::connect) over one jump route.
+    async fn connect_route(
+        &self,
+        profile: &SshProfile,
+        io: Arc<dyn ConnectIo>,
+        owner: ConnectionLeaseOwner,
+        opts: &ConnectOptions,
+        plan: RoutePlan,
+    ) -> Result<MuxedConnectionLease, ConnectFailure> {
+        let RoutePlan {
+            chain,
+            target,
+            metadata_alias,
+            console_compatibility,
+            disable_sftp,
+            key,
+        } = plan;
         let config_forwards = target.resolved.forwards.clone();
         let label = target.label();
         tracing::info!(target = %profile.target, %label, hops = chain.len(), ?owner, "ssh connect requested");
@@ -1364,8 +1625,12 @@ impl SshConnectionManager {
         let cx = self.dial_context(io.clone());
         let mut dialed: Option<Arc<HopTransport>> = None;
         let mut post_auth: Vec<Arc<HopTransport>> = Vec::new();
+        // Where a failure happened decides whether another jump route may help.
+        let mut failing_hop = first;
+        let mut opening_channel = false;
         let result: Result<(), DialChainError> = async {
             for (i, hop) in chain.iter().enumerate().skip(first) {
+                failing_hop = i;
                 let reusing = route.is_some()
                     && reused
                         .as_ref()
@@ -1392,12 +1657,16 @@ impl SshConnectionManager {
                 );
                 let mut sock: Option<BoxedStream> = None;
                 if let Some(r) = &route {
+                    opening_channel = true;
                     match r
                         .transport
                         .open_direct_tcpip(&hop.resolved.hostname, hop.port)
                         .await
                     {
-                        Ok(channel) => sock = Some(Box::new(channel.into_stream())),
+                        Ok(channel) => {
+                            opening_channel = false;
+                            sock = Some(Box::new(channel.into_stream()));
+                        }
                         Err(err) => {
                             let refusal = matches!(err, russh::Error::ChannelOpenFailure(_));
                             // A refusal from a live jump host is about the target. Anything else
@@ -1448,12 +1717,17 @@ impl SshConnectionManager {
             Ok(())
         }
         .await;
-        if let Err(err) = result {
+        if let Err(mut err) = result {
             // Hops dialed for this chain close unless another chain rides them.
             if let Some(r) = route {
                 r.release();
             }
             tracing::debug!(%err, hops = chain.len(), from = first, "ssh dial chain aborted");
+            if let DialChainError::Connect(error) = &mut err
+                && is_route_failure(error, chain.len(), failing_hop, opening_channel)
+            {
+                error.failed_route = Some(chain_route_label(chain));
+            }
             return Err(err);
         }
         let Some(transport) = dialed else {
@@ -1531,6 +1805,7 @@ impl SshConnectionManager {
             closed: closed_rx,
             ending: AtomicBool::new(false),
             jump_route: route.clone(),
+            shell_probe: ShellProbeMemo::default(),
             x11,
             sftp: tokio::sync::Mutex::new(None),
         });
@@ -1625,6 +1900,96 @@ fn describe_open_error(err: &russh::Error) -> String {
         },
         other => other.to_string(),
     }
+}
+
+/// What a host set to "Use system OpenSSH" answers a request for a connection of Muxus's own.
+pub const SYSTEM_OPEN_SSH_NO_CONNECTION: &str = "This host uses system OpenSSH, so Muxus cannot open a connection of its own to it. Use a terminal to the host, or turn the option off in the host settings.";
+
+/// The dial plan for one route: its hops, target and multiplexing key.
+#[derive(Clone)]
+struct RoutePlan {
+    chain: Vec<ChainHop>,
+    target: ChainHop,
+    metadata_alias: Option<String>,
+    console_compatibility: bool,
+    disable_sftp: bool,
+    key: String,
+}
+
+/// Which host a remembered route belongs to.
+fn last_route_key(profile: &SshProfile) -> String {
+    match &profile.profile_id {
+        Some(id) => format!("profile:{id}"),
+        None => format!(
+            "target:{}@{}:{}",
+            profile.user.as_deref().unwrap_or(""),
+            profile.target,
+            profile
+                .port
+                .map(|port| port.to_string())
+                .unwrap_or_default()
+        ),
+    }
+}
+
+/// "bastion-a → bastion-b": the jump hosts of a chain, empty for a direct connection.
+fn chain_route_label(chain: &[ChainHop]) -> String {
+    chain[..chain.len().saturating_sub(1)]
+        .iter()
+        .map(|hop| hop.spec.host.as_str())
+        .collect::<Vec<_>>()
+        .join(" → ")
+}
+
+/// Network failures of a direct connection that never got through (`NETWORK_FAILURE`).
+fn is_network_failure(err: &ConnectError) -> bool {
+    if matches!(
+        err.kind,
+        ConnectErrorKind::Refused | ConnectErrorKind::Resolve | ConnectErrorKind::Timeout
+    ) {
+        return true;
+    }
+    let message = err.message.to_lowercase();
+    [
+        "connection refused",
+        "could not resolve",
+        "timed out",
+        "connection reset",
+        "no route to host",
+        "network is unreachable",
+        "broken pipe",
+        "econnreset",
+        "ehostunreach",
+        "enetunreach",
+        "epipe",
+        "socket hang up",
+    ]
+    .iter()
+    .any(|phrase| message.contains(phrase))
+}
+
+/// Dial failures another jump route could avoid. A target that refuses the login is the same
+/// target on every route; a cancelled prompt is the user's choice; a rejected or changed host
+/// key must be seen, not quietly routed around (`isRouteFailure`).
+pub fn is_route_failure(
+    err: &ConnectError,
+    chain_len: usize,
+    failing_hop: usize,
+    opening_channel: bool,
+) -> bool {
+    if matches!(
+        err.kind,
+        ConnectErrorKind::Cancelled | ConnectErrorKind::HostKey
+    ) || muxus_core::gateways::stops_fallback(&err.message)
+    {
+        return false;
+    }
+    // A jump host failed, or could not reach the next hop.
+    if failing_hop + 1 < chain_len || opening_channel {
+        return true;
+    }
+    // The target itself: only a direct connection that never got through counts.
+    chain_len == 1 && is_network_failure(err)
 }
 
 fn new_connection_id() -> String {

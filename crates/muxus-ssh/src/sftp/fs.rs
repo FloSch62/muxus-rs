@@ -11,7 +11,27 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::connection::BoxFuture;
 use crate::connection::manager::{ManagedConnection, SftpChannel};
+
+/// Where a file operation's SFTP session comes from: a built-in connection, or the login a
+/// system OpenSSH terminal shares.
+pub trait SftpSource: Send + Sync {
+    /// The source's one SFTP session, opened on first use.
+    fn sftp(&self) -> BoxFuture<'_, Result<Arc<SftpChannel>, String>>;
+    /// Drops the session (after it failed), so the next call opens a fresh one.
+    fn reset_sftp(&self) -> BoxFuture<'_, ()>;
+}
+
+impl SftpSource for ManagedConnection {
+    fn sftp(&self) -> BoxFuture<'_, Result<Arc<SftpChannel>, String>> {
+        Box::pin(ManagedConnection::sftp(self))
+    }
+
+    fn reset_sftp(&self) -> BoxFuture<'_, ()> {
+        Box::pin(ManagedConnection::reset_sftp(self))
+    }
+}
 
 /// OpenSSH's atomic, replacing rename.
 pub(crate) const POSIX_RENAME: &str = "posix-rename@openssh.com";
@@ -135,13 +155,13 @@ pub(crate) struct RemoteFs {
 }
 
 struct Inner {
-    connection: Arc<ManagedConnection>,
+    connection: Arc<dyn SftpSource>,
     channel: Mutex<Arc<SftpChannel>>,
     started: AtomicBool,
 }
 
 impl RemoteFs {
-    pub(crate) async fn open_on(connection: Arc<ManagedConnection>) -> Result<Self, String> {
+    pub(crate) async fn open_on(connection: Arc<dyn SftpSource>) -> Result<Self, String> {
         let channel = connection.sftp().await?;
         Ok(Self {
             inner: Arc::new(Inner {

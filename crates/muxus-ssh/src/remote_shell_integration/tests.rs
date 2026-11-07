@@ -8,6 +8,8 @@ use super::*;
 #[derive(Default)]
 struct Stub {
     probe_output: Option<String>,
+    /// The probe fails with this instead of answering.
+    probe_error: Option<String>,
     complete: bool,
     lose_transport_on_probe: bool,
     lose_transport_on_shell: bool,
@@ -63,6 +65,9 @@ impl<'s> RemoteShellHost for &'s Stub {
             *self.lost.lock().unwrap() = Some(Some("remote protocol disconnect".into()));
         }
         self.log("probe-finish");
+        if let Some(error) = &self.probe_error {
+            return Err(error.clone());
+        }
         Ok(self.probe_output.clone().unwrap_or_default())
     }
     async fn sftp(&self) -> Result<StubSftp<'s>, String> {
@@ -112,7 +117,7 @@ async fn probes_installs_and_opens_an_integrated_remote_shell() {
         ),
         ..Stub::default()
     };
-    let result = open_remote_shell(&&stub, None).await.unwrap();
+    let result = open_remote_shell(&&stub, None, None).await.unwrap();
     assert_eq!(result, "terminal");
     assert_eq!(
         stub.log.lock().unwrap()[..3],
@@ -148,7 +153,10 @@ async fn reuses_a_completed_content_addressed_install_without_remote_writes() {
         complete: true,
         ..Stub::default()
     };
-    assert_eq!(open_remote_shell(&&stub, None).await.unwrap(), "terminal");
+    assert_eq!(
+        open_remote_shell(&&stub, None, None).await.unwrap(),
+        "terminal"
+    );
     let log = stub.log.lock().unwrap().clone();
     assert_eq!(log.iter().filter(|e| *e == "stat").count(), 1);
     assert!(!log.contains(&"mkdir".to_string()));
@@ -166,7 +174,10 @@ async fn does_not_request_sftp_when_the_remote_is_not_a_supported_unix_shell() {
         probe_output: Some("console appliance\n".into()),
         ..Stub::default()
     };
-    assert_eq!(open_remote_shell(&&stub, None).await.unwrap(), "plain");
+    assert_eq!(
+        open_remote_shell(&&stub, None, None).await.unwrap(),
+        "plain"
+    );
     let log = stub.log.lock().unwrap().clone();
     assert!(!log.contains(&"sftp-start".to_string()));
     assert_eq!(log.iter().filter(|e| *e == "shell").count(), 1);
@@ -178,7 +189,7 @@ async fn surfaces_a_transport_lost_during_the_optional_shell_probe() {
         lose_transport_on_probe: true,
         ..Stub::default()
     };
-    let err = open_remote_shell(&&stub, None).await.unwrap_err();
+    let err = open_remote_shell(&&stub, None, None).await.unwrap_err();
     assert!(matches!(err, OpenShellError::TransportLost(_)));
 }
 
@@ -189,8 +200,61 @@ async fn keeps_watching_for_transport_loss_while_the_plain_fallback_opens() {
         shell_error: Some("Not connected".into()),
         ..Stub::default()
     };
-    let err = open_remote_shell(&&stub, None).await.unwrap_err();
+    let err = open_remote_shell(&&stub, None, None).await.unwrap_err();
     assert!(matches!(err, OpenShellError::TransportLost(_)));
+}
+
+#[tokio::test]
+async fn records_nothing_for_a_server_that_printed_no_marker() {
+    let stub = Stub {
+        probe_output: Some("console appliance\n".into()),
+        ..Stub::default()
+    };
+    let memo = ShellProbeMemo::default();
+    assert_eq!(
+        open_remote_shell(&&stub, None, Some(&memo)).await.unwrap(),
+        "plain"
+    );
+    assert!(!memo.ran_command() && !memo.exec_refused());
+}
+
+#[tokio::test]
+async fn records_a_server_that_ran_the_probe_even_in_a_shell_it_does_not_integrate() {
+    let stub = Stub {
+        probe_output: Some("__MUXUS_SHELL__=/usr/bin/fish\n__MUXUS_HOME__=/home/u\n".into()),
+        ..Stub::default()
+    };
+    let memo = ShellProbeMemo::default();
+    open_remote_shell(&&stub, None, Some(&memo)).await.unwrap();
+    assert!(memo.ran_command() && !memo.exec_refused());
+}
+
+#[tokio::test]
+async fn probes_a_transport_that_refused_exec_only_once() {
+    // Nokia SR OS keeps a refused exec channel's slot until the connection closes; a probe per
+    // shell would use up the few slots it allows.
+    let stub = Stub {
+        probe_error: Some("Unable to exec".into()),
+        ..Stub::default()
+    };
+    let memo = ShellProbeMemo::default();
+    open_remote_shell(&&stub, None, Some(&memo)).await.unwrap();
+    assert!(!memo.ran_command() && memo.exec_refused());
+    open_remote_shell(&&stub, None, Some(&memo)).await.unwrap();
+    let log = stub.log.lock().unwrap().clone();
+    assert_eq!(log.iter().filter(|e| *e == "probe-start").count(), 1);
+    assert_eq!(log.iter().filter(|e| *e == "shell").count(), 2);
+}
+
+#[tokio::test]
+async fn keeps_probing_after_a_channel_open_failure_such_as_a_full_max_sessions() {
+    let stub = Stub {
+        probe_error: Some("Channel open failure: open failed".into()),
+        ..Stub::default()
+    };
+    let memo = ShellProbeMemo::default();
+    open_remote_shell(&&stub, None, Some(&memo)).await.unwrap();
+    assert!(!memo.exec_refused());
 }
 
 #[test]
@@ -308,7 +372,7 @@ async fn changes_into_the_reconnect_directory_at_the_end_of_shell_startup() {
         probe_output: Some("__MUXUS_SHELL__=/usr/bin/zsh\n__MUXUS_HOME__=/home/u\n".into()),
         ..Stub::default()
     };
-    open_remote_shell(&&stub, Some("/srv/project"))
+    open_remote_shell(&&stub, Some("/srv/project"), None)
         .await
         .unwrap();
     let writes = stub.writes.lock().unwrap().clone();
