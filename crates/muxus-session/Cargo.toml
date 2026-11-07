@@ -53,7 +53,7 @@ serialport = { version = "4.7", default-features = false }
 ironrdp-server = { git = "https://github.com/Devolutions/IronRDP", rev = "d90284f5f28dc24bb39c78883521721de76bf52f", default-features = false }
 bytes = "1"
 futures-lite = "2"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 tempfile = "3"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "test-util", "time"] }
 
