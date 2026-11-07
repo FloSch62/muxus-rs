@@ -126,11 +126,21 @@ impl Drop for Echo {
 ///
 /// It comes from below the kernels' ephemeral ranges (Linux 32768+, macOS and Windows
 /// 49152+): a port the kernel handed out for `127.0.0.1:0` could be handed to a test running
-/// alongside before the caller binds it again.
+/// alongside before the caller binds it again. Within the range, each call takes the next
+/// port after a random start, so two tests of one run never get the same port either.
 pub fn free_port() -> u16 {
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicU16, Ordering};
+
     use rand::Rng;
+    const FIRST: u16 = 20_000;
+    const COUNT: u16 = 12_000;
+    static START: OnceLock<u16> = OnceLock::new();
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    let start = *START.get_or_init(|| rand::thread_rng().gen_range(0..COUNT));
     loop {
-        let port = rand::thread_rng().gen_range(20_000..32_000);
+        let offset = NEXT.fetch_add(1, Ordering::Relaxed) % COUNT;
+        let port = FIRST + (start + offset) % COUNT;
         if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
             return port;
         }
