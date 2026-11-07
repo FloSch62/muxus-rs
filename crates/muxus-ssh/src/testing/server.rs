@@ -65,6 +65,12 @@ pub struct ServerSpec {
     /// Run exec requests through this: it gets the command and everything the client sent
     /// before EOF, and answers with output and exit status, or `None` for 127.
     pub exec_handler: Option<ExecHandler>,
+    /// Run exec requests with the local `/bin/sh -c`, as sshd does: stdin, stdout and stderr
+    /// stream over the channel, each exec runs in a process group of its own, and the exit
+    /// status follows the last output. Unix only.
+    pub exec_shell: bool,
+    /// Extra environment for [`ServerSpec::exec_shell`] commands (`TMPDIR`, say).
+    pub exec_env: Vec<(String, String)>,
 }
 
 /// An exec request's command and input to its output and exit status.
@@ -107,6 +113,8 @@ impl ServerSpec {
             accept_none: false,
             refuse_direct_tcpip: false,
             exec_handler: None,
+            exec_shell: false,
+            exec_env: Vec::new(),
         }
     }
 
@@ -672,6 +680,17 @@ impl Handler for ServerHandler {
             self.pending_exec.insert(channel, (command, Vec::new()));
             return Ok(());
         }
+        if self.spec.exec_shell {
+            let Some(ch) = self.channels.remove(&channel) else {
+                session.channel_failure(channel)?;
+                return Ok(());
+            };
+            // The channel is the command's now; it no longer counts against MaxSessions.
+            self.sessions = self.sessions.saturating_sub(1);
+            session.channel_success(channel)?;
+            tokio::spawn(run_shell_exec(ch, command, self.spec.exec_env.clone()));
+            return Ok(());
+        }
         session.channel_success(channel)?;
         let output = self
             .spec
@@ -779,6 +798,90 @@ impl Handler for ServerHandler {
             }
         });
         Ok(true)
+    }
+}
+
+/// One exec request run by the local shell (see [`ServerSpec::exec_shell`]).
+async fn run_shell_exec(channel: Channel<Msg>, command: String, env: Vec<(String, String)>) {
+    #[cfg(unix)]
+    {
+        use tokio::io::AsyncWriteExt;
+
+        let mut shell = tokio::process::Command::new("/bin/sh");
+        shell
+            .arg("-c")
+            .arg(&command)
+            .envs(env)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            // Like sshd: each exec session in a session (and process group) of its own.
+            .process_group(0);
+        let Ok(mut child) = shell.spawn() else {
+            let _ = channel.exit_status(127).await;
+            let _ = channel.eof().await;
+            let _ = channel.close().await;
+            return;
+        };
+        let (mut read, write) = channel.split();
+        let mut stdin = child.stdin.take();
+        let mut stdout = child.stdout.take().expect("piped stdout");
+        let mut stderr = child.stderr.take().expect("piped stderr");
+        let mut out = write.make_writer();
+        let mut err = write.make_writer_ext(Some(1));
+        let output = async {
+            let copy_out = async {
+                let _ = tokio::io::copy(&mut stdout, &mut out).await;
+                let _ = out.flush().await;
+            };
+            let copy_err = async {
+                let _ = tokio::io::copy(&mut stderr, &mut err).await;
+                let _ = err.flush().await;
+            };
+            tokio::join!(copy_out, copy_err);
+        };
+        let input = async {
+            while let Some(message) = read.wait().await {
+                match message {
+                    russh::ChannelMsg::Data { data } => {
+                        if let Some(pipe) = stdin.as_mut()
+                            && pipe.write_all(&data).await.is_err()
+                        {
+                            stdin = None;
+                        }
+                    }
+                    russh::ChannelMsg::Eof => stdin = None,
+                    russh::ChannelMsg::Close => break,
+                    _ => {}
+                }
+            }
+        };
+        tokio::select! {
+            // 'close' after the output, not 'exit': like sshd, send everything the command
+            // wrote before the exit status and the end of the channel.
+            _ = output => {
+                let code = child
+                    .wait()
+                    .await
+                    .ok()
+                    .and_then(|status| status.code())
+                    .unwrap_or(1);
+                let _ = write.exit_status(code as u32).await;
+                let _ = write.eof().await;
+                let _ = write.close().await;
+            }
+            // The client closed the channel: the command goes with it.
+            _ = input => {
+                let _ = child.start_kill();
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (command, env);
+        let _ = channel.exit_status(127).await;
+        let _ = channel.eof().await;
+        let _ = channel.close().await;
     }
 }
 

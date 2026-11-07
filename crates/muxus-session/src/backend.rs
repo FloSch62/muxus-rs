@@ -210,6 +210,8 @@ pub(crate) struct Shared {
     pub connections: SshConnectionManager,
     pub forwards: ForwardManager,
     pub sftp: SftpService,
+    /// Scripts running on live SSH connections.
+    pub script_runs: crate::scripts::runs::ScriptRuns,
     pub x11: Arc<LocalX11>,
     pub terminal_inputs: TerminalInputs,
     pub sessions: SessionRegistry,
@@ -331,6 +333,7 @@ impl Backend {
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         self.shared.runtime.spawn(async move {
             shared.sessions.close_all();
+            shared.script_runs.stop_all();
             shared.forwards.stop_all();
             shared.connections.close_all();
             shared.x11.close();
@@ -460,6 +463,7 @@ impl Parts {
             runtime,
             owned_runtime: Mutex::new(owned),
             sftp: SftpService::new(self.connections.clone()),
+            script_runs: crate::scripts::runs::ScriptRuns::new(self.connections.clone()),
             config: self.config,
             local_env: self.local_env,
             env_lookup: self.env_lookup,

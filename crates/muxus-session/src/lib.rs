@@ -45,6 +45,7 @@ pub mod management;
 mod prefs;
 pub mod recovery;
 pub mod routes;
+pub mod scripts;
 pub mod stats;
 pub mod terminal;
 pub mod updater;
