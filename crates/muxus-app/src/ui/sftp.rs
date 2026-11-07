@@ -28,7 +28,9 @@ use muxus_ui::gpui_kit::{
     AnyElement, AppContext, Context, Entity, ExternalPaths, FocusHandle, InteractiveElement,
     IntoElement, ParentElement, Styled, Subscription, Window, div,
 };
+use muxus_ui::theme::ActiveTheme;
 
+use crate::ui::paste_progress::paste_progress_overlay;
 use crate::ui::prefs::Side;
 use crate::ui::shell::AppShell;
 
@@ -430,6 +432,10 @@ impl AppShell {
         let drop_tab = drop_tab(tab, &self.prefs.local_shell);
         let drop_tab_id = tab.id.clone();
         let intent = drop_intent(&drop_tab, false);
+        let theme = *cx.theme();
+        let paste_progress = self
+            .paste_progress(&tab.id)
+            .map(|progress| paste_progress_overlay(&tab.id, progress, &theme, cx));
         let terminal_box = div()
             .id(gpui_id(&group))
             .group(group.clone())
@@ -438,6 +444,7 @@ impl AppShell {
             .min_h_0()
             .when_hidden(editor_shown)
             .child(terminal)
+            .children(paste_progress)
             .children(terminal_drop_overlay(group.clone(), &intent, cx))
             .children(
                 tab.conn_id

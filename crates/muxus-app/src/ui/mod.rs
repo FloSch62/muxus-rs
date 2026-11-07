@@ -19,6 +19,7 @@ mod launcher;
 mod overlays;
 mod panes;
 mod paste_dialog;
+mod paste_progress;
 mod perf;
 mod prefs;
 mod program_status;

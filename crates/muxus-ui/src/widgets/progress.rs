@@ -163,6 +163,36 @@ fn paint_ring_arc(
     }
 }
 
+/// MUI's determinate `LinearProgress` in a palette color (`color="warning"`): a 4px track in
+/// the color's shade (`getColorShade`: lightened by 0.62 in light mode, darkened by 0.5 in
+/// dark mode) with the main color over `value` percent from the left, in `radius` corners
+/// (`sx={{ borderRadius }}`).
+pub fn linear_progress_determinate(
+    theme: &crate::theme::Theme,
+    main: Hsla,
+    value: f32,
+    radius: f32,
+) -> gpui_kit::Div {
+    let track = if theme.mode.is_dark() {
+        crate::color::darken(main, 0.5)
+    } else {
+        crate::color::lighten(main, 0.62)
+    };
+    div()
+        .h(px(4.))
+        .w_full()
+        .flex_none()
+        .overflow_hidden()
+        .rounded(px(radius))
+        .bg(track)
+        .child(
+            div()
+                .h_full()
+                .w(gpui_kit::relative(value.clamp(0., 100.) / 100.))
+                .bg(main),
+        )
+}
+
 /// MUI's indeterminate `LinearProgress` at `height` px (the launcher's 2px
 /// strip under its search box): the primary color at 0.25 for the track
 /// with a primary segment, as the bar's first keyframe shows it.

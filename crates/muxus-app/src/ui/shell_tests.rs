@@ -192,6 +192,64 @@ fn a_restored_tab_replays_its_stored_output(cx: &mut TestAppContext) {
     assert!(replay < notice, "{text}");
 }
 
+/// A paced paste shows its progress on the tab and over the terminal while the backend types
+/// it, and cancelling it there stops it.
+#[gpui::test]
+fn a_paced_paste_shows_its_progress_until_it_is_cancelled(cx: &mut TestAppContext) {
+    let fx = Fixture::start(|_| {});
+    let window = main_window(&fx, cx);
+    let tab_id = window
+        .update(cx, |shell, window, cx| {
+            let id = shell.tabs.open(muxus_app::model::ssh_profile("box"), "box");
+            shell.tabs_changed(cx);
+            window.refresh();
+            id
+        })
+        .unwrap();
+    wait_until(cx, Duration::from_secs(20), "the session", |cx| {
+        window
+            .update(cx, |shell, window, _| {
+                window.refresh();
+                shell
+                    .tabs
+                    .tab(&tab_id)
+                    .is_some_and(|tab| tab.status == muxus_app::state::tabs::TabStatus::Connected)
+            })
+            .unwrap()
+    });
+    let progress = |cx: &mut TestAppContext| {
+        // The session pump yields to frames on a timer, which only a moving clock fires.
+        cx.executor().advance_clock(Duration::from_millis(20));
+        cx.run_until_parked();
+        window
+            .update(cx, |shell, window, _| {
+                // The tab's ring and the overlay draw from it.
+                window.refresh();
+                shell.paste_progress(&tab_id)
+            })
+            .unwrap()
+    };
+    assert_eq!(progress(cx), None);
+    // Two seconds after each line: the paste is still running when it is looked at.
+    window
+        .update(cx, |shell, _, cx| {
+            shell.paste_into_session(&tab_id, "true\ntrue\ntrue\n", Some(2_000), true, cx)
+        })
+        .unwrap();
+    wait_until(cx, Duration::from_secs(10), "the progress", |cx| {
+        progress(cx).is_some()
+    });
+    let running = progress(cx).unwrap();
+    assert_eq!(running.lines, 3);
+    assert!(running.label().starts_with("Pasting line "));
+    window
+        .update(cx, |shell, _, cx| shell.cancel_paste(&tab_id, cx))
+        .unwrap();
+    wait_until(cx, Duration::from_secs(10), "the cancel", |cx| {
+        progress(cx).is_none()
+    });
+}
+
 /// A program reporting with OSC 7501 marks its tab: work in progress until the next prompt,
 /// a finished result until the tab is looked at.
 #[gpui::test]

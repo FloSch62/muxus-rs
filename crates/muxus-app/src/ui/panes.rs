@@ -30,6 +30,7 @@ use muxus_ui::widgets::display::vertical_divider;
 use muxus_ui::widgets::menu::{self, MenuItem, menu_divider};
 use muxus_ui::widgets::{IconButton, Tooltip};
 
+use crate::ui::paste_progress::tab_paste_progress;
 use crate::ui::prefs::TabNumberVisibility;
 use crate::ui::shell::{AppShell, ShellMenu};
 use crate::ui::tab_drag::{tab_width, viewport_width};
@@ -1060,6 +1061,9 @@ impl AppShell {
             );
         if tab.pinned {
             el = el.child(svg_pin(13., p.text.secondary));
+        }
+        if let Some(progress) = self.paste_progress(&tab.id) {
+            el = el.child(tab_paste_progress(&tab.id, progress, theme, cx));
         }
         if let Some(badge) = self.program_status_badge(&tab.id, theme) {
             el = el.child(badge);

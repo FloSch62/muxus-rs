@@ -8,6 +8,8 @@ target: within 2× of xterm.js (`seq 1 2000000` in 2 s or less, a 50 MB `cat` in
 ```bash
 # The emulator alone, per stream (no UI), release:
 CARGO_TARGET_DIR=target-release cargo run --release -p muxus-term --example throughput -- --runs 3
+# What a filled emulator holds, and what a settled resize costs it (one stream per process):
+CARGO_TARGET_DIR=target-release cargo run --release -p muxus-term --example throughput -- log --resize
 # The app end to end (headless GNOME Shell, lavapipe):
 hack/perf.sh --binary target-release/release/muxus
 # The engine's own tests (it is excluded from the workspace):
@@ -33,10 +35,10 @@ bookkeeping, what a tab runs).
 | 50 MB `cat` within 3 s | same | done | 1.06–1.65 s in the app, was 9.8 s |
 | Frames during a flood | xterm.js render debouncer | done | frame gaps while output flows: p95 22 ms (`seq`), 34 ms (`cat`); the longest output batch on the UI thread is under 1 ms (8 ms once) |
 | Idle CPU after a flood | xterm.js | done | below what `hack/perf.sh` can resolve (under 0.3% of a core over 3 s), one tab and ten tabs |
-| Memory | xterm.js `CircularList` of `BufferLine`s | partial | scrollback lines store their written cells only; a cell is still 40 bytes (xterm.js: 12), see below. Packing the engine's `Cell` (character, colors, flags, hyperlink id) the way xterm packs a cell into three 32-bit words reworks every reader and writer of the grid; not attempted |
+| Memory | xterm.js `CircularList` of `BufferLine`s | partial | scrollback lines store their written cells only, and a cell is 32 bytes (was 40; xterm.js: 12): its cached width moved into the byte its flags padded to (`vendor/par-term-emu-core/PATCHES.md`, "Cell size"). Measured with `throughput <stream> --resize` (an emulator filled at 200×50 with 10 000 lines of scrollback, release, the resident memory it added): plain log 46.1 → 37.2 MB, colored log 57.8 → 46.9 MB, `ls -la` 28.6 → 23.3 MB, `seq` 5.3 → 4.7 MB, 19–20% less; output is as fast or faster (interleaved runs on a loaded machine: log 87–91 → 109–130 MB/s, colored log 61–76 → 70–83 MB/s, `seq` 55–59 → 64–74 MB/s). `hack/perf.sh` was not rerun (this machine has no GNOME Shell). Not taken, see below: 24 bytes (the combining marks, the underline color and the hyperlink id out of line together) and xterm.js's 12 |
 | Engine benchmark | none | done | `crates/muxus-term/examples/throughput` |
 | Benchmark of the app | none | done | `hack/perf.sh`, now with the process's CPU per step |
-| Same behaviour as before | all of the above | done | the engine's 1890 tests plus 7 new ones (property tests against the per-character path), 285 + 2 terminal tests, and the final state after every benchmark stream is identical to the original engine's |
+| Same behaviour as before | all of the above | done | the engine's 1890 tests plus 7 new ones (property tests against the per-character path), 285 + 2 terminal tests, and the final state after every benchmark stream is identical to the original engine's (the engine has 1956 tests now, with the Muxus patches') |
 
 ## Results
 
@@ -182,12 +184,28 @@ frames), and feeding the emulator about half of the UI thread during `seq`.
 - **Row building per frame.** During a flood every visible row is rebuilt each
   frame (1.4 ms). Reusing rows that only moved (the engine's scroll-aware damage,
   `Grid::scroll_damage_since`) would make that proportional to the new lines.
-- **Cell size.** A cell is 40 bytes (xterm.js packs one into 12). Compact
-  scrollback keeps short lines small, but full lines still cost 8 KB at 200
-  columns.
-- **Scrollback reflow.** A width change now rewraps the whole scrollback, as
-  xterm does, so a resize costs in proportion to the scrollback again: 6–45 ms
-  for 10 000 lines of 156 characters (release), once per settled resize.
+- **Cell size.** A cell is 32 bytes (xterm.js packs one into 12); compact
+  scrollback keeps short lines small, but full lines still cost 6.4 KB at 200
+  columns. The 32 come from the 8-byte pointer to the combining marks (which
+  sets the alignment), four 4-byte words (character, foreground, background,
+  underline color) and 8 bytes of flags (attribute bits, underline style,
+  width, hyperlink id). 24 bytes would take the combining marks, the underline
+  color and the hyperlink id out of line into one shared, reference-counted
+  record: rare per cell, but the write paths would clone it for every cell
+  written while a link or an underline color is set, and every user of
+  `CellFlags::hyperlink_id` (34 in the engine, the emulator's styling) and of
+  the underline color changes. 12 bytes is xterm.js's layout (the character
+  and its width in one word, colors and attributes in two, extended
+  attributes and combined characters in per-line maps), which reworks every
+  reader and writer of the grid. Both are left: the first saves a further
+  quarter for a broad, risky change to the write paths.
+- **Buffer reflow.** A resize now treats the scrollback and the screen as one
+  buffer, as xterm.js does (`vendor/par-term-emu-core/src/grid/reflow.rs`), so it
+  costs in proportion to the scrollback: resizing a filled 200×50 emulator with
+  10 000 lines to 150 columns, or back, takes about 1 ms with plain log lines
+  and 7–14 ms with the colored log's wrapped lines (release,
+  `throughput --resize`), once per settled resize. Rows the reflow does not
+  touch move by pointer.
 - **Scrollback size changes** are done: `Grid::set_max_scrollback` drops the
   oldest lines from the ring buffer in one drain (`PATCHES.md` in the engine).
 - Non-ASCII text (CJK, emoji) still takes the per-character path.

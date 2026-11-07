@@ -1,9 +1,8 @@
 //! Scrolling and reflow logic for the terminal grid
 
 use crate::cell::Cell;
-use std::collections::VecDeque;
 
-use crate::grid::{Grid, ScrollbackReflow};
+use crate::grid::Grid;
 
 impl Grid {
     /// Rotate the rows `[top, bottom]` by `n` (up when `up`, else down)
@@ -223,7 +222,7 @@ impl Grid {
     /// Reset per-row damage generations to the new row count and mark every
     /// row: a resize moves content even when the cell data survives
     /// unchanged.
-    fn reset_damage_for_resize(&mut self) {
+    pub(in crate::grid) fn reset_damage_for_resize(&mut self) {
         self.row_gen = vec![0u64; self.rows];
         self.row_content_gen = vec![0u64; self.rows];
         self.mark_rows_content(0, self.rows.saturating_sub(1));
@@ -266,14 +265,10 @@ impl Grid {
 
         // Width changed: reflow the visible screen. Scrollback lines keep
         // their original widths — resizing cost is bounded by the viewport
-        // rows, never the scrollback — unless the scrollback reflows too
-        // (Muxus patch, `reflow_scrollback`).
+        // rows, never the scrollback. (Muxus resizes the xterm.js way
+        // instead, `Grid::resize_xterm`.)
         let old_cols = self.cols;
         let old_rows = self.rows;
-        if self.reflow_scrollback && self.max_scrollback > 0 {
-            self.reflow_scrollback_rows(cols);
-        }
-
         self.reflow_main_grid(old_cols, old_rows, cols, rows);
         self.reset_damage_for_resize();
     }
@@ -370,89 +365,6 @@ impl Grid {
         self.wrapped = new_wrapped;
     }
 
-    /// Muxus patch: rewrap the scrollback's lines to `new_cols` (xterm reflows its whole buffer
-    /// on a width change). Each logical line (rows joined by their wrap flags) is cut again at
-    /// the new width: a narrower screen no longer clips stored lines, a wider one joins what
-    /// the old width wrapped. The last logical line is left as it is when it continues onto
-    /// the screen (the screen reflows on its own). Where every old line went is kept for the
-    /// caller ([`Grid::take_scrollback_reflow`]); the lines above the scrollback keep their
-    /// absolute numbers, and lines past the capacity are evicted as a scroll evicts them.
-    fn reflow_scrollback_rows(&mut self, new_cols: usize) {
-        let old_len = self.scrollback_rows.len();
-        if old_len == 0 || new_cols == 0 {
-            return;
-        }
-        let floor = self
-            .total_lines_scrolled
-            .saturating_sub(self.scrollback_lines);
-        // The logical line that continues onto the screen stays as it is.
-        let mut open_tail = old_len;
-        if self.scrollback_wrapped.back() == Some(&true) {
-            open_tail -= 1;
-            while open_tail > 0 && self.scrollback_wrapped[open_tail - 1] {
-                open_tail -= 1;
-            }
-        }
-        let old_rows = std::mem::take(&mut self.scrollback_rows);
-        let old_wrapped = std::mem::take(&mut self.scrollback_wrapped);
-        let mut out = Rewrap::new(new_cols, self.compact_scrollback, old_len);
-        let mut lines = Vec::with_capacity(old_len);
-        let mut index = 0;
-        while index < open_tail {
-            loop {
-                let row = &old_rows[index];
-                let last = !old_wrapped[index];
-                let cells = if last {
-                    &row[..super::used_len(row)]
-                } else {
-                    &row[..]
-                };
-                lines.push(out.place_row(cells));
-                index += 1;
-                if last {
-                    break;
-                }
-            }
-            out.end_line();
-        }
-        for (row, wrapped) in old_rows.into_iter().zip(old_wrapped).skip(open_tail) {
-            lines.push(out.rows.len());
-            out.rows.push_back(row);
-            out.wrapped.push_back(wrapped);
-        }
-        let new_len = out.rows.len();
-        self.scrollback_rows = out.rows;
-        self.scrollback_wrapped = out.wrapped;
-        // The same lines above the scrollback stay trimmed; zones follow their lines.
-        let moved = |abs: usize| -> usize {
-            match abs.checked_sub(floor) {
-                Some(index) if index < old_len => floor + lines[index],
-                // Screen lines move with the scrollback's new length.
-                Some(_) => (abs + new_len).saturating_sub(old_len),
-                None => abs,
-            }
-        };
-        for zone in &mut self.zones {
-            zone.abs_row_start = moved(zone.abs_row_start);
-            zone.abs_row_end = moved(zone.abs_row_end);
-        }
-        self.total_lines_scrolled = floor + new_len;
-        while self.scrollback_rows.len() > self.max_scrollback {
-            self.scrollback_rows.pop_front();
-            self.scrollback_wrapped.pop_front();
-        }
-        self.scrollback_lines = self.scrollback_rows.len();
-        let floor_after = self
-            .total_lines_scrolled
-            .saturating_sub(self.scrollback_lines);
-        self.evict_zones(floor_after);
-        self.last_scrollback_reflow = Some(ScrollbackReflow {
-            lines,
-            old_len,
-            new_len,
-        });
-    }
-
     fn extract_main_grid_logical_lines(&self, old_cols: usize, old_rows: usize) -> Vec<Vec<Cell>> {
         let mut logical_lines = Vec::new();
         let mut current_line = Vec::new();
@@ -486,7 +398,7 @@ impl Grid {
         let mut current_col = 0;
 
         for cell in line {
-            let char_width = cell.width as usize;
+            let char_width = cell.width();
             if current_col + char_width > width {
                 while current_col < width {
                     new_cells.push(Cell::default());
@@ -505,68 +417,6 @@ impl Grid {
         }
         wrapped_flags.push(false);
         (new_cells, wrapped_flags)
-    }
-}
-
-/// Muxus patch: scrollback rows built by cutting logical lines at a new width
-/// ([`Grid::reflow_scrollback_rows`]).
-struct Rewrap {
-    cols: usize,
-    compact: bool,
-    rows: VecDeque<Box<[Cell]>>,
-    wrapped: VecDeque<bool>,
-    current: Vec<Cell>,
-}
-
-impl Rewrap {
-    fn new(cols: usize, compact: bool, capacity: usize) -> Self {
-        Self {
-            cols,
-            compact,
-            rows: VecDeque::with_capacity(capacity),
-            wrapped: VecDeque::with_capacity(capacity),
-            current: Vec::with_capacity(cols),
-        }
-    }
-
-    /// Append one stored row's cells to the logical line being rebuilt. Returns the new row
-    /// that holds the row's first cell (for an empty row, the row being filled).
-    fn place_row(&mut self, cells: &[Cell]) -> usize {
-        let mut first = None;
-        for cell in cells.iter().filter(|cell| !cell.flags.wide_char_spacer()) {
-            let width = (cell.width as usize).max(1);
-            // A character that does not fit starts the next row; a wide one leaves the
-            // last cell blank, as xterm's reflow does.
-            if !self.current.is_empty() && self.current.len() + width > self.cols {
-                self.flush(true);
-            }
-            first.get_or_insert(self.rows.len());
-            self.current.push(cell.clone());
-            for _ in 1..width {
-                let mut spacer = Cell::default();
-                spacer.flags.set_wide_char_spacer(true);
-                self.current.push(spacer);
-            }
-        }
-        first.unwrap_or(self.rows.len())
-    }
-
-    /// The logical line ends: its last row goes in unwrapped.
-    fn end_line(&mut self) {
-        self.flush(false);
-    }
-
-    /// A wrapped row keeps the full width (it continues on the next row); a line's last row
-    /// is stored without its blank tail when the scrollback is compact.
-    fn flush(&mut self, wrapped: bool) {
-        let mut row = std::mem::take(&mut self.current);
-        if wrapped || !self.compact {
-            let width = self.cols.max(row.len());
-            row.resize(width, Cell::default());
-        }
-        self.rows.push_back(row.into_boxed_slice());
-        self.wrapped.push_back(wrapped);
-        self.current = Vec::with_capacity(self.cols);
     }
 }
 

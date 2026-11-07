@@ -152,6 +152,9 @@ pub enum TerminalViewEvent {
     /// The clipboard held no text (an image, or nothing): the app may upload an image and paste
     /// its path.
     ClipboardWithoutText,
+    /// The user asked to paste the clipboard (a right click, or the view's paste action) and the
+    /// app pastes it ([`TerminalView::set_app_pastes`]).
+    PasteRequested,
     /// The grid changed size (sent to the transport as well).
     Resized(TerminalSize),
     /// The user typed this, already sent to the session with the host's keys; the bytes are the

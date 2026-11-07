@@ -10,9 +10,10 @@ use std::path::PathBuf;
 use muxus_app::features::launcher::catalog::BreakState;
 use muxus_app::session::LinkInput;
 use muxus_app::session::recovery::terminal_notice;
+use muxus_app::state::paste_progress::PasteProgress;
 use muxus_app::state::tabs::TabPatch;
 use muxus_core::input_modes::{TerminalInputModes, host_terminal_input_modes};
-use muxus_core::protocol::PasteProgressState;
+use muxus_core::protocol::{PasteProgressState, TerminalClientMessage};
 use muxus_term_view::muxus_term::send_text_file::{TextFileOutcome, text_file_outcome};
 use muxus_term_view::muxus_term::typed_input::{TypedInput, typed_input};
 use muxus_ui::gpui_kit::{AppContext, Context, PathPromptOptions, Window};
@@ -44,7 +45,33 @@ impl AppShell {
         self.terminals
             .get(tab_id)
             .and_then(|terminal| terminal.session.as_ref())
-            .is_some_and(|session| session.paced_paste_pending || session.paste_running)
+            .is_some_and(|session| session.paced_paste_pending || session.paste_progress.is_some())
+    }
+
+    /// The paced paste running in the tab's session, and how far it got.
+    pub fn paste_progress(&self, tab_id: &str) -> Option<PasteProgress> {
+        self.terminals
+            .get(tab_id)
+            .and_then(|terminal| terminal.session.as_ref())
+            .and_then(|session| session.paste_progress)
+    }
+
+    /// `cancelPaste`: stop a paced paste. Input is mirrored under multi-execution, so stopping
+    /// it in one mirrored terminal stops it in all of them.
+    pub fn cancel_paste(&mut self, tab_id: &str, cx: &mut Context<Self>) {
+        let mirrored = self.multi_exec.read(cx).state().mirrored_tab_ids(tab_id);
+        let targets = if mirrored.is_empty() {
+            vec![tab_id.to_string()]
+        } else {
+            mirrored
+        };
+        for target in targets {
+            self.send_to_session(
+                &target,
+                LinkInput::message(TerminalClientMessage::PasteCancel),
+                cx,
+            );
+        }
     }
 
     /// Note that a paced paste went out to the tab's session.
@@ -110,13 +137,14 @@ impl AppShell {
             .count()
     }
 
-    /// A `paste-progress` message: whether a paste runs, and the note of one that stopped,
-    /// written once per stop even when no window was attached at the time (a returning one is
-    /// sent it again).
+    /// A `paste-progress` message: the progress of a running paste (shown on the tab and over
+    /// its terminal), and the note of one that stopped, written once per stop even when no
+    /// window was attached at the time (a returning one is sent it again).
     pub(super) fn on_paste_progress(
         &mut self,
         tab_id: &str,
         state: PasteProgressState,
+        progress: Option<PasteProgress>,
         message: Option<String>,
         stop_id: Option<u64>,
         cx: &mut Context<Self>,
@@ -126,7 +154,10 @@ impl AppShell {
             .get_mut(tab_id)
             .and_then(|terminal| terminal.session.as_mut())
         {
-            session.paste_running = state == PasteProgressState::Running;
+            if session.paste_progress != progress {
+                session.paste_progress = progress;
+                cx.notify();
+            }
             if state != PasteProgressState::Running {
                 session.paced_paste_pending = false;
             }
