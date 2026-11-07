@@ -3,12 +3,11 @@
 //! VT100/VT220/VT320/VT420/VT520 state machine ([`terminal::Terminal`]),
 //! grid with scrollback ([`grid::Grid`]), Sixel/iTerm2/Kitty graphics, the
 //! tmux control-mode parser, and the text/unicode utilities they share. With
-//! the `pty_session` feature it adds the real PTY backend; with `screenshot`
-//! the terminal-to-image renderer. Without features it is the headless
-//! (`sim`) profile: no PTY, no Python, no renderer.
+//! `screenshot` it adds the terminal-to-image renderer. Without features it
+//! is the headless (`sim`) profile: no PTY, no Python, no renderer.
 //!
 //! Most embedders depend on `par-term-emu-core-rust`, which re-exports every
-//! module here at its historical path (see `DESIGN.md`).
+//! module here at its historical path.
 
 // QA-201: every production `unsafe` block states its invariant. Test modules
 // are exempt — their FFI calls restate the fn contract and add only noise.
@@ -47,8 +46,10 @@ pub mod mouse;
 pub mod otel;
 /// Error type for PTY operations.
 pub mod pty_error;
+// The PTY backend (`pty_session`) is not part of this vendored copy; the
+// embedding application owns its processes.
 #[cfg(feature = "pty_session")]
-pub mod pty_session;
+compile_error!("the pty_session feature is not available in this vendored copy");
 // Gated so a slim sim build can drop the ~700KB embedded fonts + renderer
 // (ARC-021); python/full keep it on. `sim` no longer implies it (ENH-024) —
 // render-capable sim embedders add `features = ["sim", "screenshot"]`.
