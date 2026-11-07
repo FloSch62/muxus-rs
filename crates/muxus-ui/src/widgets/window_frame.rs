@@ -54,6 +54,12 @@ pub fn app_window_options(
         app_id: Some(app_id.into()),
         // [`title_bar`] moves the window itself; AppKit must not drag it too.
         app_owns_titlebar_drag: true,
+        // Chromium draws a visible window at the display's rate whether it has the focus
+        // or not, and in power-saver mode too. GPUI would hold an unfocused window (a
+        // terminal printing, a remote desktop) and every window under power saving to
+        // about 30 fps.
+        inactive_frame_interval: None,
+        low_power_frame_interval: None,
         ..Default::default()
     }
 }
@@ -156,6 +162,8 @@ mod tests {
         assert_eq!(titlebar.title.as_deref(), Some("Settings — Muxus"));
         assert_eq!(options.app_id.as_deref(), Some("muxus"));
         assert_eq!(options.window_min_size, Some(size(px(560.), px(420.))));
+        assert_eq!(options.inactive_frame_interval, None);
+        assert_eq!(options.low_power_frame_interval, None);
     }
 }
 
