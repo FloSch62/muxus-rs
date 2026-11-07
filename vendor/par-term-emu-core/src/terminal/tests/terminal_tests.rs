@@ -1,5 +1,6 @@
 // Unit tests for terminal.rs
 use crate::color::{Color, NamedColor};
+use crate::mouse::{MouseEncoding, MouseEvent, MouseMode};
 use crate::terminal::*;
 
 #[test]
@@ -1395,6 +1396,49 @@ fn test_osc52_clipboard_query_denied() {
 }
 
 #[test]
+fn test_osc52_clipboard_write_allowed_by_default() {
+    let mut term = Terminal::new(80, 24);
+
+    assert!(term.allow_clipboard_write());
+
+    // Base64("Hello") = "SGVsbG8="
+    term.process(b"\x1b]52;c;SGVsbG8=\x1b\\");
+    assert_eq!(term.clipboard(), Some("Hello"));
+}
+
+#[test]
+fn test_osc52_clipboard_write_denied() {
+    let mut term = Terminal::new(80, 24);
+    term.set_clipboard(Some("Existing".to_string()));
+
+    term.set_allow_clipboard_write(false);
+    assert!(!term.allow_clipboard_write());
+
+    // Write is ignored: existing content stays and nothing is replied.
+    term.process(b"\x1b]52;c;SGVsbG8=\x1b\\");
+    assert_eq!(term.clipboard(), Some("Existing"));
+    assert_eq!(term.drain_responses(), b"");
+
+    // The query path is independent of the write flag.
+    term.set_allow_clipboard_read(true);
+    term.process(b"\x1b]52;c;?\x1b\\");
+    // Base64("Existing") = "RXhpc3Rpbmc="
+    assert_eq!(term.drain_responses(), b"\x1b]52;c;RXhpc3Rpbmc=\x1b\\");
+}
+
+#[test]
+fn test_osc52_clipboard_write_flag_survives_ris() {
+    let mut term = Terminal::new(80, 24);
+    term.set_allow_clipboard_write(false);
+
+    term.process(b"\x1bc"); // RIS
+    assert!(!term.allow_clipboard_write());
+
+    term.process(b"\x1b]52;c;SGVsbG8=\x1b\\");
+    assert_eq!(term.clipboard(), None);
+}
+
+#[test]
 fn test_osc52_clipboard_empty_write_is_noop() {
     let mut term = Terminal::new(80, 24);
 
@@ -2421,23 +2465,23 @@ fn test_vt520_decswbv_set_warning_bell_volume() {
     let mut term = Terminal::new(80, 24);
 
     // Default should be 4 (moderate)
-    assert_eq!(term.warning_bell_volume, 4);
+    assert_eq!(term.bell_volumes.warning, 4);
 
     // Set to off (0)
     term.process(b"\x1b[0 t");
-    assert_eq!(term.warning_bell_volume, 0);
+    assert_eq!(term.bell_volumes.warning, 0);
 
     // Set to low (1)
     term.process(b"\x1b[1 t");
-    assert_eq!(term.warning_bell_volume, 1);
+    assert_eq!(term.bell_volumes.warning, 1);
 
     // Set to medium (4)
     term.process(b"\x1b[4 t");
-    assert_eq!(term.warning_bell_volume, 4);
+    assert_eq!(term.bell_volumes.warning, 4);
 
     // Set to high (8)
     term.process(b"\x1b[8 t");
-    assert_eq!(term.warning_bell_volume, 8);
+    assert_eq!(term.bell_volumes.warning, 8);
 }
 
 #[test]
@@ -2446,10 +2490,10 @@ fn test_vt520_decswbv_clamps_to_valid_range() {
 
     // Values above 8 should be clamped to 8
     term.process(b"\x1b[99 t");
-    assert_eq!(term.warning_bell_volume, 8);
+    assert_eq!(term.bell_volumes.warning, 8);
 
     term.process(b"\x1b[255 t");
-    assert_eq!(term.warning_bell_volume, 8);
+    assert_eq!(term.bell_volumes.warning, 8);
 }
 
 #[test]
@@ -2457,23 +2501,23 @@ fn test_vt520_decsmbv_set_margin_bell_volume() {
     let mut term = Terminal::new(80, 24);
 
     // Default should be 4 (moderate)
-    assert_eq!(term.margin_bell_volume, 4);
+    assert_eq!(term.bell_volumes.margin, 4);
 
     // Set to off (0)
     term.process(b"\x1b[0 u");
-    assert_eq!(term.margin_bell_volume, 0);
+    assert_eq!(term.bell_volumes.margin, 0);
 
     // Set to low (1)
     term.process(b"\x1b[1 u");
-    assert_eq!(term.margin_bell_volume, 1);
+    assert_eq!(term.bell_volumes.margin, 1);
 
     // Set to medium (4)
     term.process(b"\x1b[4 u");
-    assert_eq!(term.margin_bell_volume, 4);
+    assert_eq!(term.bell_volumes.margin, 4);
 
     // Set to high (8)
     term.process(b"\x1b[8 u");
-    assert_eq!(term.margin_bell_volume, 8);
+    assert_eq!(term.bell_volumes.margin, 8);
 }
 
 #[test]
@@ -2482,10 +2526,10 @@ fn test_vt520_decsmbv_clamps_to_valid_range() {
 
     // Values above 8 should be clamped to 8
     term.process(b"\x1b[99 u");
-    assert_eq!(term.margin_bell_volume, 8);
+    assert_eq!(term.bell_volumes.margin, 8);
 
     term.process(b"\x1b[200 u");
-    assert_eq!(term.margin_bell_volume, 8);
+    assert_eq!(term.bell_volumes.margin, 8);
 }
 
 #[test]
@@ -2496,13 +2540,13 @@ fn test_vt520_bell_volumes_independent() {
     term.process(b"\x1b[2 t"); // Warning bell = 2
     term.process(b"\x1b[6 u"); // Margin bell = 6
 
-    assert_eq!(term.warning_bell_volume, 2);
-    assert_eq!(term.margin_bell_volume, 6);
+    assert_eq!(term.bell_volumes.warning, 2);
+    assert_eq!(term.bell_volumes.margin, 6);
 
     // Change warning bell without affecting margin bell
     term.process(b"\x1b[7 t");
-    assert_eq!(term.warning_bell_volume, 7);
-    assert_eq!(term.margin_bell_volume, 6); // Should remain unchanged
+    assert_eq!(term.bell_volumes.warning, 7);
+    assert_eq!(term.bell_volumes.margin, 6); // Should remain unchanged
 }
 
 #[test]
@@ -3328,9 +3372,59 @@ fn test_export_scrollback_with_limit() {
         term.process(format!("Line{}\r\n", i).as_bytes());
     }
 
-    let export = term.export_scrollback(ExportFormat::Plain, Some(5));
-    let line_count = export.lines().count();
-    assert!(line_count <= 5);
+    // 20 lines + the trailing blank row on a 5-row screen: Line0..Line15
+    // scrolled off, Line15 directly above the screen.
+    let lines: Vec<String> = term
+        .export_scrollback(ExportFormat::Plain, Some(5))
+        .lines()
+        .map(|l| l.trim_end().to_string())
+        .collect();
+    assert_eq!(lines, ["Line15", "Line14", "Line13", "Line12", "Line11"]);
+}
+
+/// `max_lines` is a tail limit: `Some(n)` keeps the NEWEST `n` scrollback
+/// rows in the same newest-first order as the full export, so it is always
+/// the first `n` rows of the `None` export — in every format.
+#[test]
+fn export_scrollback_limit_keeps_the_newest_rows_in_every_format() {
+    let mut term = Terminal::with_scrollback(20, 3, 100);
+    for i in 0..12 {
+        term.process(format!("\x1b[3{}mrow-{i:02}\x1b[0m\r\n", i % 7 + 1).as_bytes());
+    }
+    let len = term.grid().scrollback_len();
+    assert!(len >= 8, "fixture scrolls enough history: {len}");
+
+    let rows = |format: ExportFormat, max: Option<usize>| -> Vec<String> {
+        let text = term.export_scrollback(format, max);
+        let body = match format {
+            ExportFormat::Html => text
+                .strip_prefix("<pre>\n")
+                .and_then(|t| t.strip_suffix("</pre>"))
+                .expect("html framing")
+                .to_string(),
+            _ => text,
+        };
+        body.lines().map(str::to_string).collect()
+    };
+
+    for format in [ExportFormat::Plain, ExportFormat::Html, ExportFormat::Ansi] {
+        let full = rows(format, None);
+        assert_eq!(full.len(), len, "{format:?}");
+        for n in [1, 3, len - 1] {
+            assert_eq!(rows(format, Some(n)), full[..n], "{format:?} Some({n})");
+        }
+        assert_eq!(rows(format, Some(len + 10)), full, "{format:?} over-long");
+        assert!(rows(format, Some(0)).is_empty(), "{format:?} Some(0)");
+    }
+
+    let newest = format!("row-{:02}", len - 1);
+    let tail = term.export_scrollback(ExportFormat::Plain, Some(2));
+    assert!(tail.contains(&newest), "newest row kept: {tail:?}");
+    assert!(!tail.contains("row-00"), "oldest row dropped: {tail:?}");
+    assert_eq!(
+        term.export_scrollback(ExportFormat::Html, Some(0)),
+        "<pre>\n</pre>"
+    );
 }
 
 #[test]
@@ -3343,6 +3437,67 @@ fn test_export_scrollback_html_format() {
 
     let export = term.export_scrollback(ExportFormat::Html, None);
     assert!(export.contains("Red"));
+}
+
+/// A 100-char line on an 80-col grid soft-wraps into two rows. The ansi
+/// export joins them into ONE logical line, head row first, between its
+/// true older and newer neighbors; Plain and Html never join, so they keep
+/// one line per grid row (newest-first).
+#[test]
+fn export_scrollback_joins_a_wrapped_line_with_the_row_it_continues() {
+    let mut term = Terminal::with_scrollback(80, 2, 100);
+    let head = "A".repeat(80);
+    let tail = "B".repeat(20);
+    term.process(format!("older\r\n{head}{tail}\r\nnewer\r\n\r\n").as_bytes());
+    let grid = term.grid();
+    assert_eq!(grid.scrollback_len(), 4, "older, head, tail, newer");
+    assert!(grid.is_scrollback_wrapped(1), "head row soft-wraps");
+    assert!(!grid.is_scrollback_wrapped(2), "tail row ends the line");
+
+    assert_eq!(
+        term.export_scrollback(ExportFormat::Ansi, None),
+        format!("newer\x1b[0m\n{head}{tail}\x1b[0m\nolder\x1b[0m\n")
+    );
+    // A cut inside the logical line keeps only its newest rows, terminated.
+    assert_eq!(
+        term.export_scrollback(ExportFormat::Ansi, Some(2)),
+        format!("newer\x1b[0m\n{tail}\x1b[0m\n")
+    );
+    assert_eq!(
+        term.export_scrollback(ExportFormat::Ansi, Some(3)),
+        format!("newer\x1b[0m\n{head}{tail}\x1b[0m\n")
+    );
+
+    let plain = term.export_scrollback(ExportFormat::Plain, None);
+    let plain_rows: Vec<&str> = plain.lines().map(str::trim_end).collect();
+    assert_eq!(plain_rows, ["newer", tail.as_str(), head.as_str(), "older"]);
+    let html = term.export_scrollback(ExportFormat::Html, None);
+    let html_rows: Vec<&str> = html
+        .strip_prefix("<pre>\n")
+        .and_then(|t| t.strip_suffix("</pre>"))
+        .expect("html framing")
+        .lines()
+        .map(str::trim_end)
+        .collect();
+    assert_eq!(html_rows, plain_rows);
+}
+
+/// The newest scrollback row soft-wraps into screen row 0: its continuation
+/// is not history, so the ansi export still terminates it rather than
+/// gluing it onto the older line that follows.
+#[test]
+fn export_scrollback_ansi_terminates_a_row_whose_continuation_is_on_screen() {
+    let mut term = Terminal::with_scrollback(80, 2, 100);
+    let head = "A".repeat(80);
+    term.process(format!("older\r\n{head}BB\r\nnext").as_bytes());
+    let grid = term.grid();
+    assert_eq!(grid.scrollback_len(), 2, "older, head");
+    assert!(grid.is_scrollback_wrapped(1), "head wraps onto the screen");
+
+    assert_eq!(
+        term.export_scrollback(ExportFormat::Ansi, None),
+        format!("{head}\x1b[0m\nolder\x1b[0m\n")
+    );
 }
 
 #[test]
@@ -4222,6 +4377,7 @@ fn ris_preserves_host_config() {
     term.set_cell_dimensions(9, 19);
     term.set_answerback_string(Some("par-test".to_string()));
     term.set_allow_clipboard_read(true);
+    term.set_allow_clipboard_write(false);
     term.set_ansi_palette_color(1, Color::Rgb(1, 2, 3)).unwrap();
     term.set_faint_text_alpha(0.25);
     // HostConfig (ARC-100): these reverted before the carried struct.
@@ -4266,6 +4422,7 @@ fn ris_preserves_host_config() {
     assert_eq!(term.cell_dimensions(), (9, 19));
     assert_eq!(term.answerback_string(), Some("par-test"));
     assert!(term.allow_clipboard_read());
+    assert!(!term.allow_clipboard_write());
     assert_eq!(term.get_ansi_color(1), Some(Color::Rgb(1, 2, 3)));
     assert_eq!(term.faint_text_alpha(), 0.25);
 

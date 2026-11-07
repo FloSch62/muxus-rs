@@ -27,6 +27,8 @@ pub mod conformance_level;
 pub mod coprocess;
 /// Cursor position and DECSCUSR style.
 pub mod cursor;
+#[cfg(feature = "self-update")]
+pub mod self_update;
 #[macro_use]
 pub mod debug;
 /// Grapheme cluster, variation selector, and emoji-sequence helpers.
@@ -38,6 +40,10 @@ pub mod keyboard;
 pub mod macros;
 /// Mouse tracking modes, encodings, and event types.
 pub mod mouse;
+
+// Always compiled (the OTLP grammar is plain std and the SDK-backed provider
+// is feature-gated inside); see otel.rs for the gate discipline.
+pub mod otel;
 /// Error type for PTY operations.
 pub mod pty_error;
 // The PTY backend (`pty_session`) is not part of this vendored copy; the

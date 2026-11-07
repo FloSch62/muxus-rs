@@ -18,6 +18,7 @@ impl Grid {
             cell.reset();
             cell.bg = PackedColor::pack(bg);
         }
+        self.wrapped.fill(false);
         // A default background leaves default cells behind.
         let used = if bg == DEFAULT_BG { 0 } else { self.cols };
         self.row_used.fill(used);

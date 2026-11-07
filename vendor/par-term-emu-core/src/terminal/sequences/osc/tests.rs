@@ -68,9 +68,27 @@ fn test_title_stack() {
     term.process(b"\x1b]0;New Title\x1b\\");
     assert_eq!(term.title(), "New Title");
 
-    // OSC 22 - Pop title
-    term.process(b"\x1b]22\x1b\\");
+    // OSC 23 - Pop title. OSC 22 moved to the pointer shape
+    // (kitty/ghostty/iTerm2 meaning); the pop stays on 23 only.
+    term.process(b"\x1b]23\x1b\\");
     assert_eq!(term.title(), "Original Title");
+}
+
+#[test]
+fn test_osc22_pointer_shape() {
+    let mut term = Terminal::new(80, 24);
+
+    // OSC 22 ; shape - adopt the named pointer shape.
+    term.process(b"\x1b]22;ew-resize\x1b\\");
+    assert_eq!(term.pointer_shape(), Some("ew-resize"));
+
+    // Re-setting the same shape is idempotent state-wise.
+    term.process(b"\x1b]22;ew-resize\x1b\\");
+    assert_eq!(term.pointer_shape(), Some("ew-resize"));
+
+    // The empty shape resets to the terminal's own pointer.
+    term.process(b"\x1b]22;\x1b\\");
+    assert_eq!(term.pointer_shape(), None);
 }
 
 #[test]
@@ -2015,7 +2033,7 @@ fn test_osc1337_inline_image_single_sequence() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, crate::terminal::TerminalEvent::GraphicsAdded(_))),
+            .any(|e| matches!(e, crate::terminal::TerminalEvent::GraphicsAdded { .. })),
         "GraphicsAdded must fire for a placed inline image"
     );
     assert!(
@@ -2130,6 +2148,41 @@ fn test_osc1337_filepart_without_multipartfile() {
         has_inline_image_dropped(&events),
         "FilePart without MultipartFile must produce an InlineImageDropped diagnostic"
     );
+}
+
+#[test]
+fn test_osc1337_multipart_restart_fails_superseded_transfer() {
+    let mut term = Terminal::new(80, 24);
+    // MultipartFile A (file transfer, not inline) with one chunk appended.
+    term.process(b"\x1b]1337;MultipartFile=size=100;name=YS50eHQ=\x07");
+    term.process(b"\x1b]1337;FilePart=aGVsbG8=\x07");
+    let active = term.get_active_transfers();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].filename, "a.txt");
+    let id_a = active[0].id;
+
+    // A second MultipartFile replaces the multipart buffer: A's manager
+    // entry is unreachable afterwards, so it must be failed into the
+    // bounded completed ring rather than left active forever.
+    term.process(b"\x1b]1337;MultipartFile=size=100;name=Yi50eHQ=\x07");
+
+    let active = term.get_active_transfers();
+    assert_eq!(
+        active.len(),
+        1,
+        "the restart must be the sole active transfer"
+    );
+    assert_eq!(active[0].filename, "b.txt");
+
+    let completed = term.get_completed_transfers();
+    let superseded = completed
+        .iter()
+        .find(|t| t.id == id_a)
+        .expect("superseded transfer must land in the completed ring");
+    assert!(matches!(
+        &superseded.status,
+        crate::terminal::TransferStatus::Failed(msg) if msg == "superseded by MultipartFile restart"
+    ));
 }
 
 #[test]
