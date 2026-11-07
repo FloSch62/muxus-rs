@@ -66,7 +66,7 @@ muxus-rs can be compared with Electron pixel for pixel in one compositor.
 | Folder tree, flattening, siblings, paths | host-tree.ts | done | arena-backed |
 | Row clicks, tree window, navigation, selection, drag and drop rules | components/sidebar/{row-clicks,tree-window,tree-navigation,tree-selection,tree-dnd}.ts | done | |
 | Folder mutations, host details, folder icons, kind icons, folder prefs, live counts, row geometry | components/sidebar/* | done | |
-| `localeCompare` | ICU root collation | partial | `muxus_core::collate::locale_compare` (an approximation, documented there) |
+| `localeCompare` | ICU root collation | done | `muxus_core::collate::locale_compare`: ICU4X `icu_collator` with the root collation (what Chromium's ICU uses for English) at `Intl.Collator`'s defaults; only the root's data is linked (+0.32 MB stripped release, against +1.24 MB with every locale's tailoring). Golden test (67 strings sorted by the renderer) plus accents, `ß`, Greek, Cyrillic, kana and other digits, checked against Node's ICU 78 |
 | Pane layout | state/workspace-layout.ts | done | |
 | Tabs store | state/tabs.ts | done | |
 | Session actions (connect host/target, local terminal, launch guard, quick-connect test) | session-actions.ts | done | `state::session_actions` (connect host or target, the repeat-launch guard, `is_quick_connect_target`) and `features::launcher::sessions` (local shells, saved shell profiles); `session-launch-guard.test.ts` ported there. The tab, pane, window, logging and reconnect actions of the same file live with the tab menu and window code (`app.md`); the session itself is the backend's |

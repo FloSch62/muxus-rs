@@ -10,6 +10,10 @@ rust-version.workspace = true
 async-channel = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 fancy-regex = "0.16"
+# `localeCompare`: ICU root collation (see collate.rs; only the root's data is kept).
+icu_collator = "2.3"
+icu_normalizer = "2.3"
+icu_provider = "2.3"
 percent-encoding = "2"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

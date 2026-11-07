@@ -43,7 +43,7 @@ cd ../muxus/server && TMPDIR=$T ./node_modules/.bin/tsx \
 | `--host`, `--folder`, `--workspace` resolution | client/src/command-line-launch.ts | done | folders use an internal port of the sidebar grouping (`groupHosts`, `groupManagedHosts`, `buildHostTree`) without filters, remembered empty folders or manual folder order, which resolution never uses |
 | ssh:// and telnet:// link resolution against saved hosts | command-line-launch.ts `resolveConnectionLink` | done | the link grammar itself is `muxus_core::connection_links` |
 | Launch handler decisions and messages | client/src/components/CommandLineLaunchHandler.tsx | done | `plan_command_line_launch`; the request queue, catalog loading and performing the action belong to `muxus-app` |
-| `String.prototype.localeCompare` | (implicit, ICU root collation) | partial | ASCII ordering matches the renderer exactly (golden, 67 strings); accents are secondary, `ß` expands; other scripts sort by code point inside their class |
+| `String.prototype.localeCompare` | (implicit, ICU root collation) | done | `muxus_core::collate::locale_compare` (ICU4X root collation, re-exported here); golden test of 67 strings sorted by the renderer |
 | ssh_config import | — | n/a | Muxus has no ssh_config importer: ssh_config is itself a host store. The OpenSSH *export* lives in data-transfer.ts with backups |
 | Vendor colors | — | n/a | the TypeScript maps no colors from MobaXterm or SecureCRT |
 

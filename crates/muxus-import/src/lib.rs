@@ -16,7 +16,6 @@
 //! [`ImportReview::detect_local_mobaxterm`]) run it on tokio's blocking pool;
 //! callers that parse text themselves should do the same.
 
-mod collation;
 pub mod launch;
 pub mod mobaxterm;
 pub mod mobaxterm_local;
@@ -27,8 +26,9 @@ pub mod securecrt;
 pub mod session;
 mod text;
 
-pub use collation::locale_compare;
 pub use mobaxterm::{MAX_MOBAXTERM_IMPORT_BYTES, mobaxterm_connections, parse_mobaxterm_sessions};
+/// `localeCompare` as the renderer runs it (ICU root collation); shared with the rest of Muxus.
+pub use muxus_core::collate::locale_compare;
 pub use portable::{PortableConnections, PortableHostMetadata, PortableSavedHost, PortableSshHost};
 pub use restore::{
     ConflictStrategy, ExistingHosts, RestorePlan, RestoreResult, RestoreStep, plan_restore,
