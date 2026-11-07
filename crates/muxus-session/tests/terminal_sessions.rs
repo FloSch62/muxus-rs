@@ -568,6 +568,7 @@ async fn an_ssh_session_signs_in_exchanges_bytes_and_reports_its_exit() {
             user,
             sftp_available,
             summary,
+            ..
         }) => {
             assert_eq!(host.as_deref(), Some("127.0.0.1"));
             assert_eq!(user.as_deref(), Some("tester"));

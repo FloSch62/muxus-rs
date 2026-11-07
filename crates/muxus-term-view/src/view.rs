@@ -333,7 +333,11 @@ impl TerminalView {
 
     /// Paste without asking (after the app's confirmation dialog).
     pub fn paste_confirmed(&mut self, text: &str, cx: &mut Context<Self>) {
-        let data = terminal_paste_data(text, self.emulator.bracketed_paste());
+        let data = terminal_paste_data(
+            text,
+            self.emulator.bracketed_paste(),
+            muxus_core::api::TerminalEnterKey::Cr,
+        );
         self.user_input(data.into_bytes(), cx);
     }
 

@@ -12,6 +12,7 @@ pub fn host_kind_icon_name(kind: ProfileKind) -> &'static str {
         ProfileKind::Vnc => "ScreenShareOutlined",
         ProfileKind::Gnmi => "SensorsOutlined",
         ProfileKind::Netconf => "AccountTreeOutlined",
+        ProfileKind::Web => "PublicOutlined",
         ProfileKind::Ssh | ProfileKind::Local => "DnsOutlined",
     }
 }

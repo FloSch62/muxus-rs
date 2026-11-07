@@ -1942,6 +1942,8 @@ impl AppShell {
                 bracketed,
                 line_delay_ms: pacing.line_delay_ms,
                 char_delay_ms: pacing.char_delay_ms,
+                prompt: None,
+                enter_key: None,
             }),
             cx,
         );

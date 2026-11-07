@@ -569,6 +569,7 @@ mod tests {
                 target: "bastion".into(),
                 profile_id: None,
             }),
+            ssh_gateway_fallbacks: None,
         };
         let ssh = netconf_ssh_profile(&profile);
         assert_eq!(ssh.target, "router1");

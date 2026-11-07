@@ -93,6 +93,88 @@ fn command_button_groups_preference() {
 }
 
 #[test]
+fn command_button_shortcuts_one_button_per_chord() {
+    let uptime =
+        json!({ "id": "uptime", "label": "Uptime", "command": "uptime", "sendEnter": true });
+    let mut bound = uptime.clone();
+    bound["shortcut"] = json!("Ctrl+Alt+KeyU");
+    let mut again = bound.clone();
+    again["id"] = json!("again");
+    let mut again_unbound = uptime.clone();
+    again_unbound["id"] = json!("again");
+    assert_eq!(
+        migrate(json!({ "commandButtons": [bound, again] }), 16),
+        json!({ "commandButtons": [bound, again_unbound] })
+    );
+}
+
+#[test]
+fn close_tab_on_clean_exit_preference() {
+    // Off by default, also for preferences saved before it existed.
+    let initial = muxus_store::prefs::default_state_map();
+    assert!(!PrefsState::default().close_tab_on_clean_exit);
+    let merged = merge_persisted_prefs(&json!({ "confirmCloseConnected": false }), &initial);
+    assert_eq!(merged["closeTabOnCleanExit"], json!(false));
+    // A stored value that is not a boolean is dropped.
+    assert_eq!(
+        migrate(json!({ "closeTabOnCleanExit": "yes" }), 17),
+        json!({})
+    );
+    assert_eq!(
+        migrate(json!({ "closeTabOnCleanExit": true }), 17),
+        json!({ "closeTabOnCleanExit": true })
+    );
+}
+
+#[test]
+fn look_alike_paste_preference() {
+    // On by default, also for preferences saved before it existed.
+    let initial = muxus_store::prefs::default_state_map();
+    assert!(PrefsState::default().paste_warn_lookalikes);
+    let merged = merge_persisted_prefs(&json!({ "pasteWarnMultiline": false }), &initial);
+    assert_eq!(merged["pasteWarnLookalikes"], json!(true));
+}
+
+#[test]
+fn program_status_and_environment_preferences() {
+    let initial = PrefsState::default();
+    assert!(initial.show_program_status);
+    assert!(initial.discover_environments);
+    assert_eq!(initial.environment_refresh_seconds, 30.0);
+    assert_eq!(initial.environments_panel_width, 460.0);
+    let kept = json!({
+        "showProgramStatus": false,
+        "discoverEnvironments": false,
+        "environmentRefreshSeconds": 0,
+        "environmentsPanelWidth": 340,
+    });
+    assert_eq!(migrate(kept.clone(), 17), kept);
+    assert_eq!(
+        migrate(
+            json!({
+                "showProgramStatus": "no",
+                "discoverEnvironments": 1,
+                "environmentRefreshSeconds": 45,
+                "environmentsPanelWidth": 339,
+                "monoFontSize": 16,
+            }),
+            17
+        ),
+        json!({ "monoFontSize": 16 })
+    );
+    for seconds in [0, 15, 30, 60, 120, 300] {
+        assert_eq!(
+            migrate(json!({ "environmentRefreshSeconds": seconds }), 17),
+            json!({ "environmentRefreshSeconds": seconds })
+        );
+    }
+    assert_eq!(
+        migrate(json!({ "environmentsPanelWidth": "wide" }), 17),
+        json!({})
+    );
+}
+
+#[test]
 fn ssh_keepalive_preference() {
     assert_eq!(PrefsState::default().ssh_keepalive_interval_seconds, 30.0);
     assert_eq!(PrefsState::default().ssh_keepalive_field(), Some(30));
@@ -271,7 +353,8 @@ fn split_pane_focus_preferences() {
 
 #[test]
 fn boolean_preferences_keep_booleans_only() {
-    assert!(!PrefsState::default().webgl_renderer);
+    // New installations render on the GPU.
+    assert!(PrefsState::default().webgl_renderer);
     assert_eq!(
         migrate(json!({ "webglRenderer": true }), 12),
         json!({ "webglRenderer": true })

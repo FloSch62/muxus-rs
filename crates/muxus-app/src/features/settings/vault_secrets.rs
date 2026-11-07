@@ -156,6 +156,7 @@ mod tests {
             group_id: None,
             color: None,
             secret_id: secret.map(Into::into),
+            shortcut: None,
         }
     }
 

@@ -83,6 +83,7 @@ content (`palette.rs`) and test data.
 | FolderDialog (new, edit with rename/re-parent/merge note, move hosts, style, shared credentials, folder password with master password, inherited login sequence) | `sidebar/FolderDialog.tsx` | done | |
 | LaunchGroupDialog (layout cards, live-session warning, launch toast) | `sidebar/LaunchGroupDialog.tsx` | done | |
 | Saved hosts helpers | `saved-hosts.ts` | done | already in `hosts::saved` (shell) |
+| v0.15 host settings in the drafts and bulk edit: prompt waiting, anti-idle, keys/echo, system OpenSSH, environment discovery, fallback jump routes and gateways | `draft.ts`, `native-draft.ts`, `desktop-draft.ts`, `management-draft.ts`, `host-bulk-edit.ts`, `SshGatewayRouteField.tsx` (`savedGatewayFallbacks`) | partial | Data only: loaded from the host, checked, saved (edit and duplicate keep them); no controls in the editor or bulk dialog yet. `web-draft.ts`, `name-range.ts`, `range-save.ts`, `authChoice` and `managementHostPrefill` are not ported |
 
 ## Tests
 

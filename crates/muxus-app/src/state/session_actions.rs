@@ -113,7 +113,11 @@ pub fn connect_managed_host(
             connect_target(tabs, guard, &entry.alias, &title, replace, now)
         }
         ManagedHost::Profile(entry) => {
-            let profile = with_profile_id(entry.profile.clone().into(), &entry.id);
+            // A web page opens in its own browser window, never in a tab.
+            let Some(profile) = entry.profile.session_profile() else {
+                return String::new();
+            };
+            let profile = with_profile_id(profile, &entry.id);
             let title = host.display_name().to_string();
             let key = format!("saved:{}:{}", entry.id, replace.unwrap_or(""));
             guard.launch_once(tabs, key, now, |tabs| {
@@ -134,10 +138,11 @@ pub fn connect_managed_host(
 }
 
 /// One host of `launchManagedHostGroup`: its profile, title and color for
-/// [`TabsState::launch_set`].
-pub fn session_set_entry(host: &ManagedHost) -> crate::state::tabs::SessionSetEntry {
+/// [`TabsState::launch_set`]. `None` for a web page, which opens in its own
+/// window next to the tabs rather than in one.
+pub fn session_set_entry(host: &ManagedHost) -> Option<crate::state::tabs::SessionSetEntry> {
     let color = host.metadata().and_then(|metadata| metadata.color.clone());
-    match host {
+    Some(match host {
         ManagedHost::Ssh(entry) => crate::state::tabs::SessionSetEntry {
             profile: crate::model::ssh_profile(entry.alias.clone()),
             title: entry
@@ -148,11 +153,11 @@ pub fn session_set_entry(host: &ManagedHost) -> crate::state::tabs::SessionSetEn
             color,
         },
         ManagedHost::Profile(entry) => crate::state::tabs::SessionSetEntry {
-            profile: with_profile_id(entry.profile.clone().into(), &entry.id),
+            profile: with_profile_id(entry.profile.session_profile()?, &entry.id),
             title: host.display_name().to_string(),
             color,
         },
-    }
+    })
 }
 
 /// `launchLocalTerminal`: open a local shell (`openLocalTerminal` resolves

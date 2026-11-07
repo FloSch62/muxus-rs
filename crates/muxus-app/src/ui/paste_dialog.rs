@@ -38,7 +38,7 @@ pub fn pacing_note(text: &str, pacing: PastePacing, mirrored: usize) -> String {
     let note = if pacing.line_delay_ms == 0 && pacing.char_delay_ms == 0 {
         "Sent all at once. A line delay paces it for consoles that drop input.".to_string()
     } else {
-        let duration = paste_pacing_duration_ms(&prepare_paste_text(text, false), pacing);
+        let duration = paste_pacing_duration_ms(&prepare_paste_text(text, false), &pacing);
         let chars = if pacing.char_delay_ms > 0 {
             format!(", with {} ms after each character", pacing.char_delay_ms)
         } else {
@@ -209,7 +209,7 @@ impl Render for PasteDialog {
             &text,
             PastePacing {
                 line_delay_ms: delay_ms,
-                ..self.pacing
+                ..self.pacing.clone()
             },
             self.mirrored,
         );
@@ -381,26 +381,9 @@ mod tests {
             "Sent all at once. A line delay paces it for consoles that drop input."
         );
         assert_eq!(
-            pacing_note(
-                "a\nb",
-                PastePacing {
-                    line_delay_ms: 0,
-                    char_delay_ms: 0
-                },
-                2
-            ),
+            pacing_note("a\nb", PastePacing::delays(0, 0), 2),
             "Sent all at once. A line delay paces it for consoles that drop input. Mirrored terminals paste at their own host's pace."
         );
-        assert!(
-            pacing_note(
-                "a\nb\nc",
-                PastePacing {
-                    line_delay_ms: 500,
-                    char_delay_ms: 0
-                },
-                0
-            )
-            .starts_with("Takes ")
-        );
+        assert!(pacing_note("a\nb\nc", PastePacing::delays(500, 0), 0).starts_with("Takes "));
     }
 }

@@ -22,6 +22,17 @@ CARGO_TARGET_DIR=target-core cargo test -p muxus-store --test vault -- --ignored
 |---|---|---|---|
 | Domain and REST types | shared/src/api-types.ts | done | `muxus_core::api`; camelCase, absent optionals skipped, `T \| null` patches as `js::Patch` |
 | Session profiles (8 kinds) + defaults | shared/src/ws-protocol.ts | done | `protocol::{SessionProfile, TerminalProfile, DesktopProfile, ManagementProfile, SavedHostSessionProfile}` |
+| Web page hosts | shared/src/ws-protocol.ts (`webProfileSchema`) | done | `protocol::WebProfile`, `SavedHostSessionProfile::Web`, `ProfileKind::Web`; no `SessionProfile` (`TryFrom` returns the web profile as the error) |
+| Fallback jump routes and gateways | shared/src/ws-protocol.ts, routes/metadata-schema.ts | done | `SshProfile::proxy_jump_fallbacks`, `ssh_gateway_fallbacks` on RDP/VNC/gNMI/NETCONF, `MAX_JUMP_FALLBACKS`/`MAX_JUMP_HOPS` |
+| Environment targets on local/SSH sessions | shared/src/ws-protocol.ts | done | `LocalProfile::environment`, `SshProfile::environment` |
+| Environments (containers, pods, labs, VMs) | shared/src/environments.ts, routes/environments.ts (`actionSchema`, `portSchema`) | done | `environments`: name checks, argv, quoting, titles, discovery/response types, `EnvironmentAction`, `EnvironmentPortRequest`; tests `tests/environments.rs` |
+| Script library and runs | shared/src/api-types.ts, routes/scripts.ts | done | `api::{SavedScript, SavedScriptInput, ScriptRunRequest, ScriptRunStatus, ScriptRunState}` with the route limits |
+| Anti-idle, terminal keys and echo, system OpenSSH, environment discovery override | shared/src/api-types.ts, routes/metadata-schema.ts | done | `OpenSshProfileMetadata`/`OpenSshMetadataPatch` fields with the route's validation; `TERMINAL_BACKSPACE_KEYS`/`TERMINAL_ENTER_KEYS` |
+| Anti-idle drafts | client/src/anti-idle.ts | done | `anti_idle` (shared by the host editors, bulk edit and backups) |
+| Prompt waiting drafts | client/src/terminal/paste-prompt.ts | done | `paste_prompt` |
+| Terminal input modes | client/src/terminal/input-modes.ts | done | `input_modes` |
+| AppImage environment cleanup | shared/src/appimage-env.ts | done | `appimage_env` |
+| Host batch create, `listedHostFor`, `new-window` launch, independent forwards, paste stop progress, `systemOpenSsh` ready flag | shared/src/api-types.ts, ws-protocol.ts | done | types only |
 | Terminal / desktop / management messages | shared/src/ws-protocol.ts | done | client and server enums tagged by `op`; desktop certificate challenge flattened |
 | zod validation and limits | shared/src/ws-protocol.ts | done | `validate::Validate` + `parse_value`; zod 4 messages; UTF-16 lengths, JS `trim` |
 | Route schemas (metadata patch, login sequence, keyword rules, tunnel, saved host, workspace save) | server/src/routes/{metadata-schema,tunnels,profiles,workspaces}.ts | done | `Validate` impls in `api`; JS regex validity uses an Annex B checker, not V8 |
@@ -29,7 +40,7 @@ CARGO_TARGET_DIR=target-core cargo test -p muxus-store --test vault -- --ignored
 | ssh:// and telnet:// links | shared/src/connection-links.ts | done | identical error messages |
 | gNMI path strings | shared/src/gnmi-path.ts | done | key order kept, UTF-16 error positions |
 | Management types | shared/src/management.ts | done | |
-| Paste pacing | shared/src/paste-pacing.ts | done | the client-only helpers in client/src/terminal/paste-pacing.ts are not ported (terminal view) |
+| Paste pacing | shared/src/paste-pacing.ts | done | prompt waiting (`PastePromptWait`, `PastePromptWaitSetting`, `paste_pattern_problem`) and the host's Enter key included; the client-only helpers in client/src/terminal/paste-pacing.ts are not ported (terminal view) |
 | Session transcript | shared/src/session-transcript.ts | done | UTF-16 offsets |
 | Update version precedence | shared/src/update-version.ts | done | |
 | Session log file names | shared/src/api-types.ts | done | `session_log_file` |
@@ -41,11 +52,12 @@ CARGO_TARGET_DIR=target-core cargo test -p muxus-store --test vault -- --ignored
 | Feature | TypeScript source | Status | Note |
 |---|---|---|---|
 | Data folder rules | electron/src/main.ts, server/src/config.ts, session-logging/history-store.ts | done | `paths`: Electron `userData` (`$XDG_CONFIG_HOME/Muxus`, macOS/Windows equivalents), `-development`, server default `$XDG_DATA_HOME/muxus`, `MUXUS_HISTORY_PATH`, history root precedence; macOS/Windows rules unit-tested, not run there |
-| Schema + migrations 1–29 | server/src/persistence/database.ts | done | SQL copied verbatim; a fresh file has the TypeScript schema byte for byte (`tests/db_schema.rs`); table rebuilds of v22/v29 ported |
+| Schema + migrations 1–37 | server/src/persistence/database.ts | done | SQL copied verbatim; a fresh file has the TypeScript schema byte for byte (`tests/db_schema.rs`); table rebuilds of v22/v29/v36 (`addWebHosts`, skipped when the table already admits `web`) ported |
 | Newer database refused | database.ts `migrate()` | done | same error text, file untouched |
-| Current TypeScript database opens unchanged | — | done | populated TypeScript fixture: schema unchanged, all 31 recorded reads equal the TypeScript return values (`tests/db_ts_fixture.rs`) |
-| OpenSSH metadata, groups, host order, alias rename | database.ts | done | |
-| Saved hosts (all 7 kinds), native connections | database.ts | done | stored config JSON round-trips byte for byte |
+| Current TypeScript database opens unchanged | — | done | populated TypeScript fixture (v0.15, schema 37): schema unchanged, all 40 recorded reads equal the TypeScript return values (`tests/db_ts_fixture.rs`) |
+| OpenSSH metadata, groups, host order, alias rename | database.ts | done | includes prompt waiting, anti-idle, keys/echo, system OpenSSH, discovery override and (aliases only) fallback jump routes; `system_open_ssh_for_alias`/`_for_saved_host`, `jump_fallbacks_for_alias`, `host_anti_idle`, `host_input_keys` |
+| Saved hosts (all 8 kinds, web included), native connections | database.ts | done | stored config and metadata JSON round-trip byte for byte |
+| Scripts | database.ts (`listScripts`, `saveScript`, `deleteScript`) | done | `list_scripts`, `save_script`, `delete_script` |
 | Workspaces, startup/lock, default names, snapshot pruning | database.ts, routes/workspaces.ts | done | `put_workspace` is the storage side of `PUT /api/workspaces` |
 | Terminal snapshots | database.ts, routes/terminal-snapshots.ts | done | |
 | Tunnels | database.ts, routes/tunnels.ts | done | |
@@ -66,8 +78,8 @@ CARGO_TARGET_DIR=target-core cargo test -p muxus-store --test vault -- --ignored
 | Crash recovery and v6 legacy import | history-worker.js | done | then `Database::finalize_session_history_separation` |
 | `client-state.json` store | electron/src/main.ts | done | key order, 0600, tmp + rename |
 | Prefs envelope + rehydrate | client/src/state/prefs.ts, zustand persist | done | byte-equal golden cases (v0, v8, v15, v17, v18, none, bad JSON, empty) |
-| Prefs migration v0–17 + merge | client/src/state/prefs.ts | done | |
-| Command buttons | client/src/command-buttons.ts | done | |
+| Prefs migration v0–17 + merge | client/src/state/prefs.ts | done | v0.15 keys: `pasteWarnLookalikes`, `closeTabOnCleanExit`, `showProgramStatus`, `discoverEnvironments`, `environmentRefreshSeconds` (`ENVIRONMENT_REFRESH_SECONDS`), `environmentsPanelWidth`; `webglRenderer` defaults to on |
+| Command buttons | client/src/command-buttons.ts | partial | `shortcut` kept and de-duplicated; dropping a shortcut that is not a bindable chord needs the chord parser in muxus-app (`keymap::chords`) and is left to the shortcuts feature |
 | Highlight profiles + built-ins | client/src/highlight-profiles.ts, builtin-highlight-profiles.ts | partial | regex check injected by the caller; matching belongs to the terminal view |
 | Custom terminal schemes | client/src/terminal/custom-schemes.ts | partial | theme conversion left to the terminal view |
 | Layout helpers | host-stats.ts, sidebar-width.ts, sftp-panel-width.ts, interface-zoom.ts | done | |
@@ -101,6 +113,8 @@ CARGO_TARGET_DIR=target-core cargo test -p muxus-store --test vault -- --ignored
   arbitrary stored JSON keeps the key order the TypeScript wrote.
 - Saved-host rows whose stored profile this build cannot parse are left out of `list_saved_host_profiles`
   instead of failing the whole list.
+- A stored prompt-wait timeout or anti-idle interval that is not a whole number is read as unset; the
+  TypeScript keeps any number, but only ever writes whole ones.
 - The store is synchronous (`Database` is `Send + Sync`, one connection behind a mutex); the vault blocks
   on scrypt and the keyring. Async callers use `spawn_blocking`. The history store is async.
 - The OS keyring is chosen like `@napi-rs/keyring` 2.1: Secret Service through the same keyring-rs store
@@ -115,8 +129,9 @@ CARGO_TARGET_DIR=target-core cargo test -p muxus-store --test vault -- --ignored
   `DesktopClientMessage`/`DesktopServerMessage`, `ManagementClientMessage`/`ManagementServerMessage`,
   `AuthPromptInfo`, `HostKeyChallenge`, constants, `parse_session_profile`, `parse_terminal_client_message`.
 - `muxus_core::validate` — `Validate`, `parse`, `parse_value`, `ValidationError`.
-- `muxus_core::{js, stream, management, connection_links, gnmi_path, paste_pacing, session_transcript,
-  session_log_file, update_version, folder_paths}`.
+- `muxus_core::{js, stream, management, connection_links, gnmi_path, paste_pacing, paste_prompt,
+  anti_idle, input_modes, environments, appimage_env, session_transcript, session_log_file,
+  update_version, folder_paths}`.
 - `muxus_store::Database` (`open`, `open_in_memory`, every repository method), `muxus_store::db::*` row and
   input types, `DbError`.
 - `muxus_store::vault::{PasswordVault, VaultOptions, VaultError, SecretInput, VaultKeyStore,

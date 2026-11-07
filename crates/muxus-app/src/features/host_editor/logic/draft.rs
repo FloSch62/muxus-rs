@@ -1,12 +1,22 @@
 //! The SSH host editor's form state (`client/src/components/host-editor/draft.ts`):
 //! one draft for an OpenSSH Host block or a Muxus-owned SSH profile.
 
+use muxus_core::anti_idle::{
+    AntiIdleDraft, anti_idle_draft, anti_idle_from_draft, anti_idle_problem,
+};
 use muxus_core::api::{
     ConfigForward, ForwardType, HostBlockOptions, HostKeywordHighlightConfig, HostOptionExtra,
     HostUpsertRequest, OpenSshMetadataPatch, SavedHostProfile, SavedHostProfileInput, SshHostEntry,
     saved_host_hop_id,
 };
-use muxus_core::js::{js_trim, utf16_len};
+use muxus_core::input_modes::{
+    TerminalInputModes, apply_terminal_input_modes_patch, host_terminal_input_modes,
+};
+use muxus_core::js::{Patch, js_trim, utf16_len};
+use muxus_core::paste_prompt::{
+    PastePromptWaitDraft, paste_prompt_wait_draft, paste_prompt_wait_from_draft,
+    paste_prompt_wait_problem,
+};
 use muxus_core::protocol::{
     RequestTty, SavedHostSessionProfile, SshProfile, StrictHostKeyChecking,
 };
@@ -71,6 +81,33 @@ pub enum RouteMode {
     Command,
 }
 
+/// Look for containers, clusters and VMs on connect; `Default` follows Settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum EnvironmentDiscoveryDraft {
+    #[default]
+    Default,
+    On,
+    Off,
+}
+
+/// `environmentDiscoveryDraft`.
+pub fn environment_discovery_draft(value: Option<bool>) -> EnvironmentDiscoveryDraft {
+    match value {
+        None => EnvironmentDiscoveryDraft::Default,
+        Some(true) => EnvironmentDiscoveryDraft::On,
+        Some(false) => EnvironmentDiscoveryDraft::Off,
+    }
+}
+
+/// The stored override (`environmentDiscoveryFromDraft`): `None` follows the global setting.
+pub fn environment_discovery_from_draft(value: EnvironmentDiscoveryDraft) -> Option<bool> {
+    match value {
+        EnvironmentDiscoveryDraft::Default => None,
+        EnvironmentDiscoveryDraft::On => Some(true),
+        EnvironmentDiscoveryDraft::Off => Some(false),
+    }
+}
+
 /// Everything the editor form holds, in form-friendly shapes (ports as text).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostDraft {
@@ -91,10 +128,20 @@ pub struct HostDraft {
     /// Paste pacing; unset follows the Terminal settings.
     pub paste_line_delay_ms: Option<u32>,
     pub paste_char_delay_ms: Option<u32>,
+    /// Pastes wait for the prompt after each line.
+    pub paste_prompt_wait: PastePromptWaitDraft,
+    /// Text typed into idle sessions.
+    pub anti_idle: AntiIdleDraft,
+    /// Backspace and Enter keys, implicit CR and local echo.
+    pub input_modes: TerminalInputModes,
     /// Muxus-only plain-shell mode: no SFTP or shell integration.
     pub disable_sftp: bool,
     /// Muxus-only console mode: also no env requests, with PTY rejection fallback.
     pub console_compatibility: bool,
+    /// Connect with the computer's `ssh` program instead of the built-in client.
+    pub system_open_ssh: bool,
+    /// Look for containers, clusters and VMs on connect; `Default` follows Settings.
+    pub discover_environments: EnvironmentDiscoveryDraft,
     /// Target config file; empty keeps the block's file (or the root for new hosts).
     pub file: String,
     pub hostname: String,
@@ -111,6 +158,8 @@ pub struct HostDraft {
     pub forward_x11: ForwardX11Mode,
     pub route_mode: RouteMode,
     pub proxy_jump: Vec<String>,
+    /// Jump routes tried in order when `proxy_jump` fails, each a whole chain.
+    pub proxy_jump_fallbacks: Vec<Vec<String>>,
     pub proxy_command: String,
     pub forwards: Vec<ConfigForward>,
     pub remote_command_mode: RemoteCommandMode,
@@ -154,8 +203,13 @@ pub fn blank_draft(prefill_target: &str, group: &str, storage: Storage) -> HostD
         command_button_group: None,
         paste_line_delay_ms: None,
         paste_char_delay_ms: None,
+        paste_prompt_wait: paste_prompt_wait_draft(None),
+        anti_idle: anti_idle_draft(None),
+        input_modes: host_terminal_input_modes(None),
         disable_sftp: false,
         console_compatibility: false,
+        system_open_ssh: false,
+        discover_environments: EnvironmentDiscoveryDraft::Default,
         file: String::new(),
         hostname: match &parsed {
             Some(parsed) => parsed.host.clone(),
@@ -182,6 +236,7 @@ pub fn blank_draft(prefill_target: &str, group: &str, storage: Storage) -> HostD
         forward_x11: ForwardX11Mode::Inherit,
         route_mode: RouteMode::Direct,
         proxy_jump: Vec::new(),
+        proxy_jump_fallbacks: Vec::new(),
         proxy_command: String::new(),
         forwards: Vec::new(),
         remote_command_mode: RemoteCommandMode::Inherit,
@@ -257,10 +312,19 @@ pub fn draft_from_entry(entry: &SshHostEntry, duplicate: bool) -> HostDraft {
         command_button_group: metadata.and_then(|m| m.command_button_group.clone()),
         paste_line_delay_ms: metadata.and_then(|m| m.paste_line_delay_ms),
         paste_char_delay_ms: metadata.and_then(|m| m.paste_char_delay_ms),
+        paste_prompt_wait: paste_prompt_wait_draft(
+            metadata.and_then(|m| m.paste_prompt_wait.as_ref()),
+        ),
+        anti_idle: anti_idle_draft(metadata.and_then(|m| m.anti_idle.as_ref())),
+        input_modes: host_terminal_input_modes(metadata),
         disable_sftp: metadata.and_then(|m| m.disable_sftp).unwrap_or(false),
         console_compatibility: metadata
             .and_then(|m| m.console_compatibility)
             .unwrap_or(false),
+        system_open_ssh: metadata.and_then(|m| m.system_open_ssh).unwrap_or(false),
+        discover_environments: environment_discovery_draft(
+            metadata.and_then(|m| m.discover_environments),
+        ),
         file: entry.file.clone(),
         hostname: o.hostname.clone().unwrap_or_default(),
         user: o.user.clone().unwrap_or_default(),
@@ -275,6 +339,9 @@ pub fn draft_from_entry(entry: &SshHostEntry, duplicate: bool) -> HostDraft {
         forward_x11: forward_x11_draft(o.forward_x11),
         route_mode: route_mode_of(&o.proxy_command, &o.proxy_jump),
         proxy_jump: o.proxy_jump.clone().unwrap_or_default(),
+        proxy_jump_fallbacks: metadata
+            .and_then(|m| m.proxy_jump_fallbacks.clone())
+            .unwrap_or_default(),
         proxy_command: o.proxy_command.clone().unwrap_or_default(),
         forwards: o.forwards.clone().unwrap_or_default(),
         remote_command_mode,
@@ -325,8 +392,13 @@ pub fn draft_from_saved_ssh_profile(
         command_button_group: metadata.command_button_group.clone(),
         paste_line_delay_ms: metadata.paste_line_delay_ms,
         paste_char_delay_ms: metadata.paste_char_delay_ms,
+        paste_prompt_wait: paste_prompt_wait_draft(metadata.paste_prompt_wait.as_ref()),
+        anti_idle: anti_idle_draft(metadata.anti_idle.as_ref()),
+        input_modes: host_terminal_input_modes(Some(metadata)),
         disable_sftp: metadata.disable_sftp.unwrap_or(false),
         console_compatibility: metadata.console_compatibility.unwrap_or(false),
+        system_open_ssh: metadata.system_open_ssh.unwrap_or(false),
+        discover_environments: environment_discovery_draft(metadata.discover_environments),
         file: String::new(),
         hostname: profile.target.clone(),
         user: profile.user.clone().unwrap_or_default(),
@@ -345,6 +417,7 @@ pub fn draft_from_saved_ssh_profile(
         forward_x11: forward_x11_draft(profile.forward_x11),
         route_mode: route_mode_of(&profile.proxy_command, &profile.proxy_jump),
         proxy_jump: profile.proxy_jump.clone().unwrap_or_default(),
+        proxy_jump_fallbacks: profile.proxy_jump_fallbacks.clone().unwrap_or_default(),
         proxy_command: profile.proxy_command.clone().unwrap_or_default(),
         forwards: profile.forwards.clone().unwrap_or_default(),
         remote_command_mode,
@@ -359,6 +432,12 @@ pub fn draft_from_saved_ssh_profile(
         session_logging: blank_host_session_logging_draft(),
         login_sequence: login_sequence_draft(metadata.login_sequence.as_ref()),
     })
+}
+
+/// The fallback routes to save (`draftJumpFallbacks`): only a jump route has any.
+pub fn draft_jump_fallbacks(draft: &HostDraft) -> Option<Vec<Vec<String>>> {
+    (draft.route_mode == RouteMode::Jump && !draft.proxy_jump_fallbacks.is_empty())
+        .then(|| draft.proxy_jump_fallbacks.clone())
 }
 
 /// The Host line's aliases.
@@ -437,6 +516,21 @@ pub fn draft_problem(draft: &HostDraft) -> Option<String> {
                 .into(),
         );
     }
+    if draft.route_mode == RouteMode::Jump && !draft.proxy_jump_fallbacks.is_empty() {
+        if draft.proxy_jump.is_empty() {
+            return Some("Add a jump host before adding fallback routes.".into());
+        }
+        if draft.storage == Storage::Openssh
+            && draft
+                .proxy_jump_fallbacks
+                .iter()
+                .any(|route| route.iter().any(|hop| saved_host_hop_id(hop).is_some()))
+        {
+            return Some(
+                "Fallback routes through hosts saved in Muxus need Muxus app data storage.".into(),
+            );
+        }
+    }
     if draft.remote_command_mode == RemoteCommandMode::Command
         && js_trim(&draft.remote_command).is_empty()
     {
@@ -462,7 +556,9 @@ pub fn draft_problem(draft: &HostDraft) -> Option<String> {
             extra.keyword
         ));
     }
-    login_sequence_problem(&draft.login_sequence)
+    paste_prompt_wait_problem(&draft.paste_prompt_wait)
+        .or_else(|| anti_idle_problem(&draft.anti_idle))
+        .or_else(|| login_sequence_problem(&draft.login_sequence))
         .or_else(|| keyword_highlight_rules_problem(&draft.keyword_highlights.rules))
 }
 
@@ -509,6 +605,7 @@ pub fn draft_to_saved_ssh_input(
             forward_x11: forward_x11_option(draft.forward_x11),
             proxy_jump: (draft.route_mode == RouteMode::Jump && !draft.proxy_jump.is_empty())
                 .then(|| draft.proxy_jump.clone()),
+            proxy_jump_fallbacks: draft_jump_fallbacks(draft),
             proxy_command: if draft.route_mode == RouteMode::Command {
                 non_empty(&draft.proxy_command)
             } else {
@@ -574,9 +671,10 @@ pub fn draft_to_request(draft: &HostDraft, previous_alias: Option<&str>) -> Host
     }
 }
 
-/// The Muxus metadata a save writes next to the host (both storages).
+/// The Muxus metadata a save writes next to the host (both storages;
+/// `metadataPatch` in HostEditorDialog.tsx).
 pub fn draft_metadata_patch(draft: &HostDraft) -> OpenSshMetadataPatch {
-    OpenSshMetadataPatch {
+    let mut patch = OpenSshMetadataPatch {
         display_name: text_patch(&draft.display_name),
         group: text_patch(&draft.group),
         color: optional_patch(&draft.color),
@@ -586,12 +684,27 @@ pub fn draft_metadata_patch(draft: &HostDraft) -> OpenSshMetadataPatch {
         command_button_group: optional_patch(&draft.command_button_group),
         paste_line_delay_ms: optional_patch(&draft.paste_line_delay_ms),
         paste_char_delay_ms: optional_patch(&draft.paste_char_delay_ms),
+        paste_prompt_wait: optional_patch(&paste_prompt_wait_from_draft(&draft.paste_prompt_wait)),
+        anti_idle: optional_patch(&anti_idle_from_draft(&draft.anti_idle)),
         disable_sftp: Some(draft.disable_sftp),
         console_compatibility: Some(draft.console_compatibility),
+        system_open_ssh: Some(draft.system_open_ssh),
+        discover_environments: optional_patch(&environment_discovery_from_draft(
+            draft.discover_environments,
+        )),
         keyword_highlights: highlights_patch(&draft.keyword_highlights),
         login_sequence: optional_patch(&login_sequence_from_draft(&draft.login_sequence)),
-        icon: muxus_core::js::Patch::Keep,
-    }
+        icon: Patch::Keep,
+        // ssh_config cannot hold fallback routes, so Muxus keeps them for the
+        // alias; a Muxus host has them in its profile instead.
+        proxy_jump_fallbacks: match draft.storage {
+            Storage::Openssh => optional_patch(&draft_jump_fallbacks(draft)),
+            Storage::Muxus => Patch::Keep,
+        },
+        ..OpenSshMetadataPatch::default()
+    };
+    apply_terminal_input_modes_patch(&draft.input_modes, &mut patch);
+    patch
 }
 
 /// Agent source represented by the current editor state, for live key detection.
@@ -652,6 +765,130 @@ mod tests {
         OpenSshProfileMetadata, ResolvedHostSettings, SavedHostKind, saved_host_hop,
     };
     use muxus_session::login_sequence::editor::LoginSequenceMode;
+
+    fn fallback_draft() -> HostDraft {
+        HostDraft {
+            alias_text: "app".into(),
+            hostname: "app.internal".into(),
+            route_mode: RouteMode::Jump,
+            proxy_jump: vec!["bastion-a".into()],
+            proxy_jump_fallbacks: vec![
+                vec!["bastion-b".into()],
+                vec!["edge".into(), "bastion-c".into()],
+            ],
+            ..blank_draft("", "", Storage::Muxus)
+        }
+    }
+
+    #[test]
+    fn saves_fallback_jump_routes_with_a_muxus_host_on_a_jump_route_only() {
+        let draft = fallback_draft();
+        let SavedHostSessionProfile::Ssh(profile) = draft_to_saved_ssh_input(&draft, None).profile
+        else {
+            panic!("an SSH profile");
+        };
+        assert_eq!(profile.proxy_jump, Some(vec!["bastion-a".to_owned()]));
+        assert_eq!(
+            profile.proxy_jump_fallbacks,
+            Some(draft.proxy_jump_fallbacks.clone())
+        );
+        let direct = HostDraft {
+            route_mode: RouteMode::Direct,
+            ..draft.clone()
+        };
+        let SavedHostSessionProfile::Ssh(profile) = draft_to_saved_ssh_input(&direct, None).profile
+        else {
+            panic!("an SSH profile");
+        };
+        assert_eq!(profile.proxy_jump_fallbacks, None);
+        // A Muxus host keeps them in its profile, an OpenSSH alias in its metadata.
+        assert_eq!(
+            draft_metadata_patch(&draft).proxy_jump_fallbacks,
+            Patch::Keep
+        );
+        let alias = HostDraft {
+            storage: Storage::Openssh,
+            ..draft.clone()
+        };
+        assert_eq!(
+            draft_metadata_patch(&alias).proxy_jump_fallbacks,
+            Patch::Set(draft.proxy_jump_fallbacks.clone())
+        );
+        let alias_direct = HostDraft {
+            route_mode: RouteMode::Direct,
+            ..alias
+        };
+        assert_eq!(
+            draft_metadata_patch(&alias_direct).proxy_jump_fallbacks,
+            Patch::Clear
+        );
+    }
+
+    #[test]
+    fn needs_a_first_jump_host_before_a_fallback() {
+        let draft = fallback_draft();
+        assert_eq!(draft_problem(&draft), None);
+        let problem = draft_problem(&HostDraft {
+            proxy_jump: Vec::new(),
+            ..draft
+        })
+        .unwrap();
+        assert!(problem.contains("jump host before"), "{problem}");
+    }
+
+    #[test]
+    fn keeps_muxus_saved_hosts_out_of_fallbacks_for_an_ssh_config_host() {
+        let problem = draft_problem(&HostDraft {
+            storage: Storage::Openssh,
+            proxy_jump_fallbacks: vec![vec![saved_host_hop("abc")]],
+            ..fallback_draft()
+        })
+        .unwrap();
+        assert!(problem.contains("Muxus app data"), "{problem}");
+    }
+
+    #[test]
+    fn carries_the_new_host_settings_through_edit_and_duplicate() {
+        use muxus_core::api::{AntiIdle, TerminalEnterKey};
+        let mut host = entry();
+        host.metadata = Some(OpenSshProfileMetadata {
+            anti_idle: Some(AntiIdle {
+                interval_seconds: 120,
+                text: " ".into(),
+                enter: false,
+            }),
+            paste_prompt_wait: Some(Default::default()),
+            enter_key: Some(TerminalEnterKey::Lf),
+            system_open_ssh: Some(true),
+            discover_environments: Some(false),
+            proxy_jump_fallbacks: Some(vec![vec!["bastion-b".into()]]),
+            ..host.metadata.clone().unwrap_or_default()
+        });
+        host.options.proxy_command = None;
+        host.options.proxy_jump = Some(vec!["bastion-a".into()]);
+        for duplicate in [false, true] {
+            let draft = draft_from_entry(&host, duplicate);
+            assert_eq!(draft.discover_environments, EnvironmentDiscoveryDraft::Off);
+            let patch = draft_metadata_patch(&draft);
+            assert_eq!(
+                patch.anti_idle,
+                Patch::Set(host.metadata.as_ref().unwrap().anti_idle.clone().unwrap())
+            );
+            assert_eq!(patch.paste_prompt_wait, Patch::Set(Default::default()));
+            assert_eq!(patch.enter_key, Patch::Set(TerminalEnterKey::Lf));
+            assert_eq!(patch.backspace_key, Patch::Clear);
+            assert_eq!(patch.system_open_ssh, Some(true));
+            assert_eq!(patch.discover_environments, Patch::Set(false));
+            assert_eq!(
+                patch.proxy_jump_fallbacks,
+                Patch::Set(vec![vec!["bastion-b".to_owned()]])
+            );
+        }
+        let blank = draft_metadata_patch(&blank_draft("", "", Storage::Openssh));
+        assert_eq!(blank.anti_idle, Patch::Clear);
+        assert_eq!(blank.discover_environments, Patch::Clear);
+        assert_eq!(blank.system_open_ssh, Some(false));
+    }
 
     fn entry() -> SshHostEntry {
         SshHostEntry {

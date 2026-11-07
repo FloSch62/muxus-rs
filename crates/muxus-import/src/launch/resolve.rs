@@ -324,11 +324,18 @@ pub fn resolve_connection_link<'a>(
             if let SavedHostSessionProfile::Ssh(ssh) = &mut profile
                 && pin.is_some()
             {
-                ssh.host_key_fingerprint = pin;
+                ssh.host_key_fingerprint = pin.clone();
             }
-            ConnectionLinkLaunch::Host {
-                host,
-                profile: profile.into(),
+            match SessionProfile::try_from(profile) {
+                Ok(profile) => ConnectionLinkLaunch::Host { host, profile },
+                // Only SSH and Telnet hosts are link candidates, never a web page.
+                Err(_) => ConnectionLinkLaunch::AdHoc {
+                    profile: SessionProfile::Ssh(SshProfile {
+                        host_key_fingerprint: pin,
+                        ..SshProfile::new(connection_link_target(link))
+                    }),
+                    title: link_title(link),
+                },
             }
         }
         Some(host @ ManagedHost::Ssh(entry)) => {
@@ -563,6 +570,8 @@ pub fn plan_command_line_launch<'a>(
                 resolution_error(CommandLineTargetKind::Folder, name, &other),
             ),
         },
+        // The desktop shell opened this window for it; there is nothing left to do.
+        CommandLineLaunch::NewWindow => (LaunchAction::Fail, None),
         CommandLineLaunch::Workspace { name } => {
             match resolve_command_line_workspace(name, catalogs.workspaces) {
                 TargetResolution::Found(workspace) => {

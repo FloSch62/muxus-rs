@@ -87,7 +87,7 @@ fn a_current_typescript_database_opens_without_changes() {
     let before = schema(&path);
     assert_eq!(before, read_json("ts-populated-schema.json"));
     let db = Database::open(&path).unwrap();
-    assert_eq!(db.applied_migrations().unwrap().len(), 29);
+    assert_eq!(db.applied_migrations().unwrap().len(), 37);
     db.close().unwrap();
     assert_eq!(schema(&path), before);
 }
@@ -100,8 +100,8 @@ fn a_newer_database_is_refused_untouched() {
     {
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
-            "INSERT INTO schema_migrations(version, name) VALUES (30, 'from-the-future');
-             PRAGMA user_version = 30;",
+            "INSERT INTO schema_migrations(version, name) VALUES (38, 'from-the-future');
+             PRAGMA user_version = 38;",
         )
         .unwrap();
     }
@@ -110,13 +110,13 @@ fn a_newer_database_is_refused_untouched() {
     assert!(matches!(
         error,
         DbError::NewerSchema {
-            found: 30,
-            supported: 29
+            found: 38,
+            supported: 37
         }
     ));
     assert_eq!(
         error.to_string(),
-        "database schema 30 is newer than this Muxus build supports (29)"
+        "database schema 38 is newer than this Muxus build supports (37)"
     );
     assert_eq!(schema(&path), before);
 }

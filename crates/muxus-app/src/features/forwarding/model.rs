@@ -369,6 +369,7 @@ pub fn tunnel_forward_request(conn_id: &str, tunnel: &TunnelRecord) -> ForwardRe
         target_host: tunnel.target_host.clone(),
         target_port: tunnel.target_port,
         tunnel_id: Some(tunnel.id.clone()),
+        independent: None,
     }
 }
 
@@ -381,6 +382,7 @@ pub fn adhoc_forward_request(conn_id: &str, rule: &ConfigForward) -> ForwardRequ
         target_host: rule.target_host.clone(),
         target_port: rule.target_port,
         tunnel_id: None,
+        independent: None,
     }
 }
 

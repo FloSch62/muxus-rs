@@ -350,6 +350,7 @@ impl Session {
             host: Some(conn.host.clone()),
             user: Some(conn.user.clone()),
             sftp_available: Some(conn.sftp_available),
+            system_open_ssh: None,
             summary: None,
         });
         Ok(())
@@ -487,6 +488,8 @@ impl Session {
                         lines: progress.lines,
                         sent: progress.sent,
                         total: progress.total,
+                        message: None,
+                        stop_id: None,
                     });
                 }),
             )
@@ -509,6 +512,8 @@ impl Session {
                         bracketed,
                         line_delay_ms,
                         char_delay_ms,
+                        // Prompt waiting and the host's Enter key are not paced here yet.
+                        ..
                     } => {
                         pacer.enqueue(PasteRequest {
                             text: text.clone(),
@@ -660,6 +665,7 @@ impl Session {
             host: None,
             user: None,
             sftp_available: None,
+            system_open_ssh: None,
             summary: None,
         });
         // Output flows once `ready` is out, as the socket's listeners fired only afterwards.
@@ -852,6 +858,7 @@ impl Session {
             host: None,
             user: None,
             sftp_available: None,
+            system_open_ssh: None,
             summary: None,
         });
         tokio::spawn(pump);
@@ -1099,6 +1106,7 @@ impl Session {
             host: Some(conn.host.clone()),
             user: Some(conn.user.clone()),
             sftp_available: Some(conn.sftp_available),
+            system_open_ssh: None,
             summary: Some(summary),
         });
         tokio::spawn(pump);

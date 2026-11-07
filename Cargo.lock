@@ -5567,6 +5567,7 @@ version = "0.11.1"
 dependencies = [
  "async-channel",
  "chrono",
+ "fancy-regex 0.16.2",
  "percent-encoding",
  "regex",
  "serde",

@@ -1,9 +1,19 @@
 //! Telnet and serial hosts (`client/src/components/host-editor/native-draft.ts`).
 
+use muxus_core::anti_idle::{
+    AntiIdleDraft, anti_idle_draft, anti_idle_from_draft, anti_idle_problem,
+};
 use muxus_core::api::{
     HostKeywordHighlightConfig, OpenSshMetadataPatch, SavedHostProfile, SavedHostProfileInput,
 };
+use muxus_core::input_modes::{
+    TerminalInputModes, apply_terminal_input_modes_patch, host_terminal_input_modes,
+};
 use muxus_core::js::{Patch, js_trim};
+use muxus_core::paste_prompt::{
+    PastePromptWaitDraft, paste_prompt_wait_draft, paste_prompt_wait_from_draft,
+    paste_prompt_wait_problem,
+};
 use muxus_core::protocol::{
     DEFAULT_BREAK_DURATION_MS, MAX_BREAK_DURATION_MS, SavedHostSessionProfile, SerialFlowControl,
     SerialParity, SerialProfile, StopBits, TelnetProfile,
@@ -41,6 +51,12 @@ pub struct NativeHostDraft {
     /// Paste pacing; unset follows the Terminal settings.
     pub paste_line_delay_ms: Option<u32>,
     pub paste_char_delay_ms: Option<u32>,
+    /// Pastes wait for the prompt after each line.
+    pub paste_prompt_wait: PastePromptWaitDraft,
+    /// Text typed into idle sessions.
+    pub anti_idle: AntiIdleDraft,
+    /// Backspace and Enter keys, implicit CR and local echo.
+    pub input_modes: TerminalInputModes,
     pub host: String,
     pub port: String,
     pub path: String,
@@ -107,6 +123,9 @@ pub fn blank_native_draft(prefill_target: &str, group: &str) -> NativeHostDraft 
         command_button_group: None,
         paste_line_delay_ms: None,
         paste_char_delay_ms: None,
+        paste_prompt_wait: paste_prompt_wait_draft(None),
+        anti_idle: anti_idle_draft(None),
+        input_modes: host_terminal_input_modes(None),
         host: target.host,
         port: target.port.unwrap_or_else(|| "23".into()),
         path: String::new(),
@@ -149,6 +168,9 @@ pub fn native_draft_from_profile(
     draft.command_button_group = metadata.command_button_group.clone();
     draft.paste_line_delay_ms = metadata.paste_line_delay_ms;
     draft.paste_char_delay_ms = metadata.paste_char_delay_ms;
+    draft.paste_prompt_wait = paste_prompt_wait_draft(metadata.paste_prompt_wait.as_ref());
+    draft.anti_idle = anti_idle_draft(metadata.anti_idle.as_ref());
+    draft.input_modes = host_terminal_input_modes(Some(metadata));
     if let Some(highlights) = &metadata.keyword_highlights {
         draft.keyword_highlights = highlights.clone();
     }
@@ -205,7 +227,9 @@ pub fn native_draft_problem(draft: &NativeHostDraft, kind: NativeKind) -> Option
             }
         }
     }
-    login_sequence_problem(&draft.login_sequence)
+    paste_prompt_wait_problem(&draft.paste_prompt_wait)
+        .or_else(|| anti_idle_problem(&draft.anti_idle))
+        .or_else(|| login_sequence_problem(&draft.login_sequence))
         .or_else(|| keyword_highlight_rules_problem(&draft.keyword_highlights.rules))
 }
 
@@ -241,7 +265,7 @@ pub fn native_draft_to_input(
 
 /// Muxus-only metadata written right after the host itself saves.
 pub fn native_draft_metadata_patch(draft: &NativeHostDraft) -> OpenSshMetadataPatch {
-    OpenSshMetadataPatch {
+    let mut patch = OpenSshMetadataPatch {
         group: text_patch(&draft.group),
         color: optional_patch(&draft.color),
         terminal_scheme: optional_patch(&draft.terminal_scheme),
@@ -250,10 +274,14 @@ pub fn native_draft_metadata_patch(draft: &NativeHostDraft) -> OpenSshMetadataPa
         command_button_group: optional_patch(&draft.command_button_group),
         paste_line_delay_ms: optional_patch(&draft.paste_line_delay_ms),
         paste_char_delay_ms: optional_patch(&draft.paste_char_delay_ms),
+        paste_prompt_wait: optional_patch(&paste_prompt_wait_from_draft(&draft.paste_prompt_wait)),
+        anti_idle: optional_patch(&anti_idle_from_draft(&draft.anti_idle)),
         keyword_highlights: highlights_patch(&draft.keyword_highlights),
         login_sequence: optional_patch(&login_sequence_from_draft(&draft.login_sequence)),
         ..OpenSshMetadataPatch::default()
-    }
+    };
+    apply_terminal_input_modes_patch(&draft.input_modes, &mut patch);
+    patch
 }
 
 /// A quick-connect target split into form fields.
@@ -626,6 +654,12 @@ mod tests {
                 "commandButtonGroup": null,
                 "pasteLineDelayMs": null,
                 "pasteCharDelayMs": null,
+                "pastePromptWait": null,
+                "antiIdle": null,
+                "backspaceKey": null,
+                "enterKey": null,
+                "implicitCr": false,
+                "localEcho": false,
                 "loginSequence": null,
             })
         );
@@ -643,8 +677,129 @@ mod tests {
                 "commandButtonGroup": "command-group-console",
                 "pasteLineDelayMs": 300,
                 "pasteCharDelayMs": null,
+                "pastePromptWait": null,
+                "antiIdle": null,
+                "backspaceKey": null,
+                "enterKey": null,
+                "implicitCr": false,
+                "localEcho": false,
                 "loginSequence": null,
             })
+        );
+    }
+
+    #[test]
+    fn round_trips_prompt_waiting_and_blocks_saving_an_unusable_pattern() {
+        let mut host = serial_host();
+        let wait = muxus_core::paste_pacing::PastePromptWaitSetting {
+            error_pattern: Some("^Error:".into()),
+            ..Default::default()
+        };
+        host.metadata.paste_prompt_wait = Some(wait.clone());
+        let own = native_draft_from_profile(&host, false).unwrap();
+        assert_eq!(
+            own.paste_prompt_wait,
+            PastePromptWaitDraft {
+                enabled: true,
+                prompt_pattern: String::new(),
+                timeout_ms: String::new(),
+                error_pattern: "^Error:".into(),
+            }
+        );
+        assert_eq!(
+            native_draft_metadata_patch(&own).paste_prompt_wait,
+            Patch::Set(wait)
+        );
+        let mut off = own.clone();
+        off.paste_prompt_wait.enabled = false;
+        assert_eq!(
+            native_draft_metadata_patch(&off).paste_prompt_wait,
+            Patch::Clear
+        );
+
+        let mut draft = own;
+        draft.name = "Console".into();
+        draft.path = "/dev/ttyUSB0".into();
+        assert_eq!(native_draft_problem(&draft, NativeKind::Serial), None);
+        draft.paste_prompt_wait.prompt_pattern = "#*".into();
+        assert_eq!(
+            native_draft_problem(&draft, NativeKind::Serial).as_deref(),
+            Some("Prompt pattern: This pattern matches empty text, so it would match any output.")
+        );
+    }
+
+    #[test]
+    fn round_trips_keys_and_echo() {
+        use muxus_core::api::{TerminalBackspaceKey, TerminalEnterKey};
+        let mut host = serial_host();
+        host.metadata.backspace_key = Some(TerminalBackspaceKey::CtrlH);
+        host.metadata.enter_key = Some(TerminalEnterKey::Crlf);
+        host.metadata.implicit_cr = Some(true);
+        host.metadata.local_echo = Some(true);
+        let own = native_draft_from_profile(&host, false).unwrap();
+        let modes = TerminalInputModes {
+            backspace_key: TerminalBackspaceKey::CtrlH,
+            enter_key: TerminalEnterKey::Crlf,
+            implicit_cr: true,
+            local_echo: true,
+        };
+        assert_eq!(own.input_modes, modes);
+        let patch = native_draft_metadata_patch(&own);
+        assert_eq!(
+            (
+                patch.backspace_key,
+                patch.enter_key,
+                patch.implicit_cr,
+                patch.local_echo
+            ),
+            (
+                Patch::Set(TerminalBackspaceKey::CtrlH),
+                Patch::Set(TerminalEnterKey::Crlf),
+                Patch::Set(true),
+                Patch::Set(true)
+            )
+        );
+        assert_eq!(
+            blank_native_draft("", "").input_modes,
+            TerminalInputModes::default()
+        );
+    }
+
+    #[test]
+    fn round_trips_anti_idle_and_blocks_saving_an_incomplete_one() {
+        let mut host = serial_host();
+        let anti_idle = muxus_core::api::AntiIdle {
+            interval_seconds: 300,
+            text: " ".into(),
+            enter: false,
+        };
+        host.metadata.anti_idle = Some(anti_idle.clone());
+        let own = native_draft_from_profile(&host, false).unwrap();
+        assert_eq!(
+            own.anti_idle,
+            AntiIdleDraft {
+                enabled: true,
+                interval_seconds: "300".into(),
+                text: " ".into(),
+                enter: false,
+            }
+        );
+        assert_eq!(
+            native_draft_metadata_patch(&own).anti_idle,
+            Patch::Set(anti_idle)
+        );
+        let mut off = own.clone();
+        off.anti_idle.enabled = false;
+        assert_eq!(native_draft_metadata_patch(&off).anti_idle, Patch::Clear);
+
+        let mut draft = own;
+        draft.name = "Console".into();
+        draft.path = "/dev/ttyUSB0".into();
+        assert_eq!(native_draft_problem(&draft, NativeKind::Serial), None);
+        draft.anti_idle.interval_seconds = "5".into();
+        assert_eq!(
+            native_draft_problem(&draft, NativeKind::Serial).as_deref(),
+            Some("Anti-idle interval: Between 10 and 3600 seconds.")
         );
     }
 

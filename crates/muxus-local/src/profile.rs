@@ -27,6 +27,7 @@ impl LocalShellProfileConfig {
             args: local_shell_launch_arguments(&self.args),
             cwd: text(&self.cwd),
             startup_command: text(&self.startup_command),
+            environment: None,
         }
     }
 }

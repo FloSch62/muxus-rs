@@ -4,11 +4,19 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use muxus_core::anti_idle::{
+    AntiIdleDraft, anti_idle_draft, anti_idle_from_draft, anti_idle_problem, same_anti_idle_draft,
+};
 use muxus_core::api::{
     HostKeywordHighlightConfig, HostOptionsPatch, OpenSshMetadataPatch, SavedHostProfileInput,
-    SessionLoggingPolicy, SessionLoggingPolicyInput,
+    SessionLoggingPolicy, SessionLoggingPolicyInput, TerminalBackspaceKey, TerminalEnterKey,
 };
+use muxus_core::input_modes::host_terminal_input_modes;
 use muxus_core::js::{Patch, js_trim, utf16_len};
+use muxus_core::paste_prompt::{
+    PastePromptWaitDraft, paste_prompt_wait_draft, paste_prompt_wait_from_draft,
+    paste_prompt_wait_problem, same_paste_prompt_wait_draft,
+};
 use muxus_core::protocol::{SavedHostSessionProfile, SshProfile, StrictHostKeyChecking};
 use muxus_session::login_sequence::editor::{
     LoginSequenceDraft, login_sequence_draft, login_sequence_from_draft, login_sequence_problem,
@@ -53,8 +61,22 @@ same_by_eq!(
     BulkTriState,
     Option<String>,
     Option<u32>,
-    Option<StrictHostKeyChecking>
+    Option<StrictHostKeyChecking>,
+    TerminalBackspaceKey,
+    TerminalEnterKey
 );
+
+impl BulkValue for PastePromptWaitDraft {
+    fn same(&self, other: &Self) -> bool {
+        same_paste_prompt_wait_draft(self, other)
+    }
+}
+
+impl BulkValue for AntiIdleDraft {
+    fn same(&self, other: &Self) -> bool {
+        same_anti_idle_draft(self, other)
+    }
+}
 
 impl BulkValue for HostSessionLoggingDraft {
     fn same(&self, other: &Self) -> bool {
@@ -226,6 +248,7 @@ bulk_fields! {
     forward_agent: BulkTriState = ForwardAgent, Ssh;
     forward_x11: BulkTriState = ForwardX11, Ssh;
     console_compatibility: bool = ConsoleCompatibility, Ssh;
+    system_open_ssh: bool = SystemOpenSsh, Ssh;
     disable_sftp: bool = DisableSftp, Ssh;
     terminal_scheme: Option<String> = TerminalScheme, Terminal;
     terminal_font_color: Option<String> = TerminalFontColor, Terminal;
@@ -233,6 +256,12 @@ bulk_fields! {
     command_button_group: Option<String> = CommandButtonGroup, Terminal;
     paste_line_delay_ms: Option<u32> = PasteLineDelayMs, Terminal;
     paste_char_delay_ms: Option<u32> = PasteCharDelayMs, Terminal;
+    paste_prompt_wait: PastePromptWaitDraft = PastePromptWait, Terminal;
+    anti_idle: AntiIdleDraft = AntiIdle, Terminal;
+    backspace_key: TerminalBackspaceKey = BackspaceKey, Terminal;
+    enter_key: TerminalEnterKey = EnterKey, Terminal;
+    implicit_cr: bool = ImplicitCr, Terminal;
+    local_echo: bool = LocalEcho, Terminal;
     highlight_profile_id: Option<String> = HighlightProfileId, Terminal;
     highlight_inherit_global: bool = HighlightInheritGlobal, Terminal;
     session_logging: HostSessionLoggingDraft = SessionLogging, Terminal;
@@ -347,6 +376,15 @@ pub fn bulk_values_for_host(
         values.command_button_group = Some(metadata.and_then(|m| m.command_button_group.clone()));
         values.paste_line_delay_ms = Some(metadata.and_then(|m| m.paste_line_delay_ms));
         values.paste_char_delay_ms = Some(metadata.and_then(|m| m.paste_char_delay_ms));
+        values.paste_prompt_wait = Some(paste_prompt_wait_draft(
+            metadata.and_then(|m| m.paste_prompt_wait.as_ref()),
+        ));
+        values.anti_idle = Some(anti_idle_draft(metadata.and_then(|m| m.anti_idle.as_ref())));
+        let modes = host_terminal_input_modes(metadata);
+        values.backspace_key = Some(modes.backspace_key);
+        values.enter_key = Some(modes.enter_key);
+        values.implicit_cr = Some(modes.implicit_cr);
+        values.local_echo = Some(modes.local_echo);
         values.highlight_profile_id = Some(highlights.and_then(|h| h.profile_id.clone()));
         values.highlight_inherit_global = Some(highlights.is_none_or(|h| h.inherit_global));
         values.login_sequence = Some(login_sequence_draft(
@@ -367,6 +405,7 @@ pub fn bulk_values_for_host(
                 .and_then(|m| m.console_compatibility)
                 .unwrap_or(false),
         );
+        values.system_open_ssh = Some(metadata.and_then(|m| m.system_open_ssh).unwrap_or(false));
         values.disable_sftp = Some(metadata.and_then(|m| m.disable_sftp).unwrap_or(false));
     }
     values
@@ -397,6 +436,16 @@ pub fn bulk_changes_problem(changes: &BulkHostChanges) -> Option<String> {
         if !(port.is_finite() && port.fract() == 0. && (1. ..=65_535.).contains(&port)) {
             return Some("Port must be 1–65535.".into());
         }
+    }
+    if let Some(problem) = changes
+        .paste_prompt_wait
+        .as_ref()
+        .and_then(paste_prompt_wait_problem)
+    {
+        return Some(problem);
+    }
+    if let Some(problem) = changes.anti_idle.as_ref().and_then(anti_idle_problem) {
+        return Some(problem);
     }
     if let Some(sequence) = &changes.login_sequence {
         return login_sequence_problem(sequence);
@@ -637,8 +686,48 @@ fn metadata_patch(
     if has(F::PasteCharDelayMs) {
         patch.paste_char_delay_ms = set_or_clear(&changes.paste_char_delay_ms);
     }
+    if has(F::PastePromptWait)
+        && let Some(wait) = &changes.paste_prompt_wait
+    {
+        patch.paste_prompt_wait = paste_prompt_wait_from_draft(wait).into();
+    }
+    if has(F::AntiIdle)
+        && let Some(anti_idle) = &changes.anti_idle
+    {
+        patch.anti_idle = anti_idle_from_draft(anti_idle).into();
+    }
+    // The keys' defaults are stored as unset, as the host editors store them.
+    if has(F::BackspaceKey)
+        && let Some(key) = changes.backspace_key
+    {
+        patch.backspace_key = match key {
+            TerminalBackspaceKey::Del => Patch::Clear,
+            key => Patch::Set(key),
+        };
+    }
+    if has(F::EnterKey)
+        && let Some(key) = changes.enter_key
+    {
+        patch.enter_key = match key {
+            TerminalEnterKey::Cr => Patch::Clear,
+            key => Patch::Set(key),
+        };
+    }
+    if has(F::ImplicitCr)
+        && let Some(value) = changes.implicit_cr
+    {
+        patch.implicit_cr = Patch::Set(value);
+    }
+    if has(F::LocalEcho)
+        && let Some(value) = changes.local_echo
+    {
+        patch.local_echo = Patch::Set(value);
+    }
     if has(F::ConsoleCompatibility) {
         patch.console_compatibility = changes.console_compatibility;
+    }
+    if has(F::SystemOpenSsh) {
+        patch.system_open_ssh = changes.system_open_ssh;
     }
     if has(F::DisableSftp) {
         patch.disable_sftp = changes.disable_sftp;
@@ -799,6 +888,7 @@ mod tests {
                 domain: None,
                 ssh_gateway: None,
                 share_clipboard: None,
+                ssh_gateway_fallbacks: None,
             }),
             metadata,
         )
@@ -842,6 +932,297 @@ mod tests {
             .iter()
             .map(|(_, patch)| serde_json::to_value(patch).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn turns_prompt_waiting_on_for_terminal_hosts_and_off_again() {
+        let hosts = [
+            open_ssh(
+                "a",
+                HostBlockOptions::default(),
+                OpenSshProfileMetadata {
+                    paste_prompt_wait: Some(Default::default()),
+                    ..meta()
+                },
+            ),
+            telnet("t", meta()),
+            rdp("desk", meta()),
+        ];
+        let on = PastePromptWaitDraft {
+            enabled: true,
+            timeout_ms: "20000".into(),
+            ..Default::default()
+        };
+        let off = PastePromptWaitDraft::default();
+        assert_eq!(
+            summarize_bulk_values(&hosts, &no_policies()).paste_prompt_wait,
+            BulkFieldSummary::Mixed { count: 2 }
+        );
+        assert_eq!(
+            summarize_bulk_values(&hosts[1..2], &no_policies()).paste_prompt_wait,
+            BulkFieldSummary::Same {
+                count: 1,
+                value: off
+            }
+        );
+        let changes = |wait: PastePromptWaitDraft| BulkHostChanges {
+            paste_prompt_wait: Some(wait),
+            ..Default::default()
+        };
+        let plan = bulk_edit_plan(&hosts, &changes(on.clone()), &no_policies());
+        assert_eq!(
+            plan.metadata
+                .iter()
+                .map(|(host, _)| host.clone())
+                .collect::<Vec<_>>(),
+            hosts[..2].to_vec()
+        );
+        assert_eq!(
+            patch_json(&plan),
+            vec![
+                serde_json::json!({ "pastePromptWait": { "timeoutMs": 20000 } }),
+                serde_json::json!({ "pastePromptWait": { "timeoutMs": 20000 } }),
+            ]
+        );
+        // Values kept while switched off are not a difference.
+        let plan = bulk_edit_plan(
+            &hosts,
+            &changes(PastePromptWaitDraft {
+                enabled: false,
+                ..on.clone()
+            }),
+            &no_policies(),
+        );
+        assert_eq!(plan.metadata.len(), 1);
+        assert_eq!(plan.metadata[0].0, hosts[0]);
+        assert_eq!(
+            patch_json(&plan),
+            vec![serde_json::json!({ "pastePromptWait": null })]
+        );
+        assert_eq!(
+            bulk_changes_problem(&changes(PastePromptWaitDraft {
+                timeout_ms: "50".into(),
+                ..on.clone()
+            }))
+            .as_deref(),
+            Some("Prompt timeout: Between 100 and 60000 ms.")
+        );
+        let problem = bulk_changes_problem(&changes(PastePromptWaitDraft {
+            error_pattern: "(".into(),
+            ..on
+        }))
+        .unwrap();
+        assert!(problem.starts_with("Error pattern: "), "{problem}");
+        assert!(problem.contains("Invalid regular expression"), "{problem}");
+    }
+
+    #[test]
+    fn sets_anti_idle_on_terminal_hosts_and_turns_it_off_again() {
+        let space = muxus_core::api::AntiIdle {
+            interval_seconds: 240,
+            text: " ".into(),
+            enter: false,
+        };
+        let hosts = [
+            open_ssh(
+                "a",
+                HostBlockOptions::default(),
+                OpenSshProfileMetadata {
+                    anti_idle: Some(space.clone()),
+                    ..meta()
+                },
+            ),
+            telnet("t", meta()),
+            rdp("desk", meta()),
+        ];
+        let on = AntiIdleDraft {
+            enabled: true,
+            interval_seconds: "240".into(),
+            text: " ".into(),
+            enter: false,
+        };
+        assert_eq!(
+            summarize_bulk_values(&hosts, &no_policies()).anti_idle,
+            BulkFieldSummary::Mixed { count: 2 }
+        );
+        assert_eq!(
+            summarize_bulk_values(&hosts[1..2], &no_policies()).anti_idle,
+            BulkFieldSummary::Same {
+                count: 1,
+                value: anti_idle_draft(None)
+            }
+        );
+        let changes = |anti_idle: AntiIdleDraft| BulkHostChanges {
+            anti_idle: Some(anti_idle),
+            ..Default::default()
+        };
+        let plan = bulk_edit_plan(&hosts, &changes(on.clone()), &no_policies());
+        assert_eq!(plan.metadata.len(), 1);
+        assert_eq!(plan.metadata[0].0, hosts[1]);
+        assert_eq!(
+            patch_json(&plan),
+            vec![serde_json::json!({ "antiIdle": space })]
+        );
+        // Text kept while switched off is not a difference.
+        let plan = bulk_edit_plan(
+            &hosts,
+            &changes(AntiIdleDraft {
+                enabled: false,
+                ..on.clone()
+            }),
+            &no_policies(),
+        );
+        assert_eq!(plan.metadata.len(), 1);
+        assert_eq!(plan.metadata[0].0, hosts[0]);
+        assert_eq!(
+            patch_json(&plan),
+            vec![serde_json::json!({ "antiIdle": null })]
+        );
+        assert_eq!(
+            bulk_changes_problem(&changes(AntiIdleDraft {
+                interval_seconds: "5".into(),
+                ..on.clone()
+            }))
+            .as_deref(),
+            Some("Anti-idle interval: Between 10 and 3600 seconds.")
+        );
+        assert_eq!(
+            bulk_changes_problem(&changes(AntiIdleDraft {
+                text: String::new(),
+                ..on
+            }))
+            .as_deref(),
+            Some("Anti-idle: enter text to type, or press Enter.")
+        );
+    }
+
+    #[test]
+    fn sets_keys_and_echo_on_terminal_hosts_and_stores_the_defaults_as_unset() {
+        let saved_host = saved(
+            "s",
+            SavedHostSessionProfile::Ssh(SshProfile {
+                target: "s.example.test".into(),
+                use_config: Some(false),
+                ..SshProfile::default()
+            }),
+            OpenSshProfileMetadata {
+                backspace_key: Some(TerminalBackspaceKey::Del),
+                ..meta()
+            },
+        );
+        let hosts = [
+            open_ssh(
+                "a",
+                HostBlockOptions::default(),
+                OpenSshProfileMetadata {
+                    backspace_key: Some(TerminalBackspaceKey::CtrlH),
+                    local_echo: Some(true),
+                    ..meta()
+                },
+            ),
+            telnet("t", meta()),
+            saved_host,
+            rdp("desk", meta()),
+        ];
+        let summary = summarize_bulk_values(&hosts, &no_policies());
+        assert_eq!(summary.backspace_key, BulkFieldSummary::Mixed { count: 3 });
+        // A stored DEL is the same as nothing stored.
+        assert_eq!(
+            summarize_bulk_values(&hosts[1..], &no_policies()).backspace_key,
+            BulkFieldSummary::Same {
+                count: 2,
+                value: TerminalBackspaceKey::Del
+            }
+        );
+        assert_eq!(
+            summary.enter_key,
+            BulkFieldSummary::Same {
+                count: 3,
+                value: TerminalEnterKey::Cr
+            }
+        );
+        assert_eq!(
+            summary.implicit_cr,
+            BulkFieldSummary::Same {
+                count: 3,
+                value: false
+            }
+        );
+        assert_eq!(summary.local_echo, BulkFieldSummary::Mixed { count: 3 });
+
+        let plan = bulk_edit_plan(
+            &hosts,
+            &BulkHostChanges {
+                backspace_key: Some(TerminalBackspaceKey::CtrlH),
+                enter_key: Some(TerminalEnterKey::Crlf),
+                ..Default::default()
+            },
+            &no_policies(),
+        );
+        assert_eq!(
+            plan.metadata
+                .iter()
+                .map(|(host, _)| host.clone())
+                .collect::<Vec<_>>(),
+            hosts[..3].to_vec()
+        );
+        assert_eq!(
+            patch_json(&plan),
+            vec![
+                serde_json::json!({ "enterKey": "crlf" }),
+                serde_json::json!({ "backspaceKey": "ctrl-h", "enterKey": "crlf" }),
+                serde_json::json!({ "backspaceKey": "ctrl-h", "enterKey": "crlf" }),
+            ]
+        );
+        let plan = bulk_edit_plan(
+            &hosts,
+            &BulkHostChanges {
+                backspace_key: Some(TerminalBackspaceKey::Del),
+                local_echo: Some(false),
+                ..Default::default()
+            },
+            &no_policies(),
+        );
+        assert_eq!(plan.metadata.len(), 1);
+        assert_eq!(plan.metadata[0].0, hosts[0]);
+        assert_eq!(
+            patch_json(&plan),
+            vec![serde_json::json!({ "backspaceKey": null, "localEcho": false })]
+        );
+        let plan = bulk_edit_plan(
+            &hosts,
+            &BulkHostChanges {
+                implicit_cr: Some(true),
+                ..Default::default()
+            },
+            &no_policies(),
+        );
+        assert_eq!(
+            patch_json(&plan),
+            vec![serde_json::json!({ "implicitCr": true }); 3]
+        );
+    }
+
+    #[test]
+    fn switches_system_openssh_on_ssh_hosts_only() {
+        let hosts = [
+            open_ssh("a", HostBlockOptions::default(), meta()),
+            telnet("t", meta()),
+        ];
+        let plan = bulk_edit_plan(
+            &hosts,
+            &BulkHostChanges {
+                system_open_ssh: Some(true),
+                ..Default::default()
+            },
+            &no_policies(),
+        );
+        assert_eq!(plan.metadata.len(), 1);
+        assert_eq!(plan.metadata[0].0, hosts[0]);
+        assert_eq!(
+            patch_json(&plan),
+            vec![serde_json::json!({ "systemOpenSsh": true })]
+        );
     }
 
     #[test]

@@ -202,6 +202,7 @@ impl TransportReader {
                 user: None,
                 sftp_available: None,
                 summary: None,
+                system_open_ssh: None,
             })));
         }
         if self.closing {

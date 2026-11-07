@@ -15,9 +15,13 @@ use super::command_buttons::{
 };
 use super::custom_schemes::CustomTerminalScheme;
 use super::layout::{
-    DEFAULT_INACTIVE_PANE_DIM_STRENGTH, DEFAULT_SFTP_PANEL_WIDTH, DEFAULT_SIDEBAR_WIDTH,
-    STATUS_BAR_ITEMS, StatusBarItem,
+    DEFAULT_ENVIRONMENTS_PANEL_WIDTH, DEFAULT_INACTIVE_PANE_DIM_STRENGTH, DEFAULT_SFTP_PANEL_WIDTH,
+    DEFAULT_SIDEBAR_WIDTH, STATUS_BAR_ITEMS, StatusBarItem,
 };
+
+/// How often connected hosts are read again, in seconds; 0 reads them only
+/// when they connect (`ENVIRONMENT_REFRESH_SECONDS`).
+pub const ENVIRONMENT_REFRESH_SECONDS: [u32; 6] = [0, 15, 30, 60, 120, 300];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -217,8 +221,8 @@ prefs_state! {
     scrollback: f64 = "scrollback" => 10_000.0;
     cursor_blink: bool = "cursorBlink" => true;
     cursor_style: CursorStyle = "cursorStyle" => CursorStyle::Block;
-    /// Render terminals on the GPU; off keeps the simpler renderer.
-    webgl_renderer: bool = "webglRenderer" => false;
+    /// Render terminals on the GPU (the default); off keeps the simpler renderer.
+    webgl_renderer: bool = "webglRenderer" => true;
     /// Local terminal shell; `auto` lets the backend pick the login shell.
     local_shell: String = "localShell" => "auto".to_owned();
     /// Named alternatives offered wherever a local terminal can be launched.
@@ -235,6 +239,8 @@ prefs_state! {
     terminal_file_link_activation: TerminalFileLinkActivation = "terminalFileLinkActivation" => TerminalFileLinkActivation::Alt;
     /// Preview multiline pastes before they can run several shell commands.
     paste_warn_multiline: bool = "pasteWarnMultiline" => true;
+    /// Preview any paste with invisible or look-alike characters, even a single line.
+    paste_warn_lookalikes: bool = "pasteWarnLookalikes" => true;
     /// Wait after each pasted line, in milliseconds; hosts may set their own.
     #[serde(with = "js::number")]
     paste_line_delay_ms: f64 = "pasteLineDelayMs" => 0.0;
@@ -243,6 +249,15 @@ prefs_state! {
     paste_char_delay_ms: f64 = "pasteCharDelayMs" => 0.0;
     /// Ask before closing a tab with a live session.
     confirm_close_connected: bool = "confirmCloseConnected" => true;
+    /// Close a tab whose shell exits with status 0 instead of offering to reconnect.
+    close_tab_on_clean_exit: bool = "closeTabOnCleanExit" => false;
+    /// Show what programs report with OSC 7501 (working, waiting, done) on their tab.
+    show_program_status: bool = "showProgramStatus" => true;
+    /// Find the containers, clusters, labs and VMs of this computer and of connected SSH hosts.
+    discover_environments: bool = "discoverEnvironments" => true;
+    /// Read connected hosts' containers, clusters and VMs again this often; 0 only on connect.
+    #[serde(with = "js::number")]
+    environment_refresh_seconds: f64 = "environmentRefreshSeconds" => 30.0;
     /// Dial remote sessions on workspace restore and retry dropped connections.
     auto_reconnect_remote: bool = "autoReconnectRemote" => true;
     /// SSH keepalive fallback in seconds; zero relies entirely on ssh_config.
@@ -326,6 +341,9 @@ prefs_state! {
     /// Width of the per-session remote file browser.
     #[serde(with = "js::number")]
     sftp_panel_width: f64 = "sftpPanelWidth" => DEFAULT_SFTP_PANEL_WIDTH;
+    /// Width of the containers and VMs panel.
+    #[serde(with = "js::number")]
+    environments_panel_width: f64 = "environmentsPanelWidth" => DEFAULT_ENVIRONMENTS_PANEL_WIDTH;
     /// Verbose diagnostic logging plus access to the log viewer and export.
     debug_mode: bool = "debugMode" => false;
 }

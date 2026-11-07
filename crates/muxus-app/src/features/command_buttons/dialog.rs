@@ -262,6 +262,7 @@ impl CommandButtonsDialog {
             group_id: (!is_default).then(|| self.selected_group.clone()),
             color: None,
             secret_id: None,
+            shortcut: None,
         };
         let key = format!("label:{}", created.id);
         Self::set_buttons(cx, |buttons, _| buttons.push(created));

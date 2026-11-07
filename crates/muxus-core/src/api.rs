@@ -10,6 +10,7 @@ mod files;
 mod forwards;
 mod history;
 mod hosts;
+mod scripts;
 mod vault;
 mod workspace;
 
@@ -19,6 +20,7 @@ pub use files::*;
 pub use forwards::*;
 pub use history::*;
 pub use hosts::*;
+pub use scripts::*;
 pub use vault::*;
 pub use workspace::*;
 

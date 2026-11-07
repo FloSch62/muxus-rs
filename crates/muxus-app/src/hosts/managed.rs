@@ -410,6 +410,10 @@ pub fn managed_host_copy_command(
             label: "Copy device path",
             text: profile.path.clone(),
         },
+        SavedHostSessionProfile::Web(profile) => CopyCommand {
+            label: "Copy address",
+            text: profile.url.clone(),
+        },
     }
 }
 
@@ -757,7 +761,7 @@ pub(crate) mod tests {
             ),
             Some(ManagedHost::ssh(ssh_entry.clone()))
         );
-        let mut telnet_profile = telnet.session_profile();
+        let mut telnet_profile = telnet.session_profile().unwrap();
         if let SessionProfile::Telnet(TelnetProfile { profile_id, .. }) = &mut telnet_profile {
             *profile_id = Some(telnet.id.clone());
         }
@@ -1071,6 +1075,7 @@ pub(crate) mod tests {
             cert_file: None,
             key_file: None,
             encoding: None,
+            ssh_gateway_fallbacks: None,
         };
         assert_eq!(
             gnmic_command(&profile),

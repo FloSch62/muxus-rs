@@ -104,10 +104,10 @@ pub fn host_paste_pacing(
     host_line_delay_ms: Option<u32>,
     host_char_delay_ms: Option<u32>,
 ) -> PastePacing {
-    PastePacing {
-        line_delay_ms: host_line_delay_ms.unwrap_or(default_line_delay_ms),
-        char_delay_ms: host_char_delay_ms.unwrap_or(default_char_delay_ms),
-    }
+    PastePacing::delays(
+        host_line_delay_ms.unwrap_or(default_line_delay_ms),
+        host_char_delay_ms.unwrap_or(default_char_delay_ms),
+    )
 }
 
 /// A paste's running time, rounded for reading: "under a second", "about 12 s", "about 4 min".
@@ -124,6 +124,7 @@ pub fn format_paste_duration(ms: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use muxus_core::api::TerminalEnterKey;
 
     #[test]
     fn allows_a_single_line_without_interruption() {
@@ -177,10 +178,7 @@ mod tests {
     fn follows_the_terminal_settings_where_the_host_sets_nothing() {
         assert_eq!(
             host_paste_pacing(150, 2, None, None),
-            PastePacing {
-                line_delay_ms: 150,
-                char_delay_ms: 2
-            }
+            PastePacing::delays(150, 2)
         );
     }
 
@@ -188,17 +186,11 @@ mod tests {
     fn takes_each_delay_a_host_sets_including_0_to_turn_pacing_off() {
         assert_eq!(
             host_paste_pacing(150, 2, Some(500), None),
-            PastePacing {
-                line_delay_ms: 500,
-                char_delay_ms: 2
-            }
+            PastePacing::delays(500, 2)
         );
         assert_eq!(
             host_paste_pacing(150, 2, Some(0), Some(0)),
-            PastePacing {
-                line_delay_ms: 0,
-                char_delay_ms: 0
-            }
+            PastePacing::delays(0, 0)
         );
     }
 
@@ -236,22 +228,19 @@ mod tests {
 
     #[test]
     fn sends_an_unpaced_paste_exactly_as_xterm_would() {
-        assert_eq!(terminal_paste_data("ls\nexit\n", false), "ls\rexit\r");
         assert_eq!(
-            terminal_paste_data("ls\nexit\n", true),
+            terminal_paste_data("ls\nexit\n", false, TerminalEnterKey::Cr),
+            "ls\rexit\r"
+        );
+        assert_eq!(
+            terminal_paste_data("ls\nexit\n", true, TerminalEnterKey::Cr),
             "\x1b[200~ls\rexit\r\x1b[201~"
         );
     }
 
     #[test]
     fn paces_only_when_a_delay_is_set() {
-        assert!(!is_paced_paste(PastePacing {
-            line_delay_ms: 0,
-            char_delay_ms: 0
-        }));
-        assert!(is_paced_paste(PastePacing {
-            line_delay_ms: 0,
-            char_delay_ms: 1
-        }));
+        assert!(!is_paced_paste(&PastePacing::delays(0, 0)));
+        assert!(is_paced_paste(&PastePacing::delays(0, 1)));
     }
 }

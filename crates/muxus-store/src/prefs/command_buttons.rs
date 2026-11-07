@@ -113,6 +113,9 @@ pub struct CommandButton {
     /// is stored; the backend types the value, and `send_enter` adds Enter after it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_id: Option<String>,
+    /// Chord that runs the button in the focused session; absent leaves it unbound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortcut: Option<String>,
 }
 
 /// A named set of command buttons the bar shows one at a time.
@@ -270,13 +273,20 @@ pub fn normalize_command_button_groups(value: &Value) -> Option<Vec<CommandButto
 
 /// Stored buttons, repaired against their groups: malformed entries dropped,
 /// unknown colors cleared, and a button whose group is gone (or is the
-/// default one) left unfiled. Anything but an array is `None`.
+/// default one) left unfiled. A shortcut that an earlier button already
+/// holds is dropped. Anything but an array is `None`.
+///
+/// The TypeScript also drops a shortcut that is not a bindable chord or
+/// that belongs to the shell; that needs the chord parser, which lives with
+/// the keymap in muxus-app, so this keeps any short string. Such a shortcut
+/// never matches a key press, and the Electron build drops it on its next load.
 pub fn normalize_command_buttons(
     value: &Value,
     groups: &[CommandButtonGroup],
 ) -> Option<Vec<CommandButton>> {
     let entries = value.as_array()?;
     let mut ids = std::collections::HashSet::new();
+    let mut shortcuts = std::collections::HashSet::new();
     let mut buttons = Vec::new();
     for entry in entries {
         if buttons.len() >= MAX_COMMAND_BUTTONS {
@@ -324,6 +334,9 @@ pub fn normalize_command_buttons(
                 .and_then(Value::as_str)
                 .and_then(CommandButtonColor::parse),
             secret_id: bounded_string(record.get("secretId").unwrap_or(&Value::Null), 200)
+                .map(str::to_owned),
+            shortcut: bounded_string(record.get("shortcut").unwrap_or(&Value::Null), 100)
+                .filter(|shortcut| shortcuts.insert(shortcut.to_string()))
                 .map(str::to_owned),
         });
     }
@@ -407,7 +420,8 @@ pub fn move_command_button_to_group(
     remaining
 }
 
-/// A copy of a button right below the original, as a start for a similar command.
+/// A copy of a button right below the original, as a start for a similar
+/// command. The shortcut stays with the original, since one chord runs one button.
 pub fn duplicate_command_button(
     buttons: &[CommandButton],
     id: &str,
@@ -420,6 +434,7 @@ pub fn duplicate_command_button(
     let label = js::js_trim(&original.label);
     let mut copy = original.clone();
     copy.id = new_id.to_owned();
+    copy.shortcut = None;
     copy.label = if label.is_empty() {
         String::new()
     } else {

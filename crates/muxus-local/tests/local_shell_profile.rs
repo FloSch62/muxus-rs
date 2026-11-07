@@ -84,6 +84,7 @@ fn opens_a_distribution_in_its_linux_home_directory() {
             args: Some(strings(&["-d", "Ubuntu-24.04", "--cd", "~"])),
             cwd: None,
             startup_command: None,
+            environment: None,
         }
     );
 }

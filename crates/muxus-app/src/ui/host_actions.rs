@@ -213,7 +213,7 @@ impl AppShell {
                     layout,
                     label,
                 } => {
-                    let entries: Vec<_> = hosts.iter().map(session_set_entry).collect();
+                    let entries: Vec<_> = hosts.iter().filter_map(session_set_entry).collect();
                     let started = this.tabs.launch_set(&entries, *layout);
                     this.clear_multi_exec_groups(cx);
                     this.close_overlay("launch-group", window, cx);

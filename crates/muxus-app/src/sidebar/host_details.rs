@@ -101,6 +101,11 @@ pub fn host_detail_lines(
                 lines.push(format!("via SSH gateway {}", gateway.target));
             }
         }
+        SavedHostSessionProfile::Web(p) => {
+            if let Some(gateway) = &p.ssh_gateway {
+                lines.push(format!("via SOCKS5 on {}", gateway.target));
+            }
+        }
         SavedHostSessionProfile::Ssh(p) => {
             let proxy_jump = p.proxy_jump.as_deref().unwrap_or_default();
             if !proxy_jump.is_empty() {

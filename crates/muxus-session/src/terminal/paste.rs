@@ -114,10 +114,7 @@ impl PastePacer {
             prepared,
             bracketed: request.bracketed,
             lines,
-            pacing: PastePacing {
-                line_delay_ms: request.line_delay_ms,
-                char_delay_ms: request.char_delay_ms,
-            },
+            pacing: PastePacing::delays(request.line_delay_ms, request.char_delay_ms),
         });
         if state.controller.is_none() {
             self.start_run(&mut state);
@@ -189,7 +186,7 @@ impl PastePacer {
             let Some(paste) = self.state().queue.pop_front() else {
                 break;
             };
-            let mut steps = paste_pacing_steps(&paste.prepared, paste.pacing).peekable();
+            let mut steps = paste_pacing_steps(&paste.prepared, &paste.pacing).peekable();
             while let Some(step) = steps.next() {
                 if aborted() {
                     break 'pastes;

@@ -50,8 +50,8 @@ pub fn telnet_profile(host: impl Into<String>, port: u16) -> SessionProfile {
 pub trait SavedHostProfileExt {
     /// The connection kind (`SavedHostProfile.kind` widened to every profile kind).
     fn profile_kind(&self) -> ProfileKind;
-    /// The stored profile as a session profile.
-    fn session_profile(&self) -> SessionProfile;
+    /// The stored profile as a session profile; `None` for a web page.
+    fn session_profile(&self) -> Option<SessionProfile>;
 }
 
 impl SavedHostProfileExt for SavedHostProfile {
@@ -59,8 +59,8 @@ impl SavedHostProfileExt for SavedHostProfile {
         profile_kind_of(self.kind)
     }
 
-    fn session_profile(&self) -> SessionProfile {
-        self.profile.clone().into()
+    fn session_profile(&self) -> Option<SessionProfile> {
+        self.profile.session_profile()
     }
 }
 
@@ -74,6 +74,7 @@ pub fn profile_kind_of(kind: SavedHostKind) -> ProfileKind {
         SavedHostKind::Vnc => ProfileKind::Vnc,
         SavedHostKind::Gnmi => ProfileKind::Gnmi,
         SavedHostKind::Netconf => ProfileKind::Netconf,
+        SavedHostKind::Web => ProfileKind::Web,
     }
 }
 

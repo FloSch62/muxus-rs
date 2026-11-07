@@ -519,6 +519,7 @@ fn keeps_keys_and_jump_hosts_as_saved_muxus_hosts() {
                     profile_id: Some(bastion.id.clone()),
                 }),
                 share_clipboard: None,
+                ssh_gateway_fallbacks: None,
             }),
             metadata: PortableHostMetadata::in_group(Some("Lab")),
         }

@@ -559,6 +559,8 @@ impl HostEditor {
             SavedHostKind::Gnmi | SavedHostKind::Netconf => {
                 management_draft_problem(&self.management, self.management_kind())
             }
+            // The web page editor is not built yet; nothing to save.
+            SavedHostKind::Web => Some("Web pages cannot be edited here yet.".to_owned()),
         }
     }
 
@@ -782,6 +784,7 @@ impl HostEditor {
                 }
                 sections
             }
+            SavedHostKind::Web => vec![tab(Section::General, "General", "PublicOutlined", None)],
         }
     }
 
@@ -824,6 +827,7 @@ impl HostEditor {
             SavedHostKind::Telnet | SavedHostKind::Serial => 1,
             SavedHostKind::Rdp | SavedHostKind::Vnc => 2,
             SavedHostKind::Gnmi | SavedHostKind::Netconf => 3,
+            SavedHostKind::Web => 4,
         };
         if family(kind) != family(self.kind) {
             self.section = Section::General;
@@ -1028,6 +1032,8 @@ impl HostEditor {
                 Section::Options => self.management_options(window, cx),
                 _ => self.management_general(window, cx),
             },
+            // The web page editor is not built yet.
+            SavedHostKind::Web => div().into_any_element(),
         }
     }
 }

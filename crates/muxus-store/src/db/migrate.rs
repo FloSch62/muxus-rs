@@ -7,7 +7,7 @@ use super::migration_sql as sql;
 use super::{DbError, DbResult};
 
 /// The newest schema version this build knows (the last TypeScript migration).
-pub const SUPPORTED_SCHEMA_VERSION: i64 = 29;
+pub const SUPPORTED_SCHEMA_VERSION: i64 = 37;
 
 /// One row of `schema_migrations`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,6 +179,52 @@ const MIGRATIONS: &[Migration] = &[
         name: "management-hosts",
         step: Step::Run(add_management_hosts),
     },
+    // NULL is off; the bounds and patterns are the API's.
+    Migration {
+        version: 30,
+        name: "host-paste-prompt-wait",
+        step: Step::Sql(sql::MIGRATION_30),
+    },
+    // NULL is off; the bounds are the API's.
+    Migration {
+        version: 31,
+        name: "host-anti-idle",
+        step: Step::Sql(sql::MIGRATION_31),
+    },
+    // NULL keys and 0 flags keep what xterm.js does; the key names are the API's.
+    Migration {
+        version: 32,
+        name: "host-terminal-input-modes",
+        step: Step::Sql(sql::MIGRATION_32),
+    },
+    // NULL follows the global setting; 0 and 1 override it for this host.
+    Migration {
+        version: 33,
+        name: "host-environment-discovery",
+        step: Step::Sql(sql::MIGRATION_33),
+    },
+    // Fallback ProxyJump chains for an OpenSSH alias, as a JSON array of arrays.
+    Migration {
+        version: 34,
+        name: "host-jump-fallbacks",
+        step: Step::Sql(sql::MIGRATION_34),
+    },
+    // Scripts kept in Muxus to run on many hosts.
+    Migration {
+        version: 35,
+        name: "scripts",
+        step: Step::Sql(sql::MIGRATION_35),
+    },
+    Migration {
+        version: 36,
+        name: "web-hosts",
+        step: Step::Run(add_web_hosts),
+    },
+    Migration {
+        version: 37,
+        name: "host-system-openssh",
+        step: Step::Sql(sql::MIGRATION_37),
+    },
 ];
 
 const SCHEMA_MIGRATIONS_SQL: &str = "
@@ -304,6 +350,27 @@ fn add_management_hosts(conn: &Connection) -> DbResult<()> {
     )?;
     conn.execute_batch(sql::MANAGEMENT_SQL)?;
     Ok(())
+}
+
+/// Version 36: web pages join the saved host kinds.
+fn add_web_hosts(conn: &Connection) -> DbResult<()> {
+    let definition: String = conn
+        .query_row(sql::REBUILD_TABLE_SQL, [], |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .optional()?
+        .flatten()
+        .unwrap_or_default();
+    // A database that already admits them (restored from a newer copy) needs no rebuild.
+    if definition.contains(sql::WEB_ADMITTED_MARKER) {
+        return Ok(());
+    }
+    rebuild_connection_profile_kinds(
+        conn,
+        sql::WEB_PREVIOUS_KINDS,
+        sql::WEB_NEXT_KINDS,
+        "web hosts",
+    )
 }
 
 /// Admit new kinds in the connection_profiles CHECK constraint by rebuilding

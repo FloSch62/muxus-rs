@@ -77,9 +77,18 @@ db.updateOpenSshMetadata('production', {
   commandButtonGroup: 'command-group-juniper',
   pasteLineDelayMs: 250,
   pasteCharDelayMs: 0,
+  pastePromptWait: { promptPattern: '[>#\\]]\\s*$', timeoutMs: 20000 },
+  antiIdle: { intervalSeconds: 240, text: ' ', enter: false },
+  backspaceKey: 'ctrl-h',
+  enterKey: 'crlf',
+  implicitCr: true,
+  localEcho: true,
   disableSftp: true,
   consoleCompatibility: true,
+  systemOpenSsh: true,
+  discoverEnvironments: false,
   loginSequence,
+  proxyJumpFallbacks: [['bastion-b'], ['edge', 'bastion-c']],
 });
 db.recordOpenSshConnection('production');
 db.updateOpenSshMetadata('bastion', { group: 'work/eu' });
@@ -92,6 +101,7 @@ const ssh = db.saveSavedHostProfile({
   profile: {
     kind: 'ssh', target: 'router.lab', useConfig: false, user: 'admin', port: 2222,
     identityFiles: ['~/.ssh/id_ed25519'], identitiesOnly: true, proxyJump: ['bastion'],
+    proxyJumpFallbacks: [['bastion-b'], ['edge', 'bastion-c']],
     forwards: [{ type: 'local', bindPort: 8080, targetHost: 'localhost', targetPort: 80 }, { type: 'dynamic', bindPort: 1080 }],
     passwordOnly: true, requestTty: 'force', strictHostKeyChecking: 'accept-new',
   },
@@ -103,13 +113,18 @@ const serial = db.saveSavedHostProfile({
 });
 const rdp = db.saveSavedHostProfile({
   name: 'Build server',
-  profile: { kind: 'rdp', host: 'win-build', port: 3389, username: 'ci', domain: 'LAB', sshGateway: { target: 'bastion' }, shareClipboard: false },
+  profile: { kind: 'rdp', host: 'win-build', port: 3389, username: 'ci', domain: 'LAB', sshGateway: { target: 'bastion' }, sshGatewayFallbacks: [{ target: 'bastion-b' }, { target: 'router.lab', profileId: 'saved-ssh' }], shareClipboard: false },
 });
 const vnc = db.saveSavedHostProfile({ name: 'Lab VM', profile: { kind: 'vnc', host: 'lab-vm', port: 5901, sshGateway: { target: 'router.lab', profileId: 'saved-ssh' }, viewOnly: true } });
 const gnmi = db.saveSavedHostProfile({ name: 'leaf1', profile: { kind: 'gnmi', host: 'leaf1', port: 57400, username: 'admin', tls: 'skip-verify', caFile: '/lab/ca.pem', encoding: 'json_ietf' } });
 const netconf = db.saveSavedHostProfile({ name: 'leaf1 netconf', profile: { kind: 'netconf', host: 'leaf1', port: 830 } });
-db.updateSavedHostMetadata(ssh.id, { displayName: 'Core router', group: 'Work/EU', loginSequence: { steps: [] } });
-db.updateSavedHostMetadata(telnet.id, { group: 'Lab', pasteCharDelayMs: 5 });
+const web = db.saveSavedHostProfile({ name: 'Grafana', profile: { kind: 'web', url: 'https://grafana.internal:3000', sshGateway: { target: 'bastion' } } });
+db.updateSavedHostMetadata(ssh.id, { displayName: 'Core router', group: 'Work/EU', loginSequence: { steps: [] }, systemOpenSsh: true, discoverEnvironments: true });
+db.updateSavedHostMetadata(telnet.id, { group: 'Lab', pasteCharDelayMs: 5, pastePromptWait: {}, antiIdle: { intervalSeconds: 60, text: '', enter: true }, enterKey: 'lf', localEcho: true });
+db.updateSavedHostMetadata(web.id, { group: 'Lab', color: '#22c55e' });
+const diskSpace = db.saveScript({ id: 'script-df', name: 'Disk space', body: 'df -h\n' });
+db.saveScript({ name: 'uptime', body: 'uptime\n' });
+db.saveScript({ id: diskSpace.id, name: 'Free space', body: 'df -h /\n' });
 db.recordSavedHostConnection(ssh.id);
 db.reorderManagedHosts([
   { kind: 'ssh', alias: 'bastion' },
@@ -167,6 +182,15 @@ const expected = {
   groupForSavedHost: db.groupForSavedHost(ssh.id) ?? null,
   sftpDisabledForAlias: db.sftpDisabledForAlias('production'),
   consoleCompatibilityForSavedHost: db.consoleCompatibilityForSavedHost(ssh.id),
+  systemOpenSshForAlias: db.systemOpenSshForAlias('production'),
+  systemOpenSshForSavedHost: db.systemOpenSshForSavedHost(ssh.id),
+  jumpFallbacksForAlias: db.jumpFallbacksForAlias('production'),
+  hostAntiIdleAlias: db.hostAntiIdle({ alias: 'production' }) ?? null,
+  hostAntiIdleSaved: db.hostAntiIdle({ profileId: telnet.id }) ?? null,
+  hostInputKeysAlias: db.hostInputKeys({ alias: 'production' }),
+  hostInputKeysSaved: db.hostInputKeys({ profileId: telnet.id }),
+  hostInputKeysMissing: db.hostInputKeys({ alias: 'missing' }),
+  scripts: db.listScripts(),
   savedHosts: db.listSavedHostProfiles(),
   savedHost: db.savedHostProfile(vnc.id),
   workspaceSummaries: db.listWorkspaceSummaries(),
@@ -192,7 +216,7 @@ const expected = {
   desktopIdentity: db.trustedDesktopIdentity('win-build', 3389, 'ssh:bastion'),
   managementRequests: db.listManagementRequests('gnmi', gnmi.id),
   managementShared: db.listManagementRequests('gnmi'),
-  ids: { ssh: ssh.id, telnet: telnet.id, serial: serial.id, rdp: rdp.id, vnc: vnc.id, gnmi: gnmi.id, netconf: netconf.id, tunnel: t1.id },
+  ids: { ssh: ssh.id, telnet: telnet.id, serial: serial.id, rdp: rdp.id, vnc: vnc.id, gnmi: gnmi.id, netconf: netconf.id, web: web.id, tunnel: t1.id },
 };
 db.close();
 writeFileSync(path.join(outDir, 'ts-populated.expected.json'), `${JSON.stringify(b64(expected), null, 1)}\n`);

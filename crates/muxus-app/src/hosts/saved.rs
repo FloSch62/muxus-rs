@@ -158,6 +158,10 @@ pub fn saved_host_address(profile: &SavedHostProfile) -> String {
             p.username.as_deref(),
             p.ssh_gateway.as_ref(),
         ),
+        SavedHostSessionProfile::Web(p) => match &p.ssh_gateway {
+            Some(gateway) => format!("{} via {}", p.url, gateway.target),
+            None => p.url.clone(),
+        },
         SavedHostSessionProfile::Telnet(p) => format!("{}:{}", p.host, p.port),
         SavedHostSessionProfile::Serial(p) => format!("{} · {} baud", p.path, p.baud_rate),
     }
@@ -245,6 +249,7 @@ mod tests {
                 }),
                 domain: None,
                 share_clipboard: None,
+                ssh_gateway_fallbacks: None,
             }),
         );
         assert_eq!(

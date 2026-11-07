@@ -1140,6 +1140,7 @@ mod tests {
             group_id: None,
             color: None,
             secret_id: None,
+            shortcut: None,
         }];
         let groups = [default_command_group()];
         let counts = HashMap::new();

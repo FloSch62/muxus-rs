@@ -610,6 +610,7 @@ mod tests {
                 resize_remote: Some(false),
                 view_only: Some(false),
                 share_clipboard: Some(true),
+                ssh_gateway_fallbacks: None,
             }),
             "design-vm",
         );
