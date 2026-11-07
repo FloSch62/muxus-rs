@@ -44,6 +44,53 @@ async fn stops_terminal_owned_forwards_but_preserves_explicit_tunnels() {
 }
 
 #[tokio::test]
+async fn reports_the_port_a_socks5_forward_on_port_0_was_given() {
+    let lab = Lab::keyed().await;
+    let first = lab.dial_db().await;
+    let conn_id = first.connection().id.clone();
+    let manager = ForwardManager::new(lab.manager.clone(), ForwardManagerOptions::default());
+
+    let forward = manager
+        .start(ForwardRequest::dynamic(&conn_id, 0))
+        .await
+        .unwrap();
+
+    assert!(forward.bind_port > 0);
+    assert_eq!(manager.list(None), vec![forward.clone()]);
+    // Something really listens there.
+    tokio::net::TcpStream::connect(("127.0.0.1", forward.bind_port))
+        .await
+        .unwrap();
+    manager.stop_all();
+}
+
+#[tokio::test]
+async fn keeps_an_independent_forward_when_the_terminal_sessions_on_its_connection_end() {
+    let lab = Lab::keyed().await;
+    let first = lab.dial_db().await;
+    let conn_id = first.connection().id.clone();
+    let manager = ForwardManager::new(lab.manager.clone(), ForwardManagerOptions::default());
+
+    let proxy = manager
+        .start(ForwardRequest {
+            independent: Some(true),
+            ..ForwardRequest::dynamic(&conn_id, 0)
+        })
+        .await
+        .unwrap();
+    let plain = manager
+        .start(ForwardRequest::dynamic(&conn_id, 0))
+        .await
+        .unwrap();
+    manager.stop_session_for_connection(&conn_id);
+
+    let ids: Vec<String> = manager.list(None).into_iter().map(|info| info.id).collect();
+    assert_eq!(ids, vec![proxy.id]);
+    assert_eq!(plain.lifecycle, ForwardLifecycle::Session);
+    manager.stop_all();
+}
+
+#[tokio::test]
 async fn promotes_a_running_session_forward_when_it_is_saved_as_a_tunnel() {
     let lab = Lab::keyed().await;
     let first = lab.dial_db().await;

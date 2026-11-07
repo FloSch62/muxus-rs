@@ -160,6 +160,9 @@ struct Binding {
     listener: Option<AbortHandle>,
     remote: Option<RemoteRoute>,
     watcher: Option<AbortHandle>,
+    /// The local port the listener got (the system picks one for port 0); `None` for a
+    /// remote forward, whose port is the one asked for.
+    port: Option<u16>,
 }
 
 impl Binding {
@@ -195,12 +198,15 @@ struct ActiveForward {
     attempts: usize,
     /// The window's keepalive fallback that the original dial carried.
     keepalive_interval_seconds: Option<u32>,
+    /// The port the rule asked for; `info.bind_port` becomes the one it got.
+    requested_port: u16,
 }
 
 impl ActiveForward {
     fn new(serial: u64, info: ForwardInfo) -> Self {
         Self {
             serial,
+            requested_port: info.bind_port,
             info,
             binding: None,
             reconnect: None,
@@ -250,11 +256,14 @@ impl ConfigKey {
         }
     }
 
-    fn of_info(info: &ForwardInfo) -> Self {
+    /// The rule as it was asked for, so a rule on port 0 still matches once the system has
+    /// picked its port.
+    fn of_entry(entry: &ActiveForward) -> Self {
+        let info = &entry.info;
         Self {
             conn_id: info.conn_id.clone(),
             kind: info.kind,
-            bind_port: info.bind_port,
+            bind_port: entry.requested_port,
             target_host: info.target_host.clone(),
             target_port: info.target_port,
         }
@@ -425,7 +434,9 @@ impl ForwardManager {
             target_host: req.target_host.clone(),
             target_port: req.target_port,
             origin,
-            lifecycle: if req.tunnel_id.is_some() {
+            // A saved tunnel, or a forward asked to outlive the terminals on its connection
+            // (a web page's proxy, which its window stops).
+            lifecycle: if req.tunnel_id.is_some() || req.independent == Some(true) {
                 ForwardLifecycle::Independent
             } else {
                 ForwardLifecycle::Session
@@ -494,7 +505,7 @@ impl ForwardManager {
                 let existing = state.forwards.iter().find(|f| {
                     f.info.origin == ForwardOrigin::Config
                         && f.info.lifecycle == ForwardLifecycle::Session
-                        && ConfigKey::of_info(&f.info) == key
+                        && ConfigKey::of_entry(f) == key
                 });
                 if let Some(existing) = existing {
                     return Ok(ConfigForwardStart {
@@ -706,11 +717,18 @@ async fn bind(
         listener: None,
         remote: None,
         watcher: None,
+        port: None,
     };
     match kind {
-        ForwardType::Local => binding.listener = Some(listeners::start_local(conn, rule).await?),
+        ForwardType::Local => {
+            let (listener, port) = listeners::start_local(conn, rule).await?;
+            binding.listener = Some(listener);
+            binding.port = Some(port);
+        }
         ForwardType::Dynamic => {
-            binding.listener = Some(listeners::start_dynamic(conn, rule).await?)
+            let (listener, port) = listeners::start_dynamic(conn, rule).await?;
+            binding.listener = Some(listener);
+            binding.port = Some(port);
         }
         ForwardType::Remote => {
             binding.remote = Some(listeners::start_remote(&shared.remote, conn, rule).await?)
@@ -723,6 +741,11 @@ async fn bind(
 fn install(shared: &Arc<Shared>, entry: &mut ActiveForward, mut binding: Binding) {
     let conn = binding.connection().clone();
     entry.info.conn_id = conn.id.clone();
+    // Port 0 lets the system pick a free one (a web host's private proxy); the forward then
+    // reports the port it got, and a redial binds that same port again.
+    if let Some(port) = binding.port {
+        entry.info.bind_port = port;
+    }
     entry.bound_at = Instant::now();
     entry.keepalive_interval_seconds = conn.profile.keepalive_interval_seconds;
     let weak = Arc::downgrade(shared);
