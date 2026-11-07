@@ -24,7 +24,7 @@ in-process ssh-agent; nothing touches the real `~/.ssh`, the real agent or a rea
 | Security keys held by the user's ssh-agent (listing, sk certificates, touch beyond ConnectTimeout) | `security-keys.test.ts` agent cases | done | All five agent cases ported (`connection/tests/security_keys.rs`) against `testing::agent::start_sk_agent`, a fake agent that signs like a touched authenticator (PROTOCOL.u2f message, flags and counter), and the test server, which checks sk signatures as sshd does. The port found two gaps, now fixed: agent identities of an unknown key type are skipped (ssh2 does), and a security key the agent could not sign with becomes the reason of the final authentication error, as `noteSecurityKeyProblem` does. |
 | Private ssh-agent for security key IdentityFiles | `ssh/security-key-agent.ts` | done | Askpass relays over a socketpair on the helper's stdin instead of a Node script. Tested with fake and (when installed) real OpenSSH tools. |
 | Agent wrapper that never stalls the dial | `ssh/responsive-agent.ts` | done | Deadline pause/resume, wait notice, timeouts, unavailable latch. |
-| RFC 4335 `break` | `ssh/channel-break.ts` | done | russh 0.64 has no `break` request, so russh is vendored with one (`vendor/russh/PATCHES.md`). `shell::pump` sends it with want-reply and pairs the replies in order: accepted → `BreakOutcome::Sent`, refused/unanswered (break length + 5 s) → `Declined` with the TS sentences; an unanswered BREAK stays queued so a late reply lines up. `channel-break.test.ts` ported against the test server (`BreakAnswer` accept/refuse/ignore); its closed-channel case becomes a BREAK still waiting when the channel closes (`Failed("the SSH channel is closed")`). |
+| RFC 4335 `break` | `ssh/channel-break.ts` | missing | russh (0.64 and 0.65.1) has no client API for the `break` channel request and no raw channel request. `TransportInput::Break` is answered with `BreakOutcome::Failed` meanwhile, so the UI shows the failure. A full implementation (patched russh plus reply pairing in `shell::pump`, `channel-break.test.ts` ported) existed in commit `7284458` and was taken out to avoid vendoring russh; it comes back once upstream russh can send `break`. |
 | Dial plan (ProxyJump chains, saved Muxus jump hosts, profile overlay, cycles) | `ssh/connection-manager.ts` (`buildChain`, `muxKey`, ...) | done | `chain.test.ts` and the buildChain cases of `folder-auth.test.ts` ported. |
 | Auth ladder (none, agent, certificates, identity files with passphrases, security keys, keyboard-interactive, password with retries, saved/folder passwords, vault unlock/create/remember) | `ssh/connection-manager.ts` (`AuthLadder`) | done | `agent-auth`, `folder-password-auth` and the password-memory cases of `connection-session` ported. A failed agent signature answers with an unusable signature so the login moves on (the engine waits for a signature once a key is accepted). A keyboard-interactive round without prompts (PAM's after a password) is answered without asking. Forward start, stop and failure are logged. |
 | Host key verification (pinned link fingerprints, known_hosts, StrictHostKeyChecking, TOFU prompt) | `ssh/connection-manager.ts` (`verifyHostKey`) | done | `host-key-pin` behaviour ported (fingerprint plumbing and connection cases). |
@@ -63,9 +63,8 @@ in-process ssh-agent; nothing touches the real `~/.ssh`, the real agent or a rea
 
 ## Attribution
 
-No third-party code was copied into this crate. russh-sftp and ssh-key are dependencies
-(Apache-2.0); russh (Apache-2.0) is vendored in `vendor/russh` with the `break` request added
-(see `ATTRIBUTION.md`).
+No third-party code was copied into this crate. russh, russh-sftp and ssh-key are dependencies
+(Apache-2.0).
 
 SFTP: `ManagedConnection::sftp()` hands out the raw russh-sftp session (`SftpChannel`), because the
 high-level client cannot send `posix-rename@openssh.com` and drops directory long names; its
