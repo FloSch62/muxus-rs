@@ -3,6 +3,7 @@
 mod algorithms;
 mod auth;
 mod mux;
+mod security_keys;
 mod session;
 
 use std::collections::{HashMap, VecDeque};
