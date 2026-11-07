@@ -18,6 +18,7 @@ pub mod osc52;
 pub mod palette;
 pub mod paste;
 pub mod right_click;
+pub mod scheme_import;
 pub mod scrollback;
 pub mod search;
 pub mod selection;
