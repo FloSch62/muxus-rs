@@ -48,6 +48,7 @@ fn tab(connected: bool, conn_id: &str, profile: SshProfile) -> LiveTab {
         profile: Some(SessionProfile::Ssh(profile)),
         connected,
         conn_id: Some(conn_id.into()),
+        runs_commands: true,
     }
 }
 
@@ -117,6 +118,26 @@ fn finds_a_connected_tabs_transport_to_the_same_host() {
         tab(true, "c3", saved_tab_profile()),
     ];
     assert_eq!(live_connection_for(&tabs, &host).as_deref(), Some("c3"));
+}
+
+/// A system OpenSSH tab whose login is not shared reaches no commands, so neither discovery
+/// nor the panel reads the host over it.
+#[test]
+fn skips_a_system_openssh_tab_that_cannot_run_commands() {
+    assert!(tab_runs_commands(None, None));
+    assert!(tab_runs_commands(Some(true), Some(true)));
+    assert!(tab_runs_commands(Some(true), None));
+    assert!(tab_runs_commands(Some(false), Some(false)));
+    assert!(!tab_runs_commands(Some(true), Some(false)));
+    let host = environment_host_for_managed(&ManagedHost::profile(saved_pve())).unwrap();
+    let mut unshared = tab(true, "c1", saved_tab_profile());
+    unshared.runs_commands = false;
+    let mut tabs = vec![unshared];
+    assert_eq!(live_connection_for(&tabs, &host), None);
+    assert!(connected_hosts(&tabs, &[], &[saved_pve()]).is_empty());
+    tabs.push(tab(true, "c2", saved_tab_profile()));
+    assert_eq!(live_connection_for(&tabs, &host).as_deref(), Some("c2"));
+    assert_eq!(connected_hosts(&tabs, &[], &[saved_pve()]).len(), 1);
 }
 
 #[test]

@@ -5,7 +5,8 @@
 //!
 //! Automatic discovery (`auto`) skips a connection whose server never ran a command, the way
 //! the shell probe tells: some network devices drop the whole connection when a second channel
-//! asks to exec.
+//! asks to exec. A system OpenSSH session is read over the login its terminal shares, once the
+//! host has shown it runs commands.
 
 use std::sync::Arc;
 
@@ -21,6 +22,7 @@ use muxus_core::environments::{
 use muxus_core::validate::Validate;
 use muxus_ssh::connection::ConnectionLeaseOwner;
 use muxus_ssh::connection::manager::ConnectionLease;
+use muxus_ssh::system_openssh::SystemOpenSshLease;
 
 use crate::adapters::ConnectionCommand;
 use crate::backend::{Backend, Shared};
@@ -28,20 +30,42 @@ use crate::environments::discovery::{
     containerlab_topology, discover_environments, kubernetes_namespaces, kubernetes_pods,
     libvirt_addresses, libvirt_display, proxmox_addresses, run_environment_action,
 };
-use crate::environments::probe::{ProbeRunner, local_probe_runner, remote_probe_runner};
+use crate::environments::probe::{
+    ProbeRunner, local_probe_runner, remote_probe_runner, script_probe_runner,
+};
 use crate::environments::{EnvironmentSource, kubus_available};
 use crate::error::{ApiError, ApiResult};
+
+/// What keeps a runner's connection while it runs.
+enum RunnerLease {
+    Ssh(ConnectionLease),
+    System(SystemOpenSshLease),
+}
 
 /// A runner for `source`, with the lease that keeps its connection while it runs.
 struct Runner {
     run: ProbeRunner,
-    lease: Option<ConnectionLease>,
+    lease: Option<RunnerLease>,
 }
 
 impl Runner {
+    /// Whether automatic discovery may ask this host: a built-in connection whose server ran
+    /// the shell probe, a system OpenSSH session whose host answered the command probe.
+    async fn runs_commands(&self) -> bool {
+        match &self.lease {
+            None => true,
+            Some(RunnerLease::Ssh(lease)) => lease.connection().ran_command(),
+            Some(RunnerLease::System(lease)) => {
+                lease.connection().runs_commands().await.unwrap_or(false)
+            }
+        }
+    }
+
     fn release(self) {
-        if let Some(lease) = self.lease {
-            lease.release();
+        match self.lease {
+            None => {}
+            Some(RunnerLease::Ssh(lease)) => lease.release(),
+            Some(RunnerLease::System(lease)) => lease.release(),
         }
     }
 }
@@ -53,6 +77,16 @@ fn runner(shared: &Shared, source: &EnvironmentSource) -> ApiResult<Runner> {
             lease: None,
         }),
         EnvironmentSource::Ssh { conn_id } => {
+            if let Some(lease) = shared.connections.system_sessions().acquire(conn_id) {
+                let session = lease.connection().clone();
+                return Ok(Runner {
+                    run: script_probe_runner(move |script| {
+                        let session = session.clone();
+                        async move { session.run_script(&script).await }
+                    }),
+                    lease: Some(RunnerLease::System(lease)),
+                });
+            }
             let lease = shared
                 .connections
                 .acquire(conn_id, ConnectionLeaseOwner::Environments)
@@ -60,7 +94,7 @@ fn runner(shared: &Shared, source: &EnvironmentSource) -> ApiResult<Runner> {
             let command = ConnectionCommand(lease.connection().clone());
             Ok(Runner {
                 run: remote_probe_runner(Arc::new(command)),
-                lease: Some(lease),
+                lease: Some(RunnerLease::Ssh(lease)),
             })
         }
     }
@@ -131,10 +165,7 @@ impl Backend {
                 let source = source.clone();
                 async move {
                     let runner = runner(&shared, &source)?;
-                    if auto
-                        && let Some(lease) = &runner.lease
-                        && !lease.connection().ran_command()
-                    {
+                    if auto && !runner.runs_commands().await {
                         runner.release();
                         return Ok(EnvironmentsResponse::Unsupported {
                             message: "The host does not run commands.".into(),
@@ -283,6 +314,12 @@ impl Backend {
         request.validate().map_err(ApiError::invalid)?;
         let conn_id = conn_id.to_string();
         self.run(move |shared| async move {
+            if let Some(system) = shared.connections.system_sessions().acquire(&conn_id) {
+                system.release();
+                return Err(ApiError::bad_request(
+                    "Opening ports is not available with system OpenSSH.",
+                ));
+            }
             let existing = shared
                 .forwards
                 .list(Some(&conn_id))

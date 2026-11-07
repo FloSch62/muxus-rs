@@ -48,6 +48,9 @@ impl Global for WindowEnvironments {}
 pub struct SidebarMarks {
     pub marks: HashMap<String, Vec<EnvironmentCount>>,
     pub open: Option<String>,
+    /// Hosts a connected tab of the window can run commands on: a system OpenSSH host is only
+    /// read over such a tab's login.
+    pub live: std::collections::BTreeSet<String>,
 }
 
 /// What a sidebar row asks of the panel.
@@ -147,6 +150,10 @@ impl AppShell {
                     profile: tab.profile.clone(),
                     connected: tab.status == TabStatus::Connected,
                     conn_id: tab.conn_id.clone(),
+                    runs_commands: muxus_app::features::environments::model::tab_runs_commands(
+                        tab.system_open_ssh,
+                        tab.sftp_available,
+                    ),
                 })
                 .collect(),
             discover: self.prefs.discover_environments,
@@ -184,6 +191,7 @@ impl AppShell {
             SidebarMarks {
                 marks: hub.marks(),
                 open: hub.panel().host_key().map(str::to_string),
+                live: hub.live_keys().clone(),
             }
         };
         self.sidebar

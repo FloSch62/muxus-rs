@@ -7,7 +7,7 @@
 //! host without a terminal, asking for passwords like a session would; those
 //! connections are let go when the panel closes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -108,6 +108,8 @@ pub struct EnvironmentsHub {
     ssh_hosts: Vec<SshHostEntry>,
     saved_profiles: Vec<SavedHostProfile>,
     catalog_loaded: bool,
+    /// The hosts a connected tab of the window can run commands on, by key.
+    live_keys: BTreeSet<String>,
     panel: PanelScope,
     refresh: Option<Task<()>>,
     kubus: Option<bool>,
@@ -130,6 +132,7 @@ impl EnvironmentsHub {
             ssh_hosts: Vec::new(),
             saved_profiles: Vec::new(),
             catalog_loaded: false,
+            live_keys: BTreeSet::new(),
             panel: PanelScope::Closed,
             refresh: None,
             kubus: None,
@@ -248,7 +251,13 @@ impl EnvironmentsHub {
         if self.input.discover && self.store.get(LOCAL_ENVIRONMENT_KEY).is_none() {
             self.follow_setting(cx);
         }
-        for host in connected_hosts(&self.input.tabs, &self.ssh_hosts, &self.saved_profiles) {
+        let connected = connected_hosts(&self.input.tabs, &self.ssh_hosts, &self.saved_profiles);
+        let live_keys: BTreeSet<String> = connected.iter().map(|host| host.key.clone()).collect();
+        if live_keys != self.live_keys {
+            self.live_keys = live_keys;
+            cx.notify();
+        }
+        for host in connected {
             if let Some(entry) = self.store.get(&host.key) {
                 // The host editor may have changed the host's own choice.
                 if entry.host.discover != host.discover
@@ -305,6 +314,11 @@ impl EnvironmentsHub {
                 }
             }
         }));
+    }
+
+    /// The hosts a connected tab of the window can run commands on, by key.
+    pub fn live_keys(&self) -> &BTreeSet<String> {
+        &self.live_keys
     }
 
     /// Whether Muxus can read the host now without connecting: this computer, a connected tab,

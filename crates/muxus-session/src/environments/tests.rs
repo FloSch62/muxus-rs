@@ -64,6 +64,43 @@ fn runs_each_probe_on_its_own_and_keeps_stderr_out_of_stdout() {
     );
 }
 
+/// A system OpenSSH session runs the batch as one script over its shared login.
+#[cfg(unix)]
+#[test]
+fn runs_a_batch_as_one_script_through_the_script_runner() {
+    let scripts = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen = scripts.clone();
+    let run = probe::script_probe_runner(move |script: String| {
+        seen.lock().unwrap().push(script.clone());
+        async move {
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&script)
+                .output()
+                .map_err(|error| error.to_string())?;
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        }
+    });
+    let results = block_on(run(vec![
+        Probe::new("ok", &["printf", "%s", "hello"]),
+        Probe::new("missing", &["muxus-no-such-tool-anywhere"]),
+    ]))
+    .expect("ran");
+    assert_eq!(results["ok"], ProbeResult::ran("hello", 0, ""));
+    assert_eq!(results["missing"], ProbeResult::Missing);
+    assert_eq!(scripts.lock().unwrap().len(), 1, "one script for the batch");
+    // Nothing to ask, nothing run; a script that fails reports why.
+    assert!(block_on(run(Vec::new())).expect("empty").is_empty());
+    assert_eq!(scripts.lock().unwrap().len(), 1);
+    let refused = probe::script_probe_runner(|_script: String| async {
+        Err::<String, String>("ssh could not run the command.".into())
+    });
+    assert_eq!(
+        block_on(refused(vec![Probe::new("ok", &["true"])])).unwrap_err(),
+        "ssh could not run the command."
+    );
+}
+
 #[test]
 fn ignores_a_login_banner_and_reports_a_cut_off_probe_as_timed_out() {
     let output = [

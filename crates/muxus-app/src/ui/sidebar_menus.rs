@@ -193,21 +193,36 @@ impl SessionSidebar {
                     }
                     paper = paper.child(item);
                 }
-                if muxus_app::features::environments::model::environment_host_for_managed(&host)
-                    .is_some()
+                if let Some(environment_host) =
+                    muxus_app::features::environments::model::environment_host_for_managed(&host)
                 {
-                    paper = paper.child(
-                        MenuItem::new("host-environments", "Containers & VMs")
-                            .icon("ViewInArOutlined")
-                            .on_click(Self::action(
-                                SidebarAction::Environments(
-                                    crate::ui::environments::EnvironmentsRequest::Show(
-                                        host.clone(),
-                                    ),
-                                ),
-                                cx,
-                            )),
-                    );
+                    // These hosts are only read over a terminal's login; nothing can dial one
+                    // just for this.
+                    let system = environment_host.uses_system_open_ssh();
+                    let unavailable = if system
+                        && muxus_core::platform::Platform::current()
+                            == muxus_core::platform::Platform::Windows
+                    {
+                        Some(muxus_app::hosts::system_openssh::SYSTEM_OPENSSH_WINDOWS_UNAVAILABLE)
+                    } else if system && !self.environment_marks.live.contains(&environment_host.key)
+                    {
+                        Some("Connect a terminal to this host first")
+                    } else {
+                        None
+                    };
+                    let mut item = MenuItem::new("host-environments", "Containers & VMs")
+                        .icon("ViewInArOutlined")
+                        .disabled(unavailable.is_some())
+                        .on_click(Self::action(
+                            SidebarAction::Environments(
+                                crate::ui::environments::EnvironmentsRequest::Show(host.clone()),
+                            ),
+                            cx,
+                        ));
+                    if let Some(reason) = unavailable {
+                        item = item.detail(reason);
+                    }
+                    paper = paper.child(item);
                 }
                 paper = paper
                     .child(

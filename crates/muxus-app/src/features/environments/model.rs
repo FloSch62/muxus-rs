@@ -239,6 +239,14 @@ pub struct LiveTab {
     pub profile: Option<SessionProfile>,
     pub connected: bool,
     pub conn_id: Option<String>,
+    /// Commands can reach the host over this tab ([`tab_runs_commands`]).
+    pub runs_commands: bool,
+}
+
+/// Whether commands can reach the host over a tab: a system OpenSSH tab needs its login
+/// shared, which its file browser being unavailable says it is not (`tabRunsCommands`).
+pub fn tab_runs_commands(system_open_ssh: Option<bool>, sftp_available: Option<bool>) -> bool {
+    !(system_open_ssh == Some(true) && sftp_available == Some(false))
 }
 
 fn same_host(profile: Option<&SessionProfile>, host: &EnvironmentHost) -> bool {
@@ -254,7 +262,12 @@ fn same_host(profile: Option<&SessionProfile>, host: &EnvironmentHost) -> bool {
 /// A transport to the host some tab already holds (`liveConnectionFor`).
 pub fn live_connection_for(tabs: &[LiveTab], host: &EnvironmentHost) -> Option<String> {
     tabs.iter()
-        .find(|tab| tab.connected && tab.conn_id.is_some() && same_host(tab.profile.as_ref(), host))
+        .find(|tab| {
+            tab.connected
+                && tab.conn_id.is_some()
+                && tab.runs_commands
+                && same_host(tab.profile.as_ref(), host)
+        })
         .and_then(|tab| tab.conn_id.clone())
 }
 
@@ -274,7 +287,7 @@ pub fn connected_hosts(
         let Some(profile @ SessionProfile::Ssh(_)) = &tab.profile else {
             continue;
         };
-        if !tab.connected || tab.conn_id.is_none() {
+        if !tab.connected || tab.conn_id.is_none() || !tab.runs_commands {
             continue;
         }
         if let Some(host) = environment_host_for_profile(profile, ssh_hosts, saved_profiles)

@@ -35,6 +35,7 @@ fn reads_connected_hosts_that_run_commands_and_the_panel_reads_the_rest(cx: &mut
                     profile: Some(ssh_profile("box")),
                     connected: true,
                     conn_id: Some(fx.conn_id.clone()),
+                    runs_commands: true,
                 }],
                 discover: true,
                 refresh_seconds: 0.,

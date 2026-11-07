@@ -215,6 +215,27 @@ pub fn remote_probe_runner(remote: Arc<dyn RemoteCommand>) -> ProbeRunner {
     })
 }
 
+/// Probes fed as one script to a host's sh by `run_script`, which returns what it printed
+/// (`scriptProbeRunner`): a system OpenSSH session runs it over the login its terminal shares.
+pub fn script_probe_runner<F, Fut>(run_script: F) -> ProbeRunner
+where
+    F: Fn(String) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<String, String>> + Send + 'static,
+{
+    let run_script = Arc::new(run_script);
+    Arc::new(move |probes| {
+        let run_script = run_script.clone();
+        Box::pin(async move {
+            if probes.is_empty() {
+                return Ok(ProbeResults::new());
+            }
+            Ok(parse_probe_output(
+                &run_script(probe_script(&probes)).await?,
+            ))
+        })
+    })
+}
+
 /// Probes on the computer running Muxus, in the environment local terminals start from (the
 /// login shell's PATH on a GUI launch; the sandbox's HOME in tests). `None` keeps this
 /// process's environment.

@@ -37,20 +37,20 @@ cargo test -p muxus-app --test ui_environments        # hub + panel against a li
 | Lookups: namespaces, pods, lab topology, libvirt/Proxmox addresses, VNC display | discovery.ts | done | |
 | Lifecycle actions (container, compose, Proxmox, libvirt) | discovery.ts `actionArgv` | done | tests ported |
 | Routes, validation, shared in-flight reading | server/src/routes/environments.ts | done | `Backend` methods; route tests ported |
-| Automatic discovery skips hosts that never ran a command | routes/environments.ts, ssh/remote-shell-integration.ts `ranCommand` | done | `ManagedConnection::ran_command`, set when the shell probe printed its marker |
+| Automatic discovery skips hosts that never ran a command | routes/environments.ts, ssh/remote-shell-integration.ts `ranCommand` | done | `ManagedConnection::ran_command` (the shell probe's `ShellProbeMemo`, set when it printed its marker) |
 | Published port through an SSH forward (reused when one exists) | routes/environments.ts `/ports` | done | shows in the forwarding panel |
 | Environment sessions over SSH (target command, forced TTY) | ssh/connection-manager.ts `environmentSession` | done | test ported |
 | Saved hosts keep the session's environment | connection-manager.ts `resolveProfile` | done | test ported |
 | Local environment sessions (tool argv, no shell integration) | local/pty-manager.ts | done | test added |
 | No login sequence for environment sessions | ws/terminal-socket.ts | done | |
 | Kubus detection and `kubus://` links | electron/src/main.ts | done | `xdg-mime` on Linux, `/Applications/Kubus.app` on macOS, the registry on Windows; route check tested |
-| Discovery over system OpenSSH | routes/environments.ts `systemOpenSsh` | missing | system OpenSSH sessions are another port; hosts set to it are only greyed out in the panel |
+| Discovery over system OpenSSH (over the login the terminal shares, after the command probe; no ports) | routes/environments.ts `systemOpenSsh`, probe-runner.ts `scriptProbeRunner` | done | `probe::script_probe_runner` over `SystemOpenSshSession::run_script`; automatic readings ask `runs_commands` first; `environment_port` refuses such sessions |
 
 ## App
 
 | Feature | TypeScript source | Status | Note |
 |---|---|---|---|
-| Hosts, entries, store, live transports, forgetting disconnected hosts | client/src/environments.ts, state/environments.ts | done | `model.rs`; tests ported |
+| Hosts, entries, store, live transports, forgetting disconnected hosts; system OpenSSH tabs without a shared login are skipped | client/src/environments.ts (`tabRunsCommands`), state/environments.ts | done | `model.rs`; tests ported |
 | Badges (counts) | environments.ts `environmentBadges` | done | `EnvironmentCount` (a `…Badge` type name reads as a widget to `xtask style`) |
 | Discovery on window open, on connect, on the refresh interval; host override | components/environments/useEnvironmentDiscovery.ts | done | `hub.rs`, one per window; the shell feeds it tabs and prefs every frame (cheap when unchanged) and the catalog when loaded |
 | Panel dials a host without a terminal, prompts through the window, lets go on close | environments.ts `environmentSource`, EnvironmentsPanel.tsx | done | prompts reuse the window's auth/host key dialogs |
@@ -71,7 +71,7 @@ cargo test -p muxus-app --test ui_environments        # hub + panel against a li
 | Logos in the tools' own colors (dark containerlab variant) | environment-icons.tsx, logos/*.svg | done | `assets/icons/env-*.svg`, copied by `hack/extract_icons.mjs`, rasterized per size and scale |
 | Sidebar mark (overlapped logos, counts in tooltip, toggles the panel) on hosts and the local terminal row | EnvironmentBadges.tsx, HostRow.tsx, SessionSidebar.tsx | done | |
 | Options button takes no width until the row is hovered | HostRow.tsx (`693ee67`) | done | |
-| Host menu "Containers & VMs" | sidebar/HostContextMenu.tsx | done | |
+| Host menu "Containers & VMs" (greyed for a system OpenSSH host on Windows, or without a connected terminal that can run commands) | sidebar/HostContextMenu.tsx | done | the window's hosts with such a terminal reach the sidebar with its marks (`SidebarMarks::live`) |
 | Top bar control | layout/TopBar.tsx | done | |
 | Panel beside the sidebar, hidden in focus mode | layout/AppShell.tsx | done | |
 | Tab icons of environment sessions | components/host-kind-icon.ts `environmentTabIcon` | done | |

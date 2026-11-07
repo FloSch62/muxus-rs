@@ -142,7 +142,7 @@ pub struct SessionSidebar {
     last_index: usize,
     live: BTreeMap<String, LiveCounts>,
     /// What each host runs, for the mark at the end of its row.
-    environment_marks: crate::ui::environments::SidebarMarks,
+    pub(crate) environment_marks: crate::ui::environments::SidebarMarks,
     scroll: ScrollHandle,
     row_window: RowWindow,
     open_gesture: SidebarOpenGesture,
