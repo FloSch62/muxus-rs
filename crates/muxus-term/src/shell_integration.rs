@@ -177,10 +177,11 @@ impl<M> CommandTracker<M> {
         Self::default()
     }
 
-    /// Move the running command's marker with its line (the buffer was rewrapped).
-    pub fn map_marker(&mut self, map: impl FnOnce(&M) -> M) {
-        if let Some(marker) = &mut self.command_start {
-            *marker = map(marker);
+    /// Move the running command's marker with its line (the buffer was resized); `None` when
+    /// its line went away, which disposes it as xterm disposes a marker on a deleted line.
+    pub fn map_marker(&mut self, map: impl FnOnce(&M) -> Option<M>) {
+        if let Some(marker) = self.command_start.take() {
+            self.command_start = map(&marker);
         }
     }
 

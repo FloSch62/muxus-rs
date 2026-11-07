@@ -13,7 +13,7 @@ use par_term_emu_core_rust::cell::{Cell, UnderlineStyle as CoreUnderline};
 use par_term_emu_core_rust::color::{Color, NamedColor};
 use par_term_emu_core_rust::cursor::CursorStyle as CoreCursorStyle;
 use par_term_emu_core_rust::graphics::TerminalGraphic;
-use par_term_emu_core_rust::grid::ScrollbackReflow;
+use par_term_emu_core_rust::grid::BufferReflow;
 use par_term_emu_core_rust::terminal::Terminal as Core;
 
 use crate::buffer::{CellText, TextBuffer};
@@ -296,9 +296,10 @@ impl Emulator {
         // Readers already pad short lines (scrollback lines keep the width
         // they scrolled off at, so they are short after the screen widens).
         core.set_compact_scrollback(true);
-        // A width change rewraps the scrollback as well as the screen, as xterm reflows its
-        // whole buffer.
-        core.set_reflow_scrollback(true);
+        // Resizes treat the scrollback and the screen as one buffer, as xterm.js does: the
+        // cursor follows its line, lines come back from the scrollback, and a width change
+        // rewraps everything but the cursor's line.
+        core.set_xterm_resize(true);
         let mut emulator = Self {
             core,
             filter: StreamFilter::new(),
@@ -483,78 +484,71 @@ impl Emulator {
         self.core.size().1
     }
 
-    /// Resize the grid (the screen reflows; the scrollback keeps its line widths).
+    /// Resize the terminal as xterm.js resizes its buffer (`Buffer.resize`): the screen and the
+    /// scrollback reflow as one, the cursor stays on its line, and the viewport moves by xterm's
+    /// rules (at the bottom it stays there; scrolled back it keeps its index, one line up for
+    /// every row the screen gains while the cursor sits on the last line).
     pub fn resize(&mut self, cols: u16, rows: u16) {
         let (cols, rows) = (usize::from(cols.max(2)), usize::from(rows.max(1)));
         if (cols, rows) == self.core.size() {
             return;
         }
         let before = self.lines_trimmed();
-        self.keep_cursor_on_shorter_screen(rows);
+        let alternate = self.core.is_alt_screen_active();
         let primary = self.core.grid();
         let floor = (primary.total_lines_scrolled() - primary.scrollback_len()) as u64;
-        // The line at the top of a scrolled-back viewport, to keep it there.
-        let viewed = (!self.core.is_alt_screen_active() && self.display_offset > 0)
-            .then(|| self.absolute_line(self.viewport_top()));
-        self.core.resize(cols, rows);
-        if let Some(reflow) = self.core.take_scrollback_reflow() {
-            self.follow_reflow(floor, &reflow, viewed);
+        // The alternate screen has no scrollback: the primary viewport is at its bottom.
+        let viewed = if alternate {
+            primary.scrollback_len()
+        } else {
+            self.viewport_top()
+        };
+        let top = self.core.resize_with_viewport(cols, rows, viewed);
+        if let Some(reflow) = self.core.take_buffer_reflow() {
+            self.follow_reflow(floor, &reflow);
+        }
+        if !alternate {
+            self.display_offset = self.scrollback_len().saturating_sub(top);
         }
         self.set_cell_size(self.cell_size.0, self.cell_size.1);
         self.after_change(before);
     }
 
-    /// The scrollback was rewrapped for a new width: what the emulator marks on lines (failed
-    /// commands, the running command, images, the viewport's top line) follows them, as
-    /// xterm's markers follow a reflow. `floor` is the primary screen's first absolute line.
-    fn follow_reflow(&mut self, floor: u64, reflow: &ScrollbackReflow, viewed: Option<u64>) {
-        let moved = |line: u64| -> u64 {
+    /// The buffer was resized: what the emulator marks on lines follows them, as xterm's
+    /// markers do. Marks on a line that went away (a row emptied by joining a wrapped line, or a
+    /// line trimmed off the top) are disposed; an image keeps the line its top moved into.
+    /// `floor` is the primary screen's first absolute line before the resize.
+    fn follow_reflow(&mut self, floor: u64, reflow: &BufferReflow) {
+        let first = floor + reflow.trimmed as u64;
+        let old_len = reflow.lines.len() as u64;
+        let marker = |line: u64| -> Option<u64> {
             match line.checked_sub(floor) {
-                Some(index) if (index as usize) < reflow.old_len => {
-                    floor + reflow.lines[index as usize] as u64
+                Some(index) if index < old_len => {
+                    reflow.lines[index as usize].map(|line| first + line as u64)
                 }
-                // Screen lines move with the scrollback's new length.
-                Some(_) => (line + reflow.new_len as u64).saturating_sub(reflow.old_len as u64),
-                None => line,
+                // Past the buffer's end: not a line any more.
+                Some(_) => None,
+                None => Some(line),
             }
         };
-        for line in &mut self.failed_commands {
-            *line = moved(*line);
-        }
+        self.failed_commands = self
+            .failed_commands
+            .iter()
+            .filter_map(|line| marker(*line))
+            .collect();
         self.failed_commands.dedup();
-        self.commands.map_marker(|line| moved(*line));
+        self.commands.map_marker(|line| marker(*line));
+        let image = |line: u64| -> u64 {
+            match line.checked_sub(floor) {
+                Some(index) if index < old_len => reflow
+                    .follow(index as usize)
+                    .map_or(first, |line| first + line as u64),
+                _ => line,
+            }
+        };
         for (top, _) in self.image_tops.values_mut() {
-            *top = moved(*top);
+            *top = image(*top);
         }
-        if let Some(line) = viewed.and_then(|line| self.buffer_line(moved(line))) {
-            self.display_offset = self.scrollback_len().saturating_sub(line);
-        }
-    }
-
-    /// xterm's `Buffer.resize` when the screen gets shorter: the rows below
-    /// the cursor go first, then the top rows scroll into the scrollback so
-    /// the cursor's line stays on screen. The engine instead cuts the bottom
-    /// rows off and clamps the cursor, which drops the output between the
-    /// new bottom and the cursor. Scrolling the screen up beforehand (the
-    /// whole screen, so the lines reach the scrollback) gives xterm's result;
-    /// the engine resets the scroll region on resize anyway. The alternate
-    /// screen has no scrollback and its program redraws on SIGWINCH.
-    fn keep_cursor_on_shorter_screen(&mut self, rows: usize) {
-        if self.core.is_alt_screen_active() {
-            return;
-        }
-        let cursor = *self.core.cursor();
-        if cursor.row < rows {
-            return;
-        }
-        let shift = cursor.row + 1 - rows;
-        // DECSTBM homes the cursor, so it is placed back explicitly.
-        let sequence = format!(
-            "\x1b[r\x1b[{shift}S\x1b[{};{}H",
-            cursor.row - shift + 1,
-            cursor.col + 1
-        );
-        self.core.process(sequence.as_bytes());
     }
 
     // ---- input ---------------------------------------------------------------------------
@@ -1443,28 +1437,69 @@ mod tests {
     }
 
     #[test]
-    fn a_scrolled_back_viewport_keeps_its_line_through_a_rewrap() {
+    fn a_scrolled_back_viewport_keeps_its_index_through_a_rewrap_as_xterm_does() {
         let mut term = emulator(10, 3);
         for i in 0..20 {
             term.write(format!("{i:02}-abcdefghij\r\n").as_bytes());
         }
-        // Scroll back to the line starting "05-".
+        // Each line takes two rows; scroll back to the one starting "05-".
         let target = (0..term.length())
             .find(|line| line_text(&term, *line).unwrap().starts_with("05-"))
             .unwrap();
+        assert_eq!(target, 10);
         term.scroll_to_line(target);
+        // xterm's ydisp stays where it is while the rows above it join.
         term.resize(20, 3);
-        assert!(
-            line_text(&term, term.viewport_top())
-                .unwrap()
-                .starts_with("05-")
-        );
+        assert_eq!(term.viewport_top(), 10);
+        assert!(line_text(&term, 10).unwrap().starts_with("10-"));
+        assert_eq!(term.display_offset(), 8);
+        // At the bottom the viewport stays at the bottom.
+        term.scroll_to_bottom();
         term.resize(5, 3);
-        assert!(
-            line_text(&term, term.viewport_top())
-                .unwrap()
-                .starts_with("05-")
-        );
+        assert_eq!(term.display_offset(), 0);
+    }
+
+    #[test]
+    fn the_screen_and_the_scrollback_reflow_as_one_buffer() {
+        let mut term = emulator(10, 3);
+        term.write(b"$ echo 0123456789abcdefghij\r\nout\r\n$ ");
+        // The command line takes three rows, the first two in the scrollback.
+        assert_eq!(term.scrollback_len(), 2);
+        assert_eq!(screen(&term), ["defghij", "out", "$ "]);
+        term.resize(30, 3);
+        // The line comes back from the scrollback whole, and the cursor keeps its line.
+        assert_eq!(term.scrollback_len(), 0);
+        assert_eq!(screen(&term), ["$ echo 0123456789abcdefghij", "out", "$ "]);
+        assert_eq!((term.cursor().line, term.cursor().col), (2, 2));
+        term.write(b"ls");
+        assert_eq!(screen(&term)[2], "$ ls");
+        // Narrower again: the line wraps back into the scrollback, the cursor stays on its own.
+        term.resize(10, 3);
+        assert_eq!(screen(&term), ["defghij", "out", "$ ls"]);
+        assert_eq!(line_text(&term, 0).unwrap(), "$ echo 012");
+        assert!(term.is_wrapped(1));
+    }
+
+    #[test]
+    fn a_taller_screen_brings_lines_back_from_the_scrollback() {
+        let mut term = emulator(10, 3);
+        term.write(b"one\r\ntwo\r\nthree\r\nfour\r\n$ ");
+        assert_eq!(term.scrollback_len(), 2);
+        term.resize(10, 5);
+        assert_eq!(term.scrollback_len(), 0);
+        assert_eq!(screen(&term), ["one", "two", "three", "four", "$ "]);
+        assert_eq!((term.cursor().line, term.cursor().col), (4, 2));
+    }
+
+    #[test]
+    fn a_mark_on_a_row_that_joins_the_line_above_is_disposed() {
+        let mut term = emulator(4, 4);
+        // A failed command whose mark sits on the second row of a wrapped line.
+        term.write(b"abcde\x1b]133;C\x07fgh\r\n\x1b]133;D;1\x07$ ");
+        assert_eq!(term.failed_command_lines(), [1]);
+        term.resize(8, 4);
+        assert_eq!(line_text(&term, 0).unwrap(), "abcdefgh");
+        assert!(term.failed_command_lines().is_empty());
     }
 
     #[test]

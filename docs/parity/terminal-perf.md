@@ -8,6 +8,8 @@ target: within 2× of xterm.js (`seq 1 2000000` in 2 s or less, a 50 MB `cat` in
 ```bash
 # The emulator alone, per stream (no UI), release:
 CARGO_TARGET_DIR=target-release cargo run --release -p muxus-term --example throughput -- --runs 3
+# What a filled emulator holds, and what a settled resize costs it (one stream per process):
+CARGO_TARGET_DIR=target-release cargo run --release -p muxus-term --example throughput -- log --resize
 # The app end to end (headless GNOME Shell, lavapipe):
 hack/perf.sh --binary target-release/release/muxus
 # The engine's own tests (it is excluded from the workspace):
@@ -185,9 +187,13 @@ frames), and feeding the emulator about half of the UI thread during `seq`.
 - **Cell size.** A cell is 40 bytes (xterm.js packs one into 12). Compact
   scrollback keeps short lines small, but full lines still cost 8 KB at 200
   columns.
-- **Scrollback reflow.** A width change now rewraps the whole scrollback, as
-  xterm does, so a resize costs in proportion to the scrollback again: 6–45 ms
-  for 10 000 lines of 156 characters (release), once per settled resize.
+- **Buffer reflow.** A resize now treats the scrollback and the screen as one
+  buffer, as xterm.js does (`vendor/par-term-emu-core/src/grid/reflow.rs`), so it
+  costs in proportion to the scrollback: resizing a filled 200×50 emulator with
+  10 000 lines to 150 columns, or back, takes about 1 ms with plain log lines
+  and 7–14 ms with the colored log's wrapped lines (release,
+  `throughput --resize`), once per settled resize. Rows the reflow does not
+  touch move by pointer.
 - **Scrollback size changes** are done: `Grid::set_max_scrollback` drops the
   oldest lines from the ring buffer in one drain (`PATCHES.md` in the engine).
 - Non-ASCII text (CJK, emoji) still takes the per-character path.

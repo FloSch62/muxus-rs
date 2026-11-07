@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! cargo run --release -p muxus-term --example throughput [-- [STREAM…] [--engine|--emulator]
-//!     [--chunk BYTES] [--size COLSxROWS] [--scrollback LINES] [--runs N]]
+//!     [--chunk BYTES] [--size COLSxROWS] [--scrollback LINES] [--runs N] [--resize]]
 //! ```
 //!
 //! Feeds each stream in 16 KiB pieces (what the app's output pump hands the emulator) into a
@@ -12,6 +12,11 @@
 //! lines `hack/perf.sh` cats), `ansi-log` (50 MB of colored log lines), `ls` (a colored
 //! `ls -la`), `htop` and `vim` (full-screen redraws on the alternate screen). The best of
 //! `--runs` runs is reported.
+//!
+//! `--resize` instead fills an emulator with each stream and reports what it holds and what a
+//! settled window resize costs it: the resident memory the filled emulator added (run one
+//! stream per process for a clean number), and the time to resize it to three quarters of the
+//! width and back (the screen and the scrollback reflow as one buffer, as xterm.js does).
 
 mod streams;
 
@@ -29,6 +34,7 @@ struct Options {
     rows: usize,
     scrollback: usize,
     runs: usize,
+    resize: bool,
 }
 
 fn options() -> Options {
@@ -41,6 +47,7 @@ fn options() -> Options {
         rows: 50,
         scrollback: 10_000,
         runs: 1,
+        resize: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -56,6 +63,7 @@ fn options() -> Options {
                 options.scrollback = value("--scrollback").parse().expect("--scrollback LINES")
             }
             "--runs" => options.runs = value("--runs").parse().expect("--runs N"),
+            "--resize" => options.resize = true,
             "--size" => {
                 let size = value("--size");
                 let (cols, rows) = size.split_once('x').expect("--size COLSxROWS");
@@ -65,7 +73,8 @@ fn options() -> Options {
             "-h" | "--help" => {
                 println!(
                     "throughput [seq|log|ansi-log|ls|htop|vim …] [--engine|--emulator] \
-                     [--chunk BYTES] [--size COLSxROWS] [--scrollback LINES] [--runs N]"
+                     [--chunk BYTES] [--size COLSxROWS] [--scrollback LINES] [--runs N] \
+                     [--resize]"
                 );
                 std::process::exit(0);
             }
@@ -132,6 +141,45 @@ fn emulator(options: &Options, data: &[u8]) -> f64 {
     took
 }
 
+/// The process's resident memory in bytes (`VmRSS`), where `/proc` tells it.
+fn resident_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+    let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb * 1024)
+}
+
+/// An emulator filled with `data`: the resident MB it added, then the milliseconds to resize
+/// it to three quarters of the width and back.
+fn resize(options: &Options, data: &[u8]) -> (Option<f64>, f64, f64) {
+    let before = resident_bytes();
+    let theme = terminal_scheme(None, &[]).theme.clone();
+    let mut emulator = Emulator::new(
+        EmulatorConfig {
+            cols: options.cols as u16,
+            rows: options.rows as u16,
+            scrollback: options.scrollback,
+        },
+        &theme,
+    );
+    for chunk in data.chunks(options.chunk) {
+        emulator.write(chunk);
+        let _ = emulator.take_events();
+    }
+    let held = before
+        .zip(resident_bytes())
+        .map(|(before, after)| after.saturating_sub(before) as f64 / 1e6);
+    let (cols, rows) = (options.cols as u16, options.rows as u16);
+    let started = Instant::now();
+    emulator.resize(cols * 3 / 4, rows);
+    let narrower = started.elapsed().as_secs_f64() * 1e3;
+    let started = Instant::now();
+    emulator.resize(cols, rows);
+    let wider = started.elapsed().as_secs_f64() * 1e3;
+    std::hint::black_box(emulator.content_generation());
+    (held, narrower, wider)
+}
+
 fn best(runs: usize, mut run: impl FnMut() -> f64) -> f64 {
     (0..runs.max(1))
         .map(|_| run())
@@ -140,6 +188,23 @@ fn best(runs: usize, mut run: impl FnMut() -> f64) -> f64 {
 
 fn main() {
     let options = options();
+    if options.resize {
+        println!(
+            "{}x{}, {} lines of scrollback",
+            options.cols, options.rows, options.scrollback
+        );
+        println!(
+            "{:<10} {:>12} {:>14} {:>12}",
+            "stream", "resident MB", "narrower ms", "wider ms"
+        );
+        for name in &options.streams {
+            let data = stream(name, options.cols, options.rows);
+            let (held, narrower, wider) = resize(&options, &data);
+            let held = held.map_or("-".to_string(), |mb| format!("{mb:.1}"));
+            println!("{name:<10} {held:>12} {narrower:>14.1} {wider:>12.1}");
+        }
+        return;
+    }
     println!(
         "{}x{}, {} lines of scrollback, {} byte pieces, best of {}",
         options.cols, options.rows, options.scrollback, options.chunk, options.runs
