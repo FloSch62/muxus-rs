@@ -636,7 +636,7 @@ pub fn build_query_results(
 /// Whether the active tab can take a BREAK (`supportsBreak` / `canSendBreak`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BreakState {
-    /// Send BREAK only exists for serial, Telnet and SSH tabs.
+    /// Send BREAK and Send text file only exist for serial, Telnet and SSH tabs.
     None,
     Waiting,
     Ready,
@@ -771,7 +771,8 @@ pub fn build_action_results(
         if !command.palette {
             continue;
         }
-        let sends_break = command.id == "terminal.send-break";
+        let sends_break =
+            command.id == "terminal.send-break" || command.id == "terminal.send-text-file";
         if sends_break && active_break == BreakState::None {
             continue;
         }
@@ -812,6 +813,7 @@ fn category_key(category: crate::keymap::commands::CommandCategory) -> &'static 
         CommandCategory::Tabs => "tabs",
         CommandCategory::Terminal => "terminal",
         CommandCategory::App => "app",
+        CommandCategory::Buttons => "buttons",
     }
 }
 

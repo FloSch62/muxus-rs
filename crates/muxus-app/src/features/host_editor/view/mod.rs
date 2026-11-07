@@ -8,6 +8,7 @@ mod gateway_route;
 mod management;
 mod native;
 mod route_fallbacks;
+pub mod session_input;
 pub mod shared;
 mod ssh;
 pub mod ssh_access;
@@ -615,17 +616,17 @@ impl HostEditor {
                           font: &Option<String>,
                           bg: &Option<String>,
                           group: &Option<String>,
-                          paste: bool| {
+                          typing: usize| {
             let count = [
                 scheme.is_some(),
                 font.is_some(),
                 bg.is_some(),
                 group.is_some(),
-                paste,
             ]
             .iter()
             .filter(|v| **v)
-            .count();
+            .count()
+                + typing;
             (count > 0).then_some(count)
         };
         let login = |draft: &LoginSequenceDraft| {
@@ -649,7 +650,12 @@ impl HostEditor {
                             &d.terminal_font_color,
                             &d.terminal_background_color,
                             &d.command_button_group,
-                            d.paste_line_delay_ms.is_some() || d.paste_char_delay_ms.is_some(),
+                            session_input::typing_settings_count(
+                                d.paste_line_delay_ms.is_some() || d.paste_char_delay_ms.is_some(),
+                                &d.paste_prompt_wait,
+                                &d.anti_idle,
+                                &d.input_modes,
+                            ),
                         ),
                     ),
                     tab(Section::Auth, "Authentication", "KeyOutlined", None),
@@ -718,7 +724,12 @@ impl HostEditor {
                             &d.terminal_font_color,
                             &d.terminal_background_color,
                             &d.command_button_group,
-                            d.paste_line_delay_ms.is_some() || d.paste_char_delay_ms.is_some(),
+                            session_input::typing_settings_count(
+                                d.paste_line_delay_ms.is_some() || d.paste_char_delay_ms.is_some(),
+                                &d.paste_prompt_wait,
+                                &d.anti_idle,
+                                &d.input_modes,
+                            ),
                         ),
                     ),
                 ];

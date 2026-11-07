@@ -79,7 +79,7 @@ CARGO_TARGET_DIR=target-core cargo test -p muxus-store --test vault -- --ignored
 | `client-state.json` store | electron/src/main.ts | done | key order, 0600, tmp + rename |
 | Prefs envelope + rehydrate | client/src/state/prefs.ts, zustand persist | done | byte-equal golden cases (v0, v8, v15, v17, v18, none, bad JSON, empty) |
 | Prefs migration v0–17 + merge | client/src/state/prefs.ts | done | v0.15 keys: `pasteWarnLookalikes`, `closeTabOnCleanExit`, `showProgramStatus`, `discoverEnvironments`, `environmentRefreshSeconds` (`ENVIRONMENT_REFRESH_SECONDS`), `environmentsPanelWidth`; `webglRenderer` defaults to on |
-| Command buttons | client/src/command-buttons.ts | partial | `shortcut` kept and de-duplicated; dropping a shortcut that is not a bindable chord needs the chord parser in muxus-app (`keymap::chords`) and is left to the shortcuts feature |
+| Command buttons | client/src/command-buttons.ts | done | `shortcut` kept and de-duplicated here; dropping a shortcut that is not a bindable chord or that the shell owns needs the chord parser and happens in muxus-app (`keymap::command_buttons::keep_bindable_shortcuts`, on load and import) |
 | Highlight profiles + built-ins | client/src/highlight-profiles.ts, builtin-highlight-profiles.ts | partial | regex check injected by the caller; matching belongs to the terminal view |
 | Custom terminal schemes | client/src/terminal/custom-schemes.ts | partial | theme conversion left to the terminal view |
 | Layout helpers | host-stats.ts, sidebar-width.ts, sftp-panel-width.ts, interface-zoom.ts | done | |

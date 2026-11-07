@@ -411,11 +411,13 @@ pub fn find_metadata_alias(doc: &ConfigDocument, requested_host: &str) -> Option
         .then(|| requested_host.to_string())
 }
 
-/// The listed host a target names, as the sidebar lists hosts (`listedMetadataAlias`): every
-/// block's first fresh concrete alias, sorted, the first whose aliases include `target`.
+/// The alias of the host the window reads a tab's host metadata from (`listedMetadataAlias`):
+/// the host list's first entry naming `target`, in the order the list is served (one entry per
+/// Host block naming a new concrete alias, sorted by alias). Only a plain alias names one, not
+/// `user@alias` or `alias:port`.
 pub fn listed_metadata_alias(doc: &ConfigDocument, target: &str) -> Option<String> {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut listed: Vec<(&str, Vec<&str>)> = Vec::new();
+    let mut entries: Vec<(&str, Vec<&str>)> = Vec::new();
     for block in &doc.blocks {
         let concrete: Vec<&str> = block
             .patterns
@@ -423,14 +425,14 @@ pub fn listed_metadata_alias(doc: &ConfigDocument, target: &str) -> Option<Strin
             .map(String::as_str)
             .filter(|p| is_concrete_alias(p))
             .collect();
-        let Some(first) = concrete.iter().find(|a| !seen.contains(*a)).copied() else {
+        let Some(alias) = concrete.iter().copied().find(|a| !seen.contains(a)) else {
             continue;
         };
         seen.extend(concrete.iter().copied());
-        listed.push((first, concrete));
+        entries.push((alias, concrete));
     }
-    listed.sort_by(|a, b| muxus_core::collate::locale_compare(a.0, b.0));
-    listed
+    entries.sort_by(|a, b| muxus_core::collate::locale_compare(a.0, b.0));
+    entries
         .into_iter()
         .find(|(_, aliases)| aliases.contains(&target))
         .map(|(alias, _)| alias.to_string())

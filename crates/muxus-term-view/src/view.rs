@@ -14,6 +14,7 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement, Styled, Task, UTF16Selection, Window, canvas, div,
     point,
 };
+use muxus_core::input_modes::{keyboard_input_data, local_echo_text};
 use muxus_core::stream::{TerminalSize, TransportChannels, TransportEvent, TransportInput};
 use muxus_term::buffer::TextBuffer;
 use muxus_term::color::{Rgba, parse_css_color};
@@ -30,7 +31,7 @@ use muxus_term::links::{
 use muxus_term::mouse::{
     MouseAction, MouseButton as ReportButton, MouseReport, MouseReporter, protocol_active,
 };
-use muxus_term::paste::{requires_paste_confirmation, terminal_paste_data};
+use muxus_term::paste::{flag_paste_characters, requires_paste_confirmation, terminal_paste_data};
 use muxus_term::right_click::{RightClickIntent, terminal_right_click_intent};
 use muxus_term::search::{
     ACTIVE_MATCH_BACKGROUND, ACTIVE_MATCH_OVERVIEW_RULER, MATCH_BACKGROUND, MATCH_OVERVIEW_RULER,
@@ -180,6 +181,7 @@ impl TerminalView {
                 &settings.theme,
             );
             emulator.set_allow_osc52_write(settings.allow_osc52_write);
+            emulator.set_implicit_cr(settings.input_modes.implicit_cr);
             emulator
         };
         let focus = cx.focus_handle();
@@ -291,6 +293,9 @@ impl TerminalView {
         self.emulator.set_theme(&settings.theme);
         self.emulator
             .set_allow_osc52_write(settings.allow_osc52_write);
+        // Implicit CR follows the host live, like its keys.
+        self.emulator
+            .set_implicit_cr(settings.input_modes.implicit_cr);
         self.settings = settings;
         self.settings_version += 1;
         self.metrics_key = None;
@@ -318,27 +323,93 @@ impl TerminalView {
     }
 
     /// Paste text the way xterm does: line breaks become Enter, wrapped in bracketed-paste
-    /// markers when the program asked for them. A multi-line paste asks the app to confirm first
-    /// ([`TerminalViewEvent::ConfirmPaste`]) when the setting says so.
+    /// markers when the program asked for them. A multi-line paste, or one with invisible or
+    /// look-alike characters, asks the app to confirm first ([`TerminalViewEvent::ConfirmPaste`])
+    /// when the settings say so.
     pub fn paste(&mut self, text: &str, cx: &mut Context<Self>) {
         if text.is_empty() {
             return;
         }
-        if self.settings.paste_warn_multiline && requires_paste_confirmation(text) {
+        if (self.settings.paste_warn_multiline && requires_paste_confirmation(text))
+            || (self.settings.paste_warn_lookalikes && !flag_paste_characters(text).is_empty())
+        {
             cx.emit(TerminalViewEvent::ConfirmPaste(text.to_string()));
             return;
         }
         self.paste_confirmed(text, cx);
     }
 
-    /// Paste without asking (after the app's confirmation dialog).
+    /// Paste without asking (after the app's confirmation dialog), and tell the app
+    /// ([`TerminalViewEvent::Pasted`]).
     pub fn paste_confirmed(&mut self, text: &str, cx: &mut Context<Self>) {
-        let data = terminal_paste_data(
+        if text.is_empty() {
+            return;
+        }
+        if self.closed {
+            let data = self.paste_data(text);
+            cx.emit(TerminalViewEvent::InputAfterExit(data.into_bytes()));
+            return;
+        }
+        if self.send_paste(text, cx) {
+            cx.emit(TerminalViewEvent::Pasted(text.to_string()));
+        }
+    }
+
+    /// A paste as the session receives it: bracketed when the program asked for it, otherwise
+    /// with the host's Enter key for every line break.
+    fn paste_data(&self, text: &str) -> String {
+        terminal_paste_data(
             text,
             self.emulator.bracketed_paste(),
-            muxus_core::api::TerminalEnterKey::Cr,
-        );
-        self.user_input(data.into_bytes(), cx);
+            self.settings.input_modes.enter_key,
+        )
+    }
+
+    /// Send a paste unpaced, the way xterm's own paste does, without telling the app; `false`
+    /// when the session has ended.
+    pub fn send_paste(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
+        if text.is_empty() {
+            return true;
+        }
+        let data = self.paste_data(text);
+        if !self.send_input(data.into_bytes()) {
+            return false;
+        }
+        self.after_input(cx);
+        self.echo_input(text, cx);
+        true
+    }
+
+    /// Show what was sent when the host does not echo it (local echo); nothing extra is sent.
+    pub fn echo_input(&mut self, text: &str, cx: &mut Context<Self>) {
+        if !self.settings.input_modes.local_echo {
+            return;
+        }
+        let shown = local_echo_text(text);
+        if !shown.is_empty() {
+            self.feed(shown.as_bytes(), cx);
+            cx.notify();
+        }
+    }
+
+    /// Keystrokes typed here or mirrored from another terminal, sent with this host's keys and
+    /// echoed when it echoes locally; `false` when the session has ended.
+    pub fn send_keyboard_input(&mut self, data: &[u8], cx: &mut Context<Self>) -> bool {
+        let sent = match std::str::from_utf8(data) {
+            Ok(text) => {
+                let keys = keyboard_input_data(text, &self.settings.input_modes);
+                let sent = self.send_input(keys.into_bytes());
+                if sent {
+                    self.echo_input(text, cx);
+                }
+                sent
+            }
+            Err(_) => self.send_input(data.to_vec()),
+        };
+        if sent {
+            self.after_input(cx);
+        }
+        sent
     }
 
     /// Send BREAK on the session's line (serial, telnet, SSH).
@@ -593,21 +664,25 @@ impl TerminalView {
         self.restart_blink();
     }
 
-    /// Input the user made (keys, pastes): it scrolls to the bottom, clears the selection and is
-    /// mirrored by the app when multi-execution is on.
+    /// Keys the user typed: sent with the host's keys, then it scrolls to the bottom, clears the
+    /// selection and is mirrored by the app when multi-execution is on.
     fn user_input(&mut self, data: Vec<u8>, cx: &mut Context<Self>) {
         if data.is_empty() {
             return;
         }
+        if self.closed {
+            self.after_input(cx);
+            cx.emit(TerminalViewEvent::InputAfterExit(data));
+        } else if self.send_keyboard_input(&data, cx) {
+            cx.emit(TerminalViewEvent::Input(data));
+        }
+    }
+
+    /// Input reached the session: the view follows it like a terminal does.
+    fn after_input(&mut self, cx: &mut Context<Self>) {
         self.emulator.scroll_to_bottom();
         self.selection = None;
         self.restart_blink();
-        if self.closed {
-            cx.emit(TerminalViewEvent::InputAfterExit(data));
-        } else {
-            let _ = self.input.try_send(TransportInput::Data(data.clone()));
-            cx.emit(TerminalViewEvent::Input(data));
-        }
         cx.notify();
     }
 

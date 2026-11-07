@@ -18,6 +18,10 @@ use muxus_ui::theme::{ActiveTheme, Status, Theme};
 
 use super::HostEditor;
 use super::form::{self, Choice};
+use super::session_input::{
+    DraftAccess, anti_idle_fields, anti_idle_intro, input_modes_fields, input_modes_intro,
+    paste_prompt_fields,
+};
 use super::shared::{
     color_override, keyword_rules_editor, logging_section, login_sequence_editor, paste_delay_field,
 };
@@ -63,6 +67,17 @@ impl HostEditor {
     terminal_field!(term_char_delay, set_term_char_delay, paste_char_delay_ms: Option<u32>);
     terminal_field!(term_highlights, set_term_highlights, keyword_highlights: HostKeywordHighlightConfig);
     terminal_field!(term_login, set_term_login, login_sequence: LoginSequenceDraft);
+    terminal_field!(
+        term_prompt_wait,
+        set_term_prompt_wait,
+        paste_prompt_wait: muxus_core::paste_prompt::PastePromptWaitDraft
+    );
+    terminal_field!(term_anti_idle, set_term_anti_idle, anti_idle: muxus_core::anti_idle::AntiIdleDraft);
+    terminal_field!(
+        term_input_modes,
+        set_term_input_modes,
+        input_modes: muxus_core::input_modes::TerminalInputModes
+    );
 
     pub(super) fn term_group(&self) -> String {
         if self.kind == SavedHostKind::Ssh {
@@ -223,6 +238,57 @@ impl HostEditor {
             },
         );
         col = col.child(row(1.5).child(line_field).child(char_field));
+        let prompt_wait = self.term_prompt_wait();
+        col = col.child(paste_prompt_fields(
+            self,
+            "host",
+            &prompt_wait,
+            DraftAccess::new(
+                |this: &Self| Some(this.term_prompt_wait()),
+                |this, value, cx| {
+                    this.set_term_prompt_wait(value);
+                    this.changed(cx);
+                },
+            ),
+            window,
+            cx,
+        ));
+        col = col.child(div().pt(Theme::spacing(1.)).child(anti_idle_intro(&theme)));
+        let anti_idle = self.term_anti_idle();
+        col = col.child(anti_idle_fields(
+            self,
+            "host",
+            &anti_idle,
+            DraftAccess::new(
+                |this: &Self| Some(this.term_anti_idle()),
+                |this, value, cx| {
+                    this.set_term_anti_idle(value);
+                    this.changed(cx);
+                },
+            ),
+            window,
+            cx,
+        ));
+        col = col.child(
+            div()
+                .pt(Theme::spacing(1.))
+                .child(input_modes_intro(&theme)),
+        );
+        let modes = self.term_input_modes();
+        col = col.child(input_modes_fields(
+            self,
+            "host",
+            modes,
+            DraftAccess::new(
+                |this: &Self| Some(this.term_input_modes()),
+                |this, value, cx| {
+                    this.set_term_input_modes(value);
+                    this.changed(cx);
+                },
+            ),
+            window,
+            cx,
+        ));
         col.into_any_element()
     }
 

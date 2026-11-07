@@ -17,6 +17,8 @@ pub enum CommandCategory {
     Tabs,
     Terminal,
     App,
+    /// Command buttons with a shortcut of their own.
+    Buttons,
 }
 
 impl CommandCategory {
@@ -26,16 +28,18 @@ impl CommandCategory {
             CommandCategory::Tabs => "Tabs",
             CommandCategory::Terminal => "Terminal",
             CommandCategory::App => "Application",
+            CommandCategory::Buttons => "Command buttons",
         }
     }
 }
 
 /// Category order for the shortcut list.
-pub const COMMAND_CATEGORIES: [CommandCategory; 4] = [
+pub const COMMAND_CATEGORIES: [CommandCategory; 5] = [
     CommandCategory::Panes,
     CommandCategory::Tabs,
     CommandCategory::Terminal,
     CommandCategory::App,
+    CommandCategory::Buttons,
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -393,6 +397,23 @@ fn build_commands() -> Vec<KeyCommand> {
             ],
         ),
         command(
+            "terminal.send-text-file",
+            "Send text file…",
+            Terminal,
+            &[],
+            &[
+                "file",
+                "config",
+                "configuration",
+                "upload",
+                "type",
+                "serial",
+                "telnet",
+                "ssh",
+                "console",
+            ],
+        ),
+        command(
             "terminal.cancel-login-sequence",
             "Cancel login sequence",
             Terminal,
@@ -505,7 +526,7 @@ mod tests {
 
     #[test]
     fn catalog_matches_the_typescript_table() {
-        assert_eq!(KEY_COMMANDS.len(), 56);
+        assert_eq!(KEY_COMMANDS.len(), 57);
         let first = &KEY_COMMANDS[0];
         assert_eq!(first.id, "pane.split.right");
         assert_eq!(first.title, "Split pane right");

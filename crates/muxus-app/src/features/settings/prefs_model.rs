@@ -70,6 +70,10 @@ impl SettingsPrefs {
     /// [`Backend::prefs`] returned). Calling it again replaces the state and
     /// notifies listeners, which is also how a restored backup is picked up.
     pub fn init(backend: Backend, prefs: PrefsState, cx: &mut App) -> Entity<SettingsPrefs> {
+        // The store keeps any short shortcut string; one that is not a bindable chord, or that
+        // the shell owns, never runs a button (`normalizeCommandButtons`).
+        let mut prefs = prefs;
+        crate::keymap::command_buttons::keep_bindable_shortcuts(&mut prefs.command_buttons);
         if let Some(existing) = Self::global(cx) {
             existing.update(cx, |model, cx| {
                 model.backend = backend;

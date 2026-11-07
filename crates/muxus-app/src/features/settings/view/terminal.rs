@@ -173,6 +173,14 @@ impl SettingsWindow {
                 prefs.paste_warn_multiline,
                 |p, value| p.paste_warn_multiline = value,
             ))
+            .row(self.switch_row(
+                &theme,
+                "settings-paste-warn-lookalikes",
+                "Confirm pastes with look-alike characters",
+                Some("Preview a paste, even a single line, that contains no-break spaces, zero-width characters, smart quotes, dashes or letters that look like Latin ones."),
+                prefs.paste_warn_lookalikes,
+                |p, value| p.paste_warn_lookalikes = value,
+            ))
             .render(&theme);
 
         let line_delay = number_to_string(prefs.paste_line_delay_ms);

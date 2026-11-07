@@ -42,12 +42,14 @@
 //! session running for the reattach grace (15 s), keeping the newest 4 MiB of output; attaching
 //! within it continues the session, otherwise it ends. `close` ends it at once.
 
+pub mod anti_idle;
 mod connect_io;
 mod control;
 mod facade;
 mod inputs;
 mod link;
 pub mod paste;
+pub mod paste_prompt;
 mod run;
 
 use std::sync::Arc;
@@ -60,7 +62,10 @@ use muxus_core::validate::Validate;
 
 pub use facade::REPLAYED_CONTROL_OPS;
 pub(crate) use facade::SessionRegistry;
-pub use inputs::{InputRegistration, TerminalInputWriter, TerminalInputs};
+pub use inputs::{
+    InputRegistration, TerminalEnterKeyReader, TerminalInputTarget, TerminalInputWriter,
+    TerminalInputs,
+};
 
 use crate::Backend;
 

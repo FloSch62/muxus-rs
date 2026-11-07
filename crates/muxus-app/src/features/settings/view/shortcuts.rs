@@ -27,12 +27,14 @@ use super::super::prefs_model::SettingsPrefs;
 use super::appearance::keybinding_overrides;
 use super::fields::field;
 use super::kit::{BODY2, CAPTION, snap};
-use crate::keymap::bindings::{
-    chords_are_default, command_chords, conflicting_command_ids, is_command_customized,
-};
+use crate::keymap::bindings::{chords_are_default, command_chords, is_command_customized};
 use crate::keymap::chords::{
     IS_MAC, chord_from_event, chord_signature, chord_to_string, format_chord_string,
     is_bindable_chord, is_modifier_code, parse_chord,
+};
+use crate::keymap::command_buttons::{
+    command_button_commands, command_button_id, command_button_shortcut_conflict,
+    conflicting_ids_with_buttons,
 };
 use crate::keymap::commands::{COMMAND_CATEGORIES, KeyCommand, key_commands};
 use crate::keymap::keystroke::chord_event;
@@ -60,7 +62,8 @@ pub fn chord_capture_active(cx: &App) -> bool {
         .is_some_and(|capture| capture.0)
 }
 
-fn set_chord_capture(active: bool, cx: &mut App) {
+/// Make the window's dispatcher stand down while a chord is recorded (`setChordCaptureActive`).
+pub fn set_chord_capture(active: bool, cx: &mut App) {
     cx.set_global(ChordCapture(active));
 }
 
@@ -132,18 +135,17 @@ pub fn editor_shortcuts() -> Vec<(&'static str, String)> {
     ]
 }
 
-/// The commands a search matches, by category in catalog order.
+/// The commands a search matches, by category in catalog order; `buttons` (command buttons with
+/// a shortcut) follow the app's commands in a section of their own.
 pub fn matching_commands(
     query: &str,
     overrides: &crate::keymap::bindings::KeybindingOverrides,
-) -> Vec<(
-    crate::keymap::commands::CommandCategory,
-    Vec<&'static KeyCommand>,
-)> {
+    buttons: &[KeyCommand],
+) -> Vec<(crate::keymap::commands::CommandCategory, Vec<KeyCommand>)> {
     let needle = muxus_core::js::js_trim(query).to_lowercase();
-    let mut buckets: HashMap<crate::keymap::commands::CommandCategory, Vec<&'static KeyCommand>> =
+    let mut buckets: HashMap<crate::keymap::commands::CommandCategory, Vec<KeyCommand>> =
         HashMap::new();
-    for command in key_commands() {
+    for command in key_commands().iter().chain(buttons) {
         if !needle.is_empty() {
             let mut haystack = vec![command.title.clone(), command.category.label().to_string()];
             haystack.extend(command.keywords.iter().cloned());
@@ -156,7 +158,10 @@ pub fn matching_commands(
                 continue;
             }
         }
-        buckets.entry(command.category).or_default().push(command);
+        buckets
+            .entry(command.category)
+            .or_default()
+            .push(command.clone());
     }
     COMMAND_CATEGORIES
         .iter()
@@ -253,6 +258,24 @@ impl ShortcutsDialog {
         keybinding_overrides(self.prefs.read(cx).prefs())
     }
 
+    /// A button row edits the button's own shortcut; unbound is its default.
+    fn set_button_shortcut(&self, command_id: &str, shortcut: Option<String>, cx: &mut App) {
+        let Some(button_id) = command_button_id(command_id).map(str::to_owned) else {
+            return;
+        };
+        self.prefs.update(cx, |model, cx| {
+            model.update(cx, |prefs| {
+                if let Some(button) = prefs
+                    .command_buttons
+                    .iter_mut()
+                    .find(|button| button.id == button_id)
+                {
+                    button.shortcut = shortcut;
+                }
+            })
+        });
+    }
+
     fn apply_chords(&self, command: &KeyCommand, chords: Vec<String>, cx: &mut App) {
         let id = command.id.clone();
         let default = chords_are_default(command, &chords);
@@ -325,6 +348,25 @@ impl ShortcutsDialog {
             cx.notify();
             return;
         }
+        if let Some(button_id) = command_button_id(&recording.command_id) {
+            // A chord the shell owns, or one already in use, is refused.
+            let text = chord_to_string(&chord);
+            let prefs = self.prefs.read(cx).prefs();
+            if let Some(conflict) = command_button_shortcut_conflict(
+                &text,
+                button_id,
+                &keybinding_overrides(prefs),
+                &prefs.command_buttons,
+            ) {
+                self.capture_error = Some(conflict);
+                cx.notify();
+                return;
+            }
+            self.set_button_shortcut(&recording.command_id, Some(text), cx);
+            self.capture_error = None;
+            self.stop_recording(cx);
+            return;
+        }
         let Some(command) = key_commands()
             .iter()
             .find(|command| command.id == recording.command_id)
@@ -343,14 +385,16 @@ impl ShortcutsDialog {
     fn command_row(
         &self,
         theme: &Theme,
-        command: &'static KeyCommand,
+        command: &KeyCommand,
         overrides: &crate::keymap::bindings::KeybindingOverrides,
         conflicting: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = theme.palette;
         let chords = command_chords(command, overrides).to_vec();
-        let customized = is_command_customized(command, overrides);
+        // A command button takes one chord, changed by clicking it; unbound is its default.
+        let single = command_button_id(&command.id).is_some();
+        let customized = single || is_command_customized(command, overrides);
         let recording = self
             .recording
             .as_ref()
@@ -377,6 +421,10 @@ impl ShortcutsDialog {
                     this.start_recording(&id, Some(index), window, cx)
                 }),
                 cx.listener(move |this, _, _, cx| {
+                    if command_button_id(&remove_id).is_some() {
+                        this.set_button_shortcut(&remove_id, None, cx);
+                        return;
+                    }
                     if let Some(command) = key_commands().iter().find(|c| c.id == remove_id) {
                         let overrides = this.overrides(cx);
                         let chords: Vec<String> = command_chords(command, &overrides)
@@ -462,7 +510,12 @@ impl ShortcutsDialog {
                             "Add",
                         )
                         .icon_size(16.)
-                        .tooltip("Add a chord")
+                        .disabled(single)
+                        .tooltip(if single {
+                            "A command button takes one chord"
+                        } else {
+                            "Add a chord"
+                        })
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
                                 this.start_recording(&add_id, None, window, cx)
@@ -483,6 +536,10 @@ impl ShortcutsDialog {
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             let id = reset_id.clone();
+                            if command_button_id(&id).is_some() {
+                                this.set_button_shortcut(&id, None, cx);
+                                return;
+                            }
                             this.prefs.update(cx, |model, cx| {
                                 model.update(cx, |prefs| {
                                     prefs.keybindings.shift_remove(&id);
@@ -570,11 +627,13 @@ impl Render for ShortcutsDialog {
         let theme = *cx.theme();
         let p = theme.palette;
         let overrides = self.overrides(cx);
-        let conflicts = conflicting_command_ids(&overrides);
+        let buttons = self.prefs.read(cx).prefs().command_buttons.clone();
+        let button_commands = command_button_commands(&buttons);
+        let conflicts = conflicting_ids_with_buttons(&overrides, &buttons);
         let customized = key_commands()
             .iter()
             .any(|command| is_command_customized(command, &overrides));
-        let groups = matching_commands(&self.query, &overrides);
+        let groups = matching_commands(&self.query, &overrides, &button_commands);
         let mut content = div().flex().flex_col();
         if self.recording.is_some() {
             content =
@@ -607,7 +666,7 @@ impl Render for ShortcutsDialog {
             for command in commands {
                 section = section.child(self.command_row(
                     &theme,
-                    command,
+                    &command,
                     &overrides,
                     conflicts.contains(&command.id),
                     cx,
@@ -757,19 +816,19 @@ mod tests {
     #[test]
     fn search_matches_titles_categories_and_chords() {
         let none = Default::default();
-        let all: usize = matching_commands("", &none)
+        let all: usize = matching_commands("", &none, &[])
             .iter()
             .map(|(_, c)| c.len())
             .sum();
         assert_eq!(all, key_commands().len());
-        let panes = matching_commands("split pane", &none);
+        let panes = matching_commands("split pane", &none, &[]);
         assert!(
             panes
                 .iter()
                 .all(|(category, _)| category.label() == "Panes")
         );
         assert!(!panes.is_empty());
-        assert!(matching_commands("no such command at all", &none).is_empty());
+        assert!(matching_commands("no such command at all", &none, &[]).is_empty());
         assert_eq!(extras().len(), 7);
         assert_eq!(editor_shortcuts().len(), 5);
     }

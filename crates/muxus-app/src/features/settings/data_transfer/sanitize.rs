@@ -210,6 +210,11 @@ pub fn sanitize_preferences(input: &Map<String, Value>) -> Map<String, Value> {
         get("commandButtons").unwrap_or(&Value::Null),
         groups.as_deref().unwrap_or(&fallback_groups),
     );
+    // A shortcut that is not a bindable chord, or that the shell owns, is dropped too.
+    let buttons = buttons.map(|mut buttons| {
+        crate::keymap::command_buttons::keep_bindable_shortcuts(&mut buttons);
+        buttons
+    });
     if let Some(buttons) = buttons
         && let Ok(value) = serde_json::to_value(buttons)
     {
