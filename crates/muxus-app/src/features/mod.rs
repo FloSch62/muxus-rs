@@ -1,6 +1,7 @@
 //! Screens built on the app core, one folder per feature.
 
 pub mod command_buttons;
+pub mod compare;
 pub mod desktop;
 pub mod forwarding;
 pub mod history;

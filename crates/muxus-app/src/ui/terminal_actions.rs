@@ -170,6 +170,7 @@ impl AppShell {
         let theme = *cx.theme();
         let id = tab_id.to_string();
         let selection = selection.to_string();
+        let compare_selection = selection.clone();
         let has_selection = !selection.is_empty();
         menu::paper(&theme)
             .child(
@@ -247,6 +248,18 @@ impl AppShell {
                         let id = id.clone();
                         move |this, _, window, cx| {
                             this.export_terminal(&id, true, cx);
+                            this.close_terminal_menu(&id, window, cx);
+                        }
+                    })),
+            )
+            .child(
+                MenuItem::new("terminal-compare", "Compare with…")
+                    .icon("CompareArrows")
+                    .on_click(cx.listener({
+                        let id = id.clone();
+                        let selection = compare_selection.clone();
+                        move |this, _, window, cx| {
+                            this.compare_terminal(&id, &selection, cx);
                             this.close_terminal_menu(&id, window, cx);
                         }
                     })),

@@ -9,6 +9,7 @@
 //!   hosts' shells run locally.
 
 mod closing;
+mod compare;
 mod confirm;
 mod desktop;
 mod features;

@@ -975,6 +975,26 @@ impl SftpPanel {
         .detach();
     }
 
+    /// "Compare with…": the file, read over SFTP, as the compare dialog's first side.
+    fn compare_file(&mut self, entry: &SftpEntry, cx: &mut Context<Self>) {
+        let path = self.remote_path(entry);
+        let conn = self.options.conn_id.clone();
+        let host = self
+            .options
+            .host_label
+            .clone()
+            .unwrap_or_else(|| "SFTP".into());
+        crate::features::compare::open_compare(
+            move |backend| async move {
+                crate::features::compare::sources::remote_file_compare_text(
+                    &backend, &conn, &host, &path,
+                )
+                .await
+            },
+            cx,
+        );
+    }
+
     fn open_file(&mut self, path: String, cx: &mut Context<Self>) {
         cx.emit(SftpPanelEvent::OpenFile(path));
     }
@@ -1617,6 +1637,16 @@ impl SftpPanel {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         close(this, cx);
                         this.download(e.clone(), window, cx);
+                    }))
+                    .into_any_element(),
+            );
+            let e = entry.clone();
+            items.push(
+                MenuItem::new("sftp-menu-compare", "Compare with…")
+                    .icon("CompareArrows")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        close(this, cx);
+                        this.compare_file(&e, cx);
                     }))
                     .into_any_element(),
             );

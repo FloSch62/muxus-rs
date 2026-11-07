@@ -911,6 +911,23 @@ impl SessionHistoryDialog {
                             let _ = w4.update(cx, |this, cx| this.copy_clean_log(&s4, cx));
                         }),
                 )
+                .child({
+                    let session = session.clone();
+                    IconButton::new("history-compare", "CompareArrows")
+                        .tooltip("Compare with…")
+                        .on_click(move |_, _, cx| {
+                            let session = session.clone();
+                            crate::features::compare::open_compare(
+                                move |backend| async move {
+                                    crate::features::compare::sources::history_compare_text(
+                                        &backend, &session,
+                                    )
+                                    .await
+                                },
+                                cx,
+                            );
+                        })
+                })
                 .child(
                     IconButton::new("history-rename", "DriveFileRenameOutline")
                         .tooltip("Rename retained session")

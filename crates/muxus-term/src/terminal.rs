@@ -839,20 +839,11 @@ impl Emulator {
         self.collect_core_events();
     }
 
-    /// Plain text of the scrollback and screen, trailing blank lines dropped, each line ending in
-    /// a newline ("Export as text").
+    /// Plain text of the scrollback and screen, trailing blank lines dropped, soft-wrapped rows
+    /// joined, each line ending in a newline ("Copy all output", "Export as text", "Compare
+    /// with…").
     pub fn buffer_text(&self) -> String {
-        let mut lines: Vec<String> = (0..self.length())
-            .map(|line| crate::buffer::line_text(self, line).unwrap_or_default())
-            .collect();
-        while lines.last().is_some_and(String::is_empty) {
-            lines.pop();
-        }
-        if lines.is_empty() {
-            String::new()
-        } else {
-            format!("{}\n", lines.join("\n"))
-        }
+        crate::buffer::buffer_text(self)
     }
 
     /// The last non-blank lines at or above the cursor — usually the prompt and the output just
