@@ -6,6 +6,7 @@
 
 pub mod dialogs;
 pub mod docked;
+pub mod download;
 pub mod editor;
 pub mod format;
 pub mod icons;
@@ -16,6 +17,7 @@ pub mod open_with;
 pub mod palette;
 pub mod panel;
 pub mod placement;
+pub mod selection;
 pub mod services;
 pub mod terminal_drop;
 pub mod terminal_upload;

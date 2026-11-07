@@ -25,8 +25,8 @@ use muxus_ui::gpui_kit::base::input::{InputEvent, InputState};
 use muxus_ui::gpui_kit::{
     AnyElement, App, AppContext, Bounds, ClickEvent, Context, CursorStyle, ElementId, Entity,
     EventEmitter, ExternalDragPayload, ExternalPaths, FileDragPaths, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, PathPromptOptions, Pixels, Point, Render, SharedString,
+    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Task, Window, canvas, div, px, relative,
     uniform_list,
 };
@@ -37,10 +37,15 @@ use muxus_ui::widgets::menu::{self, MenuItem};
 use muxus_ui::widgets::{Checkbox, IconButton};
 
 use super::dialogs::{ConfirmOptions, DialogQueue, PromptOptions, QueueOf};
+use super::download::{downloaded_message, save_into_folder};
 use super::format::{format_mtime, format_size, parent_path, sort_entries};
 use super::icons::file_type_icon;
 use super::placement::{
     DEFAULT_SFTP_PANEL_WIDTH, NARROW_PANEL_WIDTH, clamp_sftp_panel_width, initial_sftp_path,
+};
+use super::selection::{
+    SftpSelectGesture, SftpSelection, select_all_sftp_entries, select_sftp_entry,
+    selected_sftp_entries, sftp_context_selection, sftp_entry_count, sftp_select_gesture,
 };
 use super::services::{SftpListings, SftpServices, notify, notify_error, services};
 use super::transfer::{TransferDirection, TransferPhase, TransferProgress, TransferProgressState};
@@ -161,7 +166,8 @@ pub struct SftpPanel {
     /// A listing path to write into the field at the next render.
     pending_input: Option<String>,
     home_path: Option<String>,
-    selected: Option<String>,
+    /// The selected rows (`sftp-selection.ts`).
+    selection: SftpSelection,
     menu: Option<(Point<Pixels>, SftpEntry)>,
     busy: bool,
     transfer: Option<Transfer>,
@@ -180,6 +186,8 @@ pub struct SftpPanel {
     attached: bool,
     open_with: Option<(Entity<super::open_with::OpenWithDialog>, Subscription)>,
     focus: FocusHandle,
+    /// The listing: a click on a row brings its keys along (select all, delete, clear).
+    listing_focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -230,7 +238,7 @@ impl SftpPanel {
             shown_path: None,
             pending_input: None,
             home_path: None,
-            selected: None,
+            selection: SftpSelection::default(),
             menu: None,
             busy: false,
             transfer: None,
@@ -247,6 +255,7 @@ impl SftpPanel {
             attached: false,
             open_with: None,
             focus: cx.focus_handle(),
+            listing_focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
         panel.sync_attachment(cx);
@@ -283,10 +292,23 @@ impl SftpPanel {
         self.listing.fetching
     }
 
-    /// Select an entry by name (as a click does).
+    /// Select an entry by name (as a plain click does).
     pub fn select(&mut self, name: &str, cx: &mut Context<Self>) {
-        self.selected = Some(name.to_string());
+        self.select_with(name, SftpSelectGesture::Only, cx);
+    }
+
+    /// A click on an entry, with the gesture its modifiers make (`sftpSelectGesture`).
+    pub fn select_with(&mut self, name: &str, gesture: SftpSelectGesture, cx: &mut Context<Self>) {
+        self.selection = select_sftp_entry(&self.selection, name, gesture, &self.entry_names());
         cx.notify();
+    }
+
+    /// The selected names, in listing order.
+    pub fn selected_names(&self) -> Vec<String> {
+        self.selected_entries()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect()
     }
 
     /// The folder on screen.
@@ -406,7 +428,7 @@ impl SftpPanel {
             .update(cx, |input, cx| input.set_value(next.clone(), window, cx));
         self.shown_path = None;
         self.pending_input = None;
-        self.selected = None;
+        self.selection = SftpSelection::default();
         self.load(cx);
         cx.notify();
     }
@@ -521,9 +543,18 @@ impl SftpPanel {
             .unwrap_or_else(|| ".".into())
     }
 
-    fn selected_entry(&self) -> Option<&SftpEntry> {
-        let name = self.selected.as_ref()?;
-        self.entries.iter().find(|entry| &entry.name == name)
+    /// The selected entries in listing order; names gone since the last listing drop out.
+    fn selected_entries(&self) -> Vec<SftpEntry> {
+        selected_sftp_entries(&self.entries, &self.selection)
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
+    /// The one selected entry, when exactly one is.
+    fn single_entry(&self) -> Option<SftpEntry> {
+        let mut selected = self.selected_entries();
+        (selected.len() == 1).then(|| selected.remove(0))
     }
 
     fn remote_path(&self, entry: &SftpEntry) -> String {
@@ -702,6 +733,171 @@ impl SftpPanel {
             window,
             cx,
         );
+    }
+
+    /// `downloadFiles`: several files at once, into one folder picked up front, so the app
+    /// does not ask where to save each file. One file asks where to save it, as before.
+    fn download_files(
+        &mut self,
+        files: Vec<SftpEntry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(first) = files.first().cloned() else {
+            return;
+        };
+        if files.len() == 1 {
+            self.download(first, window, cx);
+            return;
+        }
+        if self.busy {
+            Self::warn_busy(cx);
+            return;
+        }
+        // Taken now: a followed terminal can change folders while the folder is picked.
+        let targets: Vec<(SftpEntry, String)> = files
+            .into_iter()
+            .map(|entry| {
+                let file = self.remote_path(&entry);
+                (entry, file)
+            })
+            .collect();
+        let folder = crate::util::file_dialog::pick_paths(
+            PathPromptOptions {
+                files: false,
+                directories: true,
+                multiple: false,
+                prompt: Some("Download".into()),
+            },
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            let Some(folder) = folder.await.and_then(|paths| paths.into_iter().next()) else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| this.download_into(targets, folder, cx));
+        })
+        .detach();
+    }
+
+    /// Download `targets` one after the other into `folder`, numbering names already there.
+    fn download_into(
+        &mut self,
+        targets: Vec<(SftpEntry, String)>,
+        folder: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy {
+            Self::warn_busy(cx);
+            return;
+        }
+        let count = targets.len();
+        let id = self.next_transfer_id;
+        self.next_transfer_id += 1;
+        let cancel = CancelSignal::new();
+        self.busy = true;
+        self.transfer = Some(Transfer {
+            id,
+            state: TransferProgressState {
+                file_count: Some(count),
+                ..TransferProgressState::starting(
+                    TransferDirection::Download,
+                    targets[0].0.name.clone(),
+                    targets[0].0.size,
+                )
+            },
+            cancel: cancel.clone(),
+        });
+        cx.notify();
+        let backend = services(cx).backend;
+        let conn = self.options.conn_id.clone();
+        self.work = Some(cx.spawn(async move |this, cx| {
+            let result: Result<u64, ApiError> = async {
+                let mut written = 0;
+                for (index, (entry, file)) in targets.iter().enumerate() {
+                    let state = |loaded: u64, total: Option<u64>, speed: f64, phase| {
+                        TransferProgressState {
+                            direction: TransferDirection::Download,
+                            name: entry.name.clone(),
+                            loaded,
+                            total,
+                            bytes_per_second: speed,
+                            phase,
+                            file_index: Some(index + 1),
+                            file_count: Some(count),
+                        }
+                    };
+                    let preparing = state(0, entry.size, 0., TransferPhase::Preparing);
+                    let _ = this.update(cx, |this, cx| this.show_transfer(id, preparing, cx));
+                    let stream = backend.sftp_download(&conn, file).await?;
+                    let total = stream.size;
+                    let mut meter = ProgressMeter::new();
+                    let mut bytes = Vec::new();
+                    loop {
+                        if cancel.is_cancelled() {
+                            return Err(ApiError::with_code(499, "Transfer cancelled", "aborted"));
+                        }
+                        // Dropping the stream on cancel stops the transfer.
+                        let Some(chunk) = stream.next_chunk().await else {
+                            break;
+                        };
+                        bytes.extend_from_slice(&chunk?);
+                        if let Some(progress) = meter.report(bytes.len() as u64, total, false) {
+                            let progress = state(
+                                progress.loaded,
+                                progress.total,
+                                progress.bytes_per_second,
+                                TransferPhase::Transferring,
+                            );
+                            let _ =
+                                this.update(cx, |this, cx| this.show_transfer(id, progress, cx));
+                        }
+                    }
+                    written += bytes.len() as u64;
+                    let (folder, name) = (folder.clone(), entry.name.clone());
+                    cx.background_executor()
+                        .spawn(async move { save_into_folder(&folder, &name, &bytes) })
+                        .await
+                        .map_err(|error| {
+                            ApiError::internal(format!("Could not save {}: {error}", entry.name))
+                        })?;
+                }
+                Ok(written)
+            }
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                this.busy = false;
+                match result {
+                    Ok(bytes) => {
+                        this.show_transfer(
+                            id,
+                            TransferProgressState {
+                                direction: TransferDirection::Download,
+                                name: format!("{count} files"),
+                                loaded: bytes,
+                                total: Some(bytes),
+                                bytes_per_second: 0.,
+                                phase: TransferPhase::Complete,
+                                file_index: Some(count),
+                                file_count: Some(count),
+                            },
+                            cx,
+                        );
+                        notify(Status::Success, downloaded_message(count, &folder), cx);
+                        this.settle_transfer(id, cx);
+                    }
+                    Err(error) => {
+                        this.transfer = None;
+                        if error.code.as_deref() == Some("aborted") {
+                            notify(Status::Info, "Download cancelled", cx);
+                        } else {
+                            notify_error(&error, cx);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
     }
 
     /// `upload`: a drop or a pick of local files into the folder on screen.
@@ -939,16 +1135,42 @@ impl SftpPanel {
         .detach();
     }
 
-    fn remove(&mut self, entry: SftpEntry, window: &mut Window, cx: &mut Context<Self>) {
-        let target = self.remote_path(&entry);
+    /// Delete the entries, after asking once for all of them.
+    fn remove(&mut self, targets: Vec<SftpEntry>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = targets.first().cloned() else {
+            return;
+        };
+        let files: Vec<String> = targets
+            .iter()
+            .map(|target| self.remote_path(target))
+            .collect();
+        let folders = targets
+            .iter()
+            .any(|target| target.kind == SftpEntryType::Dir);
+        let description = if targets.len() > 1 {
+            let refs: Vec<&SftpEntry> = targets.iter().collect();
+            format!(
+                "{} are removed from the remote host{}. This cannot be undone.",
+                sftp_entry_count(&refs),
+                if folders {
+                    ", with everything inside the folders"
+                } else {
+                    ""
+                }
+            )
+        } else if entry.kind == SftpEntryType::Dir {
+            "The folder and everything inside it is removed from the remote host. This cannot be undone.".into()
+        } else {
+            "The file is removed from the remote host. This cannot be undone.".into()
+        };
         let answer = self.dialogs.confirm(
             ConfirmOptions {
-                title: format!("Delete {}?", entry.name),
-                description: Some(if entry.kind == SftpEntryType::Dir {
-                    "The folder and everything inside it is removed from the remote host. This cannot be undone.".into()
+                title: if targets.len() == 1 {
+                    format!("Delete {}?", entry.name)
                 } else {
-                    "The file is removed from the remote host. This cannot be undone.".into()
-                }),
+                    format!("Delete {} items?", targets.len())
+                },
+                description: Some(description),
                 confirm_label: "Delete".into(),
                 destructive: true,
                 ..ConfirmOptions::default()
@@ -963,9 +1185,14 @@ impl SftpPanel {
                 return;
             }
             let _ = this.update(cx, |this, cx| {
+                this.selection = SftpSelection::default();
                 this.run(
                     async move {
-                        backend.sftp_delete(&conn, &target).await?;
+                        // One at a time: the SFTP channel is shared, and a failure stops the
+                        // rest.
+                        for file in files {
+                            backend.sftp_delete(&conn, &file).await?;
+                        }
                         Ok(())
                     },
                     cx,
@@ -1054,7 +1281,19 @@ impl SftpPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.selected = Some(entry.name.clone());
+        // The row's click is the listing's: empty space below the rows clears the selection.
+        cx.stop_propagation();
+        // A click on a row brings the listing's keys along.
+        window.focus(&self.listing_focus, cx);
+        let modifiers = event.modifiers();
+        let gesture = sftp_select_gesture(
+            modifiers.control,
+            modifiers.platform,
+            modifiers.shift,
+            cfg!(target_os = "macos"),
+        );
+        self.selection =
+            select_sftp_entry(&self.selection, &entry.name, gesture, &self.entry_names());
         if event.click_count() >= 2 {
             let path = self.remote_path(entry);
             match entry.kind {
@@ -1067,8 +1306,41 @@ impl SftpPanel {
     }
 
     fn on_row_menu(&mut self, entry: &SftpEntry, position: Point<Pixels>, cx: &mut Context<Self>) {
-        self.selected = Some(entry.name.clone());
+        self.selection = sftp_context_selection(&self.selection, &entry.name);
         self.menu = Some((position, entry.clone()));
+        cx.notify();
+    }
+
+    /// The listing's keys: Ctrl/Cmd+A selects everything, Esc clears, Delete (Cmd+Backspace on
+    /// macOS) deletes the selection.
+    fn on_listing_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let keystroke = &event.keystroke;
+        let modifiers = keystroke.modifiers;
+        let is_mac = cfg!(target_os = "macos");
+        let command = if is_mac {
+            modifiers.platform
+        } else {
+            modifiers.control
+        };
+        let key = keystroke.key.as_str();
+        if command && !modifiers.shift && !modifiers.alt && key == "a" {
+            self.selection = select_all_sftp_entries(&self.entry_names());
+        } else if key == "escape" && !self.selection.is_empty() {
+            self.selection = SftpSelection::default();
+        } else if (key == "delete" || (is_mac && modifiers.platform && key == "backspace"))
+            && !self.selected_entries().is_empty()
+        {
+            let targets = self.selected_entries();
+            self.remove(targets, window, cx);
+        } else {
+            return;
+        }
+        cx.stop_propagation();
         cx.notify();
     }
 
@@ -1242,9 +1514,21 @@ impl SftpPanel {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let busy = self.busy;
-        let file_selected = self
-            .selected_entry()
+        let single = self.single_entry();
+        let selected = self.selected_entries();
+        let selected_files: Vec<SftpEntry> = selected
+            .iter()
+            .filter(|entry| entry.kind == SftpEntryType::File)
+            .cloned()
+            .collect();
+        let file_selected = single
+            .as_ref()
             .is_some_and(|entry| entry.kind == SftpEntryType::File);
+        let download_label = if selected_files.len() > 1 {
+            format!("Download {} selected files", selected_files.len())
+        } else {
+            "Download selected file".into()
+        };
         let caption = theme.typography.caption;
         let mut row = div()
             .flex()
@@ -1269,7 +1553,7 @@ impl SftpPanel {
                     .tooltip("Open selected file in editor")
                     .disabled(busy || !file_selected)
                     .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(entry) = this.selected_entry().cloned() {
+                        if let Some(entry) = this.single_entry() {
                             let path = this.remote_path(&entry);
                             this.open_file(path, cx);
                         }
@@ -1277,16 +1561,27 @@ impl SftpPanel {
             )
             .child(
                 IconButton::new("sftp-download", "DownloadOutlined")
-                    .tooltip("Download selected file")
-                    .disabled(busy || !file_selected)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if let Some(entry) = this.selected_entry().cloned() {
-                            this.download(entry, window, cx);
-                        }
+                    .tooltip(download_label)
+                    .disabled(busy || selected_files.is_empty())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let files: Vec<SftpEntry> = this
+                            .selected_entries()
+                            .into_iter()
+                            .filter(|entry| entry.kind == SftpEntryType::File)
+                            .collect();
+                        this.download_files(files, window, cx);
                     })),
             )
             .child(div().flex_1());
-        if !narrow {
+        if selected.len() > 1 {
+            row = row.child(
+                label(format!("{} selected", selected.len()))
+                    .size(caption.size)
+                    .line_height(caption.line_height)
+                    .color(theme.palette.text.secondary)
+                    .no_truncate(),
+            );
+        } else if !narrow {
             row = row.child(
                 label("Drag in to upload · drag out to download")
                     .size(caption.size)
@@ -1434,7 +1729,7 @@ impl SftpPanel {
         let Some(entry) = self.entries.get(index).cloned() else {
             return div().into_any_element();
         };
-        let selected = self.selected.as_deref() == Some(entry.name.as_str());
+        let selected = self.selection.contains(&entry.name);
         let hover = if selected {
             alpha(
                 p.primary.main,
@@ -1561,7 +1856,19 @@ impl SftpPanel {
         let (position, entry) = self.menu.clone()?;
         let theme = *cx.theme();
         let entity = cx.entity().downgrade();
-        let is_file = entry.kind == SftpEntryType::File;
+        // A right-click inside a selection of several acts on all of them.
+        let selected = self.selected_entries();
+        let targets = if selected.len() > 1 && self.selection.contains(&entry.name) {
+            selected
+        } else {
+            vec![entry.clone()]
+        };
+        let is_file = targets.len() == 1 && entry.kind == SftpEntryType::File;
+        let files: Vec<SftpEntry> = targets
+            .iter()
+            .filter(|target| target.kind == SftpEntryType::File)
+            .cloned()
+            .collect();
         let local = super::local_open::can_open_locally();
         let chooser = super::local_open::open_with_chooser().is_some();
         let mut items: Vec<AnyElement> = Vec::new();
@@ -1610,35 +1917,47 @@ impl SftpPanel {
                         .into_any_element(),
                 );
             }
-            let e = entry.clone();
+        }
+        if !files.is_empty() {
+            let download = if files.len() > 1 {
+                format!("Download {} files", files.len())
+            } else {
+                "Download".into()
+            };
             items.push(
-                MenuItem::new("sftp-menu-download", "Download")
+                MenuItem::new("sftp-menu-download", download)
                     .icon("DownloadOutlined")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         close(this, cx);
-                        this.download(e.clone(), window, cx);
+                        this.download_files(files.clone(), window, cx);
                     }))
                     .into_any_element(),
             );
         }
-        let e = entry.clone();
+        if targets.len() < 2 {
+            let e = entry.clone();
+            items.push(
+                MenuItem::new("sftp-menu-rename", "Rename")
+                    .icon("DriveFileRenameOutline")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        close(this, cx);
+                        this.rename(e.clone(), window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        let delete = if targets.len() > 1 {
+            format!("Delete {} items", targets.len())
+        } else {
+            "Delete".into()
+        };
         items.push(
-            MenuItem::new("sftp-menu-rename", "Rename")
-                .icon("DriveFileRenameOutline")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    close(this, cx);
-                    this.rename(e.clone(), window, cx);
-                }))
-                .into_any_element(),
-        );
-        let e = entry;
-        items.push(
-            MenuItem::new("sftp-menu-delete", "Delete")
+            MenuItem::new("sftp-menu-delete", delete)
                 .icon("DeleteOutlined")
                 .destructive()
                 .on_click(cx.listener(move |this, _, window, cx| {
                     close(this, cx);
-                    this.remove(e.clone(), window, cx);
+                    this.remove(targets.clone(), window, cx);
                 }))
                 .into_any_element(),
         );
@@ -2006,11 +2325,27 @@ impl Render for SftpPanel {
             root = root.child(div().mx(px(6.)).mb(px(6.)).child(bar));
         }
         let probe = self.body_bounds.clone();
-        let mut body = div().relative().flex_1().min_h_0().overflow_hidden().child(
-            canvas(move |bounds, _, _| probe.set(Some(bounds)), |_, _, _, _| {})
-                .absolute()
-                .size_full(),
-        );
+        let mut body = div()
+            .id("sftp-listing")
+            .track_focus(&self.listing_focus)
+            .on_key_down(cx.listener(Self::on_listing_key))
+            // Empty space below the rows clears the selection, as in a file manager (a row's
+            // click stops here).
+            .on_click(cx.listener(|this, _, _, cx| {
+                if !this.selection.is_empty() {
+                    this.selection = SftpSelection::default();
+                    cx.notify();
+                }
+            }))
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .child(
+                canvas(move |bounds, _, _| probe.set(Some(bounds)), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            );
         if (self.listing.fetching || self.busy) && self.transfer.is_none() {
             body = body.child(
                 div()
