@@ -1329,10 +1329,18 @@ impl AppShell {
             )
     }
 
-    pub fn all_tabs_menu(&mut self, pane_id: &str, cx: &mut Context<Self>) -> Div {
+    pub fn all_tabs_menu(&mut self, pane_id: &str, window: &Window, cx: &mut Context<Self>) -> Div {
         let theme = *cx.theme();
         let active = self.active_tab_of(pane_id);
-        let mut paper = menu::paper(&theme).w(px(320.));
+        // `maxHeight: min(460px, calc(100vh - 48px))`; the list scrolls inside.
+        let viewport = muxus_ui::zoom::unzoom(window.viewport_size().height);
+        let max_height = (viewport - 48.).min(460.) - 16.;
+        let mut items = div()
+            .id("all-tabs-items")
+            .flex()
+            .flex_col()
+            .max_h(px(max_height.max(48.)))
+            .overflow_y_scroll();
         for tab in self
             .tabs
             .pane_tabs(pane_id)
@@ -1363,7 +1371,7 @@ impl AppShell {
             } else {
                 theme.palette.action.active
             };
-            paper = paper.child(
+            items = items.child(
                 MenuItem::new(
                     ElementId::Name(format!("all-tabs-{}", tab.id).into()),
                     tab.title.clone(),
@@ -1388,7 +1396,7 @@ impl AppShell {
                 })),
             );
         }
-        paper
+        menu::paper(&theme).w(px(320.)).child(items)
     }
 }
 

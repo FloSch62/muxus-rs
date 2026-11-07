@@ -316,7 +316,7 @@ impl AppShell {
             ShellMenu::Tab { tab_id, position } => (position, self.tab_menu(&tab_id, window, cx)),
             ShellMenu::Pane { pane_id, position } => (position, self.pane_menu(&pane_id, cx)),
             ShellMenu::AllTabs { pane_id, position } => {
-                (position, self.all_tabs_menu(&pane_id, cx))
+                (position, self.all_tabs_menu(&pane_id, window, cx))
             }
             ShellMenu::HostSessions { host, position } => {
                 // Toward the panes: from the row's right edge, or its left edge when the

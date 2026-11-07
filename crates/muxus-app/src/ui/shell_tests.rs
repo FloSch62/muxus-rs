@@ -464,7 +464,7 @@ fn a_tab_from_another_window_lands_beside_the_tab_under_the_pointer(cx: &mut Tes
         .update(cx, |shell, _, cx| {
             let mut moved = shell.tabs.tab(&ids[1]).unwrap().clone();
             moved.title = "router".into();
-            moved.color = Some("#ef5350".into());
+            moved.color = Some(muxus_ui::theme::TAB_FLAG_COLORS[0].into());
             shell.adopt_tab(
                 moved,
                 None,
@@ -478,7 +478,10 @@ fn a_tab_from_another_window_lands_beside_the_tab_under_the_pointer(cx: &mut Tes
         .update(cx, |shell, _, _| shell.tabs.active_tab().cloned())
         .unwrap()
         .unwrap();
-    assert_eq!(adopted.color.as_deref(), Some("#ef5350"));
+    assert_eq!(
+        adopted.color.as_deref(),
+        Some(muxus_ui::theme::TAB_FLAG_COLORS[0])
+    );
 }
 
 /// `ToastHost`: errors and warnings can be copied; details unfold below the message and
