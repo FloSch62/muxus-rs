@@ -409,7 +409,16 @@ struct Seen {
 /// Read a job to its end, answering its questions with `answer`.
 async fn follow(
     job: &ScriptJobHandle,
+    answer: impl FnMut(&ScriptPrompt, &mut Seen) -> Option<ScriptPromptAnswer>,
+) -> Seen {
+    follow_with(job, answer, |_, _| {}).await
+}
+
+/// [`follow`], also telling `on_output` about each piece of output (host key, text).
+async fn follow_with(
+    job: &ScriptJobHandle,
     mut answer: impl FnMut(&ScriptPrompt, &mut Seen) -> Option<ScriptPromptAnswer>,
+    mut on_output: impl FnMut(&str, &str),
 ) -> Seen {
     let mut seen = Seen::default();
     loop {
@@ -434,6 +443,7 @@ async fn follow(
                 }
             }
             ScriptJobEvent::Output { key, text } => {
+                on_output(&key, &text);
                 seen.output.entry(key).or_default().push_str(&text)
             }
             ScriptJobEvent::Prompt(request) => {
@@ -579,19 +589,33 @@ async fn cancelling_takes_back_waiting_questions_and_stops_running_scripts() {
             })
             .unwrap(),
     );
-    let canceller = job.clone();
-    let seen = follow(&job, move |prompt, _| {
-        if let ScriptPrompt::HostKey(_) = prompt {
-            return Some(ScriptPromptAnswer::HostKey(true));
-        }
-        // The password question stays unanswered; `lab` runs meanwhile.
-        let job = canceller.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(800)).await;
+    // Cancel once both are true: `lab2`'s password question is waiting (it stays unanswered)
+    // and `lab`'s script has started. A fixed delay after the question raced `lab`'s start on
+    // a busy machine.
+    let asked = std::cell::Cell::new(false);
+    let started = std::cell::Cell::new(false);
+    let cancel_when_ready = || {
+        if asked.get() && started.get() {
             job.cancel();
-        });
-        None
-    })
+        }
+    };
+    let seen = follow_with(
+        &job,
+        |prompt, _| {
+            if let ScriptPrompt::HostKey(_) = prompt {
+                return Some(ScriptPromptAnswer::HostKey(true));
+            }
+            asked.set(true);
+            cancel_when_ready();
+            None
+        },
+        |key, text| {
+            if key == "ssh:lab" && text.contains("started") {
+                started.set(true);
+                cancel_when_ready();
+            }
+        },
+    )
     .await;
     assert!(seen.prompts.iter().any(|(host, _)| host == "ssh:lab2"));
     assert_eq!(seen.output["ssh:lab"], "started\n");
