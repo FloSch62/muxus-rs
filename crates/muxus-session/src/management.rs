@@ -15,9 +15,9 @@ use std::sync::Arc;
 use muxus_core::api::saved_host_hop;
 use muxus_core::management::{ManagementProtocol, SavedManagementRequest};
 use muxus_core::protocol::{
-    AuthPromptField, AuthPromptInfo, AuthPromptPurpose, AuthPromptResponse, HostKeyChallenge,
-    ManagementClientMessage, ManagementProfile, ManagementServerMessage, NetconfProfile,
-    SavedHostSessionProfile, SshGateway, SshProfile,
+    AuthPromptInfo, AuthPromptResponse, HostKeyChallenge, ManagementClientMessage,
+    ManagementProfile, ManagementServerMessage, NetconfProfile, SavedHostSessionProfile,
+    SshGateway, SshProfile,
 };
 use muxus_mgmt::dial::DialError;
 use muxus_mgmt::library::{self, LibraryError, ManagementRequestStore};
@@ -28,12 +28,14 @@ use muxus_mgmt::session::{
 };
 use muxus_ssh::connection::{
     BoxFuture, Cancelled, ConnectIo, ConnectOptions, ConnectionLeaseOwner, MuxedConnectionLease,
-    PasswordVault as SshPasswordVault, SshConnectionManager, VaultError,
+    SshConnectionManager,
 };
 use muxus_store::Database;
 use muxus_store::vault::PasswordVault;
 
-use crate::adapters::StoreVault;
+use muxus_rdp::passwords::{DesktopPasswords, DesktopPrompts, DesktopVault, VaultPasswordRef};
+
+use crate::desktop::StoreDesktopVault;
 use crate::{ApiError, ApiResult, Backend};
 
 /// The two ends of a management session: messages in, messages out.
@@ -182,8 +184,8 @@ impl ManagementEnv for BackendManagementEnv {
     }
 
     fn passwords(&self) -> Option<Arc<dyn MgmtPasswordVault>> {
-        Some(Arc::new(DesktopPasswords {
-            vault: StoreVault(self.vault.clone()),
+        Some(Arc::new(ManagementPasswords {
+            vault: StoreDesktopVault(self.vault.clone()),
         }))
     }
 
@@ -342,108 +344,46 @@ impl SshLease for Lease {
     }
 }
 
-/// Saved gNMI passwords in the password vault (`DesktopPasswords`): unlock
-/// and create prompts go through the session.
-struct DesktopPasswords {
-    vault: StoreVault,
+/// Saved gNMI passwords in the password vault: the desktop logon's
+/// [`DesktopPasswords`] (one class in TypeScript for both), so the unlock and
+/// create prompts go through the management session.
+struct ManagementPasswords {
+    vault: StoreDesktopVault,
 }
 
-/// Master-password attempts before the vault stays locked.
-const MASTER_PASSWORD_ATTEMPTS: usize = 3;
+/// The management session's status lines and prompts, as the desktop
+/// passwords ask them.
+struct SessionPrompts(SessionIo);
 
-/// What a master-password attempt does with the password typed.
-type VaultOperation<T> =
-    Box<dyn Fn(String) -> BoxFuture<'static, Result<T, VaultError>> + Send + Sync>;
+impl DesktopPrompts for SessionPrompts {
+    fn status(&self, message: &str, transient: bool) {
+        self.0.status(message, transient);
+    }
 
-impl DesktopPasswords {
-    async fn with_master_password<T>(
-        &self,
-        io: &SessionIo,
-        name: &str,
-        instructions: &str,
-        skip_label: &str,
-        operation: VaultOperation<T>,
-    ) -> Result<Option<T>, String> {
-        let mut error: Option<String> = None;
-        for _ in 0..MASTER_PASSWORD_ATTEMPTS {
-            let response = io
-                .prompt(AuthPromptInfo {
-                    name: Some(name.into()),
-                    instructions: Some(match &error {
-                        Some(error) => format!("{error}\n\n{instructions}"),
-                        None => instructions.into(),
-                    }),
-                    host: None,
-                    prompts: vec![AuthPromptField {
-                        prompt: "Master password".into(),
-                        echo: false,
-                    }],
-                    purpose: Some(AuthPromptPurpose::VaultUnlock),
-                    remember_password: None,
-                    skip_label: Some(skip_label.into()),
+    fn prompt(&self, info: AuthPromptInfo) -> muxus_rdp::BoxFuture<'static, AuthPromptResponse> {
+        let io = self.0.clone();
+        Box::pin(async move {
+            // A withdrawn prompt reads as skipped; the closing session ends the login anyway.
+            io.prompt(info)
+                .await
+                .unwrap_or_else(|_| AuthPromptResponse {
+                    skipped: Some(true),
+                    ..AuthPromptResponse::default()
                 })
-                .await?;
-            if response.skipped == Some(true) {
-                return Ok(None);
-            }
-            let master = response.answers.first().cloned().unwrap_or_default();
-            match operation(master).await {
-                Ok(value) => return Ok(Some(value)),
-                Err(VaultError::InvalidMasterPassword(message))
-                | Err(VaultError::InvalidMasterPasswordFormat(message)) => {
-                    error = Some(message);
-                }
-                Err(other) => return Err(other.to_string()),
-            }
-        }
-        io.status("The password vault remains locked.", false);
-        Ok(None)
-    }
-
-    async fn create_vault(&self, io: &SessionIo) -> Result<bool, String> {
-        let response = io
-            .prompt(AuthPromptInfo {
-                name: Some("Create password vault".into()),
-                instructions: Some(
-                    "Create a master password to protect viewing and editing saved passwords. \
-                     By default, Muxus stores the vault key in the operating-system credential store \
-                     so saved passwords can be used without another master-password prompt."
-                        .into(),
-                ),
-                host: None,
-                prompts: vec![
-                    AuthPromptField {
-                        prompt: "Master password".into(),
-                        echo: false,
-                    },
-                    AuthPromptField {
-                        prompt: "Confirm master password".into(),
-                        echo: false,
-                    },
-                ],
-                purpose: Some(AuthPromptPurpose::VaultCreate),
-                remember_password: None,
-                skip_label: Some("Not now".into()),
-            })
-            .await?;
-        if response.skipped == Some(true) {
-            return Ok(false);
-        }
-        let master = response.answers.first().cloned().unwrap_or_default();
-        let confirmation = response.answers.get(1).cloned().unwrap_or_default();
-        if master != confirmation {
-            return Err("The master-password confirmation did not match.".into());
-        }
-        match self.vault.create(&master).await {
-            Ok(()) | Err(VaultError::AlreadyConfigured) => Ok(true),
-            Err(error) => Err(error.to_string()),
-        }
+        })
     }
 }
 
-impl MgmtPasswordVault for DesktopPasswords {
+fn vault_reference(reference: &PasswordRef) -> VaultPasswordRef {
+    VaultPasswordRef {
+        account: reference.account.clone(),
+        label: reference.label.clone(),
+    }
+}
+
+impl MgmtPasswordVault for ManagementPasswords {
     fn has(&self, account: &str) -> bool {
-        self.vault.has_ssh_password(account)
+        self.vault.has_password(account)
     }
 
     fn read<'a>(
@@ -452,58 +392,11 @@ impl MgmtPasswordVault for DesktopPasswords {
         io: &'a SessionIo,
     ) -> MgmtFuture<'a, Result<Option<String>, String>> {
         Box::pin(async move {
-            if !self.vault.has_ssh_password(&reference.account) {
-                return Ok(None);
-            }
-            let result = if !self.vault.status().locked {
-                self.vault
-                    .ssh_password(&reference.account, None)
-                    .await
-                    .map(Some)
-            } else {
-                let vault = self.vault.clone();
-                let account = reference.account.clone();
-                let operation: VaultOperation<String> = Box::new(move |master| {
-                    let (vault, account) = (vault.clone(), account.clone());
-                    Box::pin(async move { vault.ssh_password(&account, Some(&master)).await })
-                });
-                return self
-                    .with_master_password(
-                        io,
-                        "Unlock password vault",
-                        &format!(
-                            "Enter the master password to use the saved password for {}.",
-                            reference.label
-                        ),
-                        "Use another password",
-                        operation,
-                    )
-                    .await;
-            };
-            match result {
-                Ok(value) => Ok(value),
-                Err(VaultError::CredentialVaultCorrupt) => {
-                    io.status(
-                        &format!(
-                            "The saved password for {} is damaged. Enter it again to replace the saved copy.",
-                            reference.label
-                        ),
-                        false,
-                    );
-                    Ok(None)
-                }
-                Err(VaultError::KeyStoreUnavailable) => {
-                    io.status(
-                        &format!(
-                            "The OS credential store is unavailable. Enter the password for {}.",
-                            reference.label
-                        ),
-                        false,
-                    );
-                    Ok(None)
-                }
-                Err(error) => Err(error.to_string()),
-            }
+            let prompts = SessionPrompts(io.clone());
+            DesktopPasswords::new(Some(&self.vault), &prompts)
+                .read(&vault_reference(reference))
+                .await
+                .map_err(|error| error.to_string())
         })
     }
 
@@ -514,51 +407,11 @@ impl MgmtPasswordVault for DesktopPasswords {
         io: &'a SessionIo,
     ) -> MgmtFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            if !self.vault.status().configured && !self.create_vault(io).await? {
-                return Ok(());
-            }
-            if self.vault.status().locked {
-                let vault = self.vault.clone();
-                let (account, label, secret) = (
-                    reference.account.clone(),
-                    reference.label.clone(),
-                    password.to_owned(),
-                );
-                let operation: VaultOperation<()> = Box::new(move |master| {
-                    let vault = vault.clone();
-                    let (account, label, secret) = (account.clone(), label.clone(), secret.clone());
-                    Box::pin(async move {
-                        vault
-                            .remember_ssh_password(&account, &label, &secret, Some(&master))
-                            .await
-                    })
-                });
-                let saved = self
-                    .with_master_password(
-                        io,
-                        "Unlock password vault",
-                        &format!(
-                            "Enter the master password to remember the password for {}.",
-                            reference.label
-                        ),
-                        "Not now",
-                        operation,
-                    )
-                    .await?;
-                if saved.is_none() {
-                    return Ok(());
-                }
-            } else {
-                self.vault
-                    .remember_ssh_password(&reference.account, &reference.label, password, None)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-            io.status(
-                &format!("Remembered the password for {}.", reference.label),
-                false,
-            );
-            Ok(())
+            let prompts = SessionPrompts(io.clone());
+            DesktopPasswords::new(Some(&self.vault), &prompts)
+                .remember(&vault_reference(reference), password)
+                .await
+                .map_err(|error| error.to_string())
         })
     }
 }

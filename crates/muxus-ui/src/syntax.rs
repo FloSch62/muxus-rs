@@ -25,6 +25,32 @@ pub struct MonacoColors {
     /// The status bar under an editor (the client's own footer, not Monaco's).
     pub footer_background: Hsla,
     pub footer_ink: Hsla,
+    /// `editor.wordHighlightTextBackground`: occurrences of the word at the cursor.
+    pub word_highlight: Hsla,
+    /// `editor.selectionHighlightBackground`: other occurrences of the selection.
+    pub selection_highlight: Hsla,
+    /// `editor.rangeHighlightBackground`: the line Go to Line previews.
+    pub range_highlight: Hsla,
+    /// `editorError.foreground`, `editorWarning.foreground`: squiggles.
+    pub error: Hsla,
+    pub warning: Hsla,
+    /// `editorLink.activeForeground`.
+    pub active_link: Hsla,
+    /// The overview ruler: its border, occurrence marks, error marks, the cursor (the cursor
+    /// color at 70%).
+    pub overview_ruler_border: Hsla,
+    pub overview_ruler_occurrence: Hsla,
+    pub overview_ruler_error: Hsla,
+    pub overview_ruler_cursor: Hsla,
+    /// The quick input (Go to Line): `quickInput.background`, its foreground, the input box,
+    /// the focused row (`quickInputList.focusBackground`/`Foreground`), `widget.shadow`.
+    pub quick_input_background: Hsla,
+    pub quick_input_foreground: Hsla,
+    pub quick_input_field: Hsla,
+    pub quick_input_border: Hsla,
+    pub quick_input_focus: Hsla,
+    pub quick_input_focus_ink: Hsla,
+    pub widget_shadow: Hsla,
 }
 
 impl MonacoColors {
@@ -41,6 +67,23 @@ impl MonacoColors {
                 indent_guide: hex("#404040"),
                 footer_background: hex("#18181b"),
                 footer_ink: hex("#b1b1ba"),
+                word_highlight: hex("#575757b8"),
+                selection_highlight: hex("#add6ff26"),
+                range_highlight: hex("#ffffff0b"),
+                error: hex("#f14c4c"),
+                warning: hex("#cca700"),
+                active_link: hex("#4e94ce"),
+                overview_ruler_border: hex("#7f7f7f4d"),
+                overview_ruler_occurrence: hex("#a0a0a0cc"),
+                overview_ruler_error: hex("#ff1212b3"),
+                overview_ruler_cursor: hex("#aeafadb3"),
+                quick_input_background: hex("#252526"),
+                quick_input_foreground: hex("#cccccc"),
+                quick_input_field: hex("#3c3c3c"),
+                quick_input_border: hex("#007fd4"),
+                quick_input_focus: hex("#04395e"),
+                quick_input_focus_ink: hex("#ffffff"),
+                widget_shadow: hex("#0000005c"),
             }
         } else {
             Self {
@@ -54,8 +97,68 @@ impl MonacoColors {
                 indent_guide: hex("#d3d3d3"),
                 footer_background: hex("#f4f4f5"),
                 footer_ink: hex("#5f5f68"),
+                word_highlight: hex("#57575740"),
+                selection_highlight: hex("#add6ff4d"),
+                range_highlight: hex("#fdff0033"),
+                error: hex("#e51400"),
+                warning: hex("#bf8803"),
+                active_link: hex("#0000ff"),
+                overview_ruler_border: hex("#7f7f7f4d"),
+                overview_ruler_occurrence: hex("#a0a0a0cc"),
+                overview_ruler_error: hex("#ff1212b3"),
+                overview_ruler_cursor: hex("#000000b3"),
+                quick_input_background: hex("#f3f3f3"),
+                quick_input_foreground: hex("#616161"),
+                quick_input_field: hex("#ffffff"),
+                quick_input_border: hex("#0090f1"),
+                quick_input_focus: hex("#0060c0"),
+                quick_input_focus_ink: hex("#ffffff"),
+                widget_shadow: hex("#00000029"),
             }
         }
+    }
+}
+
+/// The remote editor's General Text language, whose highlighter emits Monarch token names
+/// (`invalid`, `string.link`, `attribute.name`…) rather than tree-sitter captures.
+pub const MONARCH_GENERAL_TEXT: &str = "muxus-text";
+
+/// The token rules of Monaco's `vs` and `vs-dark` themes (`standalone/common/themes.ts`) that
+/// apply to every language, as (token, light, dark); `None` keeps the editor's foreground.
+const MONARCH_RULES: &[(&str, Option<&str>, Option<&str>)] = &[
+    ("invalid", Some("#cd3131"), Some("#f44747")),
+    ("variable", Some("#001188"), Some("#74b0df")),
+    ("variable.predefined", Some("#4864aa"), Some("#4864aa")),
+    ("variable.parameter", Some("#001188"), Some("#9cdcfe")),
+    ("constant", Some("#dd0000"), Some("#569cd6")),
+    ("comment", Some("#008000"), Some("#608b4e")),
+    ("number", Some("#098658"), Some("#b5cea8")),
+    ("number.hex", Some("#3030c0"), Some("#5bb498")),
+    ("regexp", Some("#800000"), Some("#b46695")),
+    ("annotation", Some("#808080"), Some("#cc6666")),
+    ("type", Some("#008080"), Some("#3dc9b0")),
+    ("delimiter", Some("#000000"), Some("#dcdcdc")),
+    ("tag", Some("#800000"), Some("#569cd6")),
+    ("metatag", Some("#e00000"), Some("#dd6a6f")),
+    ("key", Some("#863b00"), Some("#9cdcfe")),
+    ("attribute.name", Some("#ff0000"), Some("#9cdcfe")),
+    ("attribute.value", Some("#0451a5"), Some("#ce9178")),
+    ("string", Some("#a31515"), Some("#ce9178")),
+    ("keyword", Some("#0000ff"), Some("#569cd6")),
+    ("keyword.flow", Some("#af00db"), Some("#c586c0")),
+];
+
+/// A Monarch token's color: the theme rule for the longest dotted prefix of the token, as
+/// Monaco's token theme matches (`string.link` takes `string`).
+pub fn monarch_color(dark: bool, token: &str) -> Option<&'static str> {
+    let mut prefix = token;
+    loop {
+        if let Some((_, light, dark_color)) =
+            MONARCH_RULES.iter().find(|(name, ..)| *name == prefix)
+        {
+            return if dark { *dark_color } else { *light };
+        }
+        prefix = &prefix[..prefix.rfind('.')?];
     }
 }
 
@@ -89,7 +192,12 @@ impl MonacoTokens {
             "bracket.depth.2" => return pick("#319331", "#da70d6"),
             "bracket.depth.3" => return pick("#7b3814", "#179fff"),
             "bracket.unexpected" => return pick("#ff1212", "#ff1212"),
+            // A link under Ctrl/Cmd+hover (`editorLink.activeForeground`).
+            "link_text" => return pick("#0000ff", "#4e94ce"),
             _ => {}
+        }
+        if language == MONARCH_GENERAL_TEXT {
+            return monarch_color(dark, name);
         }
         match (language, name) {
             ("yaml", "property") => return pick("#008080", "#3dc9b0"),
@@ -187,5 +295,18 @@ mod tests {
         assert_eq!(shell.color("string"), Some("#a31515"));
         assert_eq!(shell.color("comment"), Some("#008000"));
         assert_eq!(shell.color("punctuation.delimiter"), None);
+    }
+
+    #[test]
+    fn colors_monarch_tokens_by_their_longest_rule() {
+        let light = MonacoTokens::new(false, MONARCH_GENERAL_TEXT);
+        let dark = MonacoTokens::new(true, MONARCH_GENERAL_TEXT);
+        assert_eq!(light.color("string.link"), Some("#a31515"));
+        assert_eq!(light.color("number.hex"), Some("#3030c0"));
+        assert_eq!(light.color("attribute.name"), Some("#ff0000"));
+        assert_eq!(dark.color("regexp"), Some("#b46695"));
+        assert_eq!(dark.color("delimiter.curly"), Some("#dcdcdc"));
+        assert_eq!(light.color("bracket.depth.2"), Some("#319331"));
+        assert_eq!(light.color("unknown"), None);
     }
 }

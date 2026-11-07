@@ -45,7 +45,7 @@ pub enum BracketColor {
 }
 
 impl BracketColor {
-    fn token(self) -> &'static str {
+    pub fn token(self) -> &'static str {
         match self {
             BracketColor::Depth(depth) => match depth % 3 {
                 0 => "bracket.depth.1",

@@ -5523,6 +5523,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 name = "muxus-app"
 version = "0.11.1"
 dependencies = [
+ "anyhow",
  "async-channel",
  "async-trait",
  "base64 0.22.1",
@@ -5537,6 +5538,7 @@ dependencies = [
  "indexmap 2.14.2",
  "ironrdp-server",
  "libc",
+ "lsp-types",
  "muxus-core",
  "muxus-import",
  "muxus-local",
@@ -5549,6 +5551,7 @@ dependencies = [
  "muxus-ui",
  "prost",
  "regex",
+ "regex-automata",
  "russh",
  "rustls",
  "serde",

@@ -16,7 +16,8 @@ use muxus_core::api::{EditorFileResponse, EditorFileSaveRequest, EditorFileSaveR
 use muxus_session::ApiError;
 use muxus_ui::color::alpha;
 use muxus_ui::gpui_kit::base::input::{
-    Editor, EditorState, InputEditorStyle, InputEvent, Position, TabSize,
+    DiagnosticColors, Editor, EditorState, Input, InputEditorStyle, InputEvent, InputState,
+    Position, RopeExt as _, TabSize,
 };
 use muxus_ui::gpui_kit::{
     AnyElement, App, AppContext, Context, Edges, ElementId, Entity, EventEmitter, FocusHandle,
@@ -34,12 +35,17 @@ use super::super::dialogs::{ConfirmOptions, DialogQueue, QueueOf};
 use super::super::format::base_name;
 use super::super::icons::file_type_icon;
 use super::super::services::{notify, notify_error, services};
+use super::features::DocumentFeatures;
+use super::general_text::remote_editor_highlighters;
+use super::goto_line::{GotoTarget, parse_position};
+use super::json::{FormatOptions, format_json};
 use super::language::{
     GENERAL_TEXT_LANGUAGE_ID, header_language_label, highlighter_language, language_for_path,
     language_label, language_options,
 };
+use super::overlays::{EditorFrame, gutter_layer, under_text_layer};
 use super::registry::{RemoteEditorHandle, RemoteEditorRegistration, register_remote_editor};
-use crate::util::code_editor::{BracketPools, MAX_HIGHLIGHT_BYTES, highlighter_factory};
+use crate::util::code_editor::MAX_HIGHLIGHT_BYTES;
 use muxus_ui::syntax::MonacoColors;
 use muxus_ui::widgets::progress::CircularProgress;
 
@@ -125,8 +131,30 @@ struct Document {
     wrap: bool,
     /// The theme mode and grammar the editor was last styled for.
     styled: Option<(bool, &'static str)>,
+    /// Links, highlights and problems (Monaco's language features).
+    features: DocumentFeatures,
+    /// A later look at a large text after typing pauses.
+    analysis: Option<Task<()>>,
     _events: Subscription,
 }
+
+/// Go to Line, open over the editor (Monaco's quick input).
+struct GotoLine {
+    path: String,
+    input: Entity<InputState>,
+    target: GotoTarget,
+    /// Where the editor was scrolled, for Escape.
+    scroll_before: Point<Pixels>,
+    _events: Subscription,
+}
+
+/// The paddings the editor is given (Monaco's 12px above and below, the gutter's start).
+const EDITOR_PADDING_TOP: f32 = 11.;
+const EDITOR_PADDING_BOTTOM: f32 = 12.;
+const EDITOR_PADDING_LEFT: f32 = 34.;
+/// Larger texts are looked at again only after typing pauses this long.
+const ANALYSIS_DELAY: Duration = Duration::from_millis(300);
+const ANALYSIS_IMMEDIATE_BYTES: usize = 256 * 1024;
 
 /// What the registry asks, answered from the workspace.
 struct Handle {
@@ -173,6 +201,7 @@ pub struct RemoteEditorWorkspace {
     loads: HashMap<String, Task<()>>,
     /// The file the editor last took the keyboard for while in front.
     focused_for: Option<String>,
+    goto: Option<GotoLine>,
     _closer: Task<()>,
 }
 
@@ -259,6 +288,7 @@ impl RemoteEditorWorkspace {
             focus: cx.focus_handle(),
             loads: HashMap::new(),
             focused_for: None,
+            goto: None,
             _closer: closer,
         };
         workspace.sync(window, cx);
@@ -370,7 +400,7 @@ impl RemoteEditorWorkspace {
         content: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> (Entity<EditorState>, Subscription) {
+    ) -> (Entity<EditorState>, Subscription, DocumentFeatures) {
         let language = self.language(path, content);
         let grammar = if content.len() > MAX_HIGHLIGHT_BYTES {
             "text"
@@ -388,7 +418,7 @@ impl RemoteEditorWorkspace {
                 })
                 .soft_wrap(false)
                 .default_value(value);
-            state.set_highlighter_factory(highlighter_factory(BracketPools::PerKind), cx);
+            state.set_highlighter_factory(remote_editor_highlighters(), cx);
             state.set_readonly(readonly, cx);
             state
         });
@@ -401,11 +431,21 @@ impl RemoteEditorWorkspace {
                 document.dirty = text.as_ref() != document.saved_content;
                 document.conflict = false;
                 this.handle.dirty.set(this.has_dirty());
+                this.text_changed(&watched, cx);
                 cx.notify();
             }
         });
-        cx.observe(&editor, |_, _, cx| cx.notify()).detach();
-        (editor, events)
+        let observed = path.to_string();
+        cx.observe(&editor, move |this, editor, cx| {
+            let dark = cx.theme().mode.is_dark();
+            if let Some(document) = this.documents.get_mut(&observed) {
+                document.features.cursor_moved(&editor, dark, cx);
+            }
+            cx.notify();
+        })
+        .detach();
+        let features = DocumentFeatures::install(&editor, cx);
+        (editor, events, features)
     }
 
     /// Monaco's colors for the file's grammar. Restyling hands the editor a new token
@@ -431,8 +471,15 @@ impl RemoteEditorWorkspace {
         }
         document.styled = Some((dark, grammar));
         let base = muxus_ui::syntax::code_editor_style(dark, grammar);
+        let colors = MonacoColors::new(dark);
         let style = InputEditorStyle {
             fold_icon_renderer: Some(crate::util::code_editor::mouseover_fold_icons(dark)),
+            // Monaco's squiggles.
+            diagnostics: DiagnosticColors {
+                error: colors.error,
+                warning: colors.warning,
+                ..base.diagnostics
+            },
             ..base
         };
         editor.update(cx, |state, _| {
@@ -442,10 +489,10 @@ impl RemoteEditorWorkspace {
             // between them.
             // (GPUI sets the first line a pixel lower than Chrome does.)
             state.set_editor_paddings(Edges {
-                top: px(11.),
+                top: px(EDITOR_PADDING_TOP),
                 right: px(14.),
-                bottom: px(12.),
-                left: px(34.),
+                bottom: px(EDITOR_PADDING_BOTTOM),
+                left: px(EDITOR_PADDING_LEFT),
             });
         });
     }
@@ -461,7 +508,7 @@ impl RemoteEditorWorkspace {
     fn load(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
         let source = self.options.source.clone();
         if !self.documents.contains_key(&path) {
-            let (editor, events) = self.new_editor(&path, "", window, cx);
+            let (editor, events, features) = self.new_editor(&path, "", window, cx);
             self.documents.insert(
                 path.clone(),
                 Document {
@@ -478,6 +525,8 @@ impl RemoteEditorWorkspace {
                     crlf: false,
                     wrap: false,
                     styled: None,
+                    features,
+                    analysis: None,
                     _events: events,
                 },
             );
@@ -523,6 +572,7 @@ impl RemoteEditorWorkspace {
                         if let Some(document) = this.documents.get_mut(&task_path) {
                             document.dirty = false;
                         }
+                        this.text_changed(&task_path, cx);
                     }
                     Err(error) => document.error = Some(error.message),
                 }
@@ -818,6 +868,22 @@ impl RemoteEditorWorkspace {
                 cx.stop_propagation();
                 self.toggle_wrap(window, cx);
             }
+            (true, false, false, "g") => {
+                cx.stop_propagation();
+                self.open_goto_line(window, cx);
+            }
+            (false, true, true, "f") => {
+                cx.stop_propagation();
+                self.format_document(window, cx);
+            }
+            (false, false, false, "f8") => {
+                cx.stop_propagation();
+                self.next_problem(window, cx);
+            }
+            (false, false, false, "escape") if self.goto.is_some() => {
+                cx.stop_propagation();
+                self.close_goto_line(false, window, cx);
+            }
             _ => {}
         }
     }
@@ -933,6 +999,7 @@ impl RemoteEditorWorkspace {
                 .editor
                 .update(cx, |state, cx| state.set_highlighter(grammar, cx));
         }
+        self.text_changed(&path, cx);
         cx.notify();
     }
 
@@ -974,6 +1041,276 @@ impl RemoteEditorWorkspace {
             editor.update(cx, |state, cx| state.set_value(next, window, cx));
             cx.notify();
         }
+    }
+
+    // --- language features --------------------------------------------------------------------
+
+    /// The text of `path` changed: links, problems and highlights follow, at once for the
+    /// usual file and after typing pauses for a large one.
+    fn text_changed(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(document) = self.documents.get(path) else {
+            return;
+        };
+        if document.editor.read(cx).text().len() <= ANALYSIS_IMMEDIATE_BYTES {
+            self.analyze(path, cx);
+            return;
+        }
+        let watched = path.to_string();
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(ANALYSIS_DELAY).await;
+            let _ = this.update(cx, |this, cx| this.analyze(&watched, cx));
+        });
+        if let Some(document) = self.documents.get_mut(path) {
+            document.analysis = Some(task);
+        }
+    }
+
+    fn analyze(&mut self, path: &str, cx: &mut Context<Self>) {
+        let dark = cx.theme().mode.is_dark();
+        let Some(document) = self.documents.get(path) else {
+            return;
+        };
+        let first_line = document.editor.read(cx).text().slice_line(0).to_string();
+        let language = self.language(path, &first_line);
+        if let Some(document) = self.documents.get_mut(path) {
+            document.analysis = None;
+            let editor = document.editor.clone();
+            document.features.text_changed(&editor, &language, dark, cx);
+        }
+    }
+
+    /// Format Document (Shift+Alt+F, the status bar's `{ }`): the languages Monaco has a
+    /// formatter for here (JSON); the others are left as they are, as Monaco leaves them.
+    fn format_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.options.source.available() {
+            return;
+        }
+        let Some(path) = self.options.active_path.clone() else {
+            return;
+        };
+        let Some(document) = self.documents.get(&path) else {
+            return;
+        };
+        if document.loading {
+            return;
+        }
+        let text = document.editor.read(cx).value().to_string();
+        let first_line = text.lines().next().unwrap_or("");
+        if self.language(&path, first_line) != "json" {
+            return;
+        }
+        let options = FormatOptions {
+            tab_size: document.tab_size,
+            insert_spaces: !document.hard_tabs,
+        };
+        let formatted = format_json(&text, options);
+        if formatted == text {
+            return;
+        }
+        let editor = document.editor.clone();
+        let position = editor.read(cx).cursor_position();
+        editor.update(cx, |state, cx| {
+            // One edit, undone in one step.
+            state.select_all(window, cx);
+            state.replace(formatted, window, cx);
+            state.set_cursor_position(position, window, cx);
+        });
+    }
+
+    /// F8 (the status bar's problem count): the cursor moves to the next problem.
+    fn next_problem(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.options.active_path.clone() else {
+            return;
+        };
+        let Some(document) = self.documents.get(&path) else {
+            return;
+        };
+        let editor = document.editor.clone();
+        let offset = editor.read(cx).cursor();
+        if let Some(start) = document.features.next_problem(offset) {
+            let position = editor.read(cx).text().offset_to_position(start);
+            editor.update(cx, |state, cx| {
+                state.set_cursor_position(position, window, cx)
+            });
+        }
+    }
+
+    /// Go to Line (Ctrl/Cmd+G, the status bar's position).
+    fn open_goto_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(goto) = &self.goto {
+            let focus = goto.input.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            return;
+        }
+        let Some(path) = self.options.active_path.clone() else {
+            return;
+        };
+        let Some(document) = self.documents.get(&path) else {
+            return;
+        };
+        if document.loading || document.error.is_some() || self.options.terminal_shown {
+            return;
+        }
+        let scroll_before = document.editor.read(cx).scroll_offset();
+        let input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).default_value(":");
+            // Typing goes after the prefix.
+            state.set_selected_range(1..1, cx);
+            state
+        });
+        let events =
+            cx.subscribe_in(
+                &input,
+                window,
+                |this, _, event: &InputEvent, window, cx| match event {
+                    InputEvent::Change => this.preview_goto_line(cx),
+                    InputEvent::PressEnter { .. } => this.close_goto_line(true, window, cx),
+                    InputEvent::Blur => this.close_goto_line(false, window, cx),
+                    InputEvent::Focus => {}
+                },
+            );
+        let focus = input.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+        self.goto = Some(GotoLine {
+            path,
+            input,
+            target: GotoTarget {
+                line: None,
+                column: 1,
+                label: String::new(),
+            },
+            scroll_before,
+            _events: events,
+        });
+        self.preview_goto_line(cx);
+        cx.notify();
+    }
+
+    /// Show where the typed position leads: the line highlighted in the middle of the view.
+    fn preview_goto_line(&mut self, cx: &mut Context<Self>) {
+        let Some(goto) = self.goto.as_mut() else {
+            return;
+        };
+        let Some(document) = self.documents.get(&goto.path) else {
+            return;
+        };
+        let value = goto.input.read(cx).value().to_string();
+        let typed = muxus_core::js::js_trim(&value);
+        let typed = typed.strip_prefix(':').unwrap_or(typed);
+        let editor = document.editor.clone();
+        let state = editor.read(cx);
+        let text = state.text().to_string();
+        let lines: Vec<&str> = text
+            .split('\n')
+            .map(|line| line.strip_suffix('\r').unwrap_or(line))
+            .collect();
+        let target = parse_position(typed, &lines, document.tab_size);
+        let line_height = state.line_height().unwrap_or(px(18.));
+        let viewport = state.input_bounds().size.height;
+        let scroll_x = state.scroll_offset().x;
+        if let Some(line) = target.line {
+            // Revealed in the middle of the view (the line's band is the overlay's).
+            let top = px(EDITOR_PADDING_TOP) + line_height * (line - 1) as f32;
+            let y = ((viewport - line_height) / 2. - top).min(px(0.));
+            editor.update(cx, |state, cx| {
+                state.set_scroll_offset(muxus_ui::gpui_kit::point(scroll_x, y), cx)
+            });
+        }
+        goto.target = target;
+        cx.notify();
+    }
+
+    /// Enter goes to the position (nothing happens until one is typed); Escape and leaving
+    /// the field put the view back where it was.
+    fn close_goto_line(&mut self, accept: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if accept
+            && self
+                .goto
+                .as_ref()
+                .is_some_and(|goto| goto.target.line.is_none())
+        {
+            return;
+        }
+        let Some(goto) = self.goto.take() else {
+            return;
+        };
+        if let Some(document) = self.documents.get(&goto.path) {
+            let editor = document.editor.clone();
+            match goto.target.line.filter(|_| accept) {
+                Some(line) => editor.update(cx, |state, cx| {
+                    let position =
+                        Position::new((line - 1) as u32, (goto.target.column - 1) as u32);
+                    state.set_cursor_position(position, window, cx);
+                }),
+                None => editor.update(cx, |state, cx| {
+                    state.set_scroll_offset(goto.scroll_before, cx);
+                    state.focus(window, cx);
+                }),
+            }
+        }
+        cx.notify();
+    }
+
+    fn render_goto_line(&self, theme: &Theme) -> Option<AnyElement> {
+        let goto = self.goto.as_ref()?;
+        let colors = MonacoColors::new(theme.mode.is_dark());
+        let widget = div()
+            .w(relative(0.62))
+            .max_w(px(600.))
+            .p(px(6.))
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .rounded(px(6.))
+            .bg(colors.quick_input_background)
+            .shadow(vec![muxus_ui::gpui_kit::BoxShadow {
+                color: colors.widget_shadow,
+                offset: muxus_ui::gpui_kit::point(px(0.), px(0.)),
+                blur_radius: px(8.),
+                spread_radius: px(2.),
+                inset: false,
+            }])
+            .font_family(fonts::UI)
+            .text_size(px(13.))
+            .text_color(colors.quick_input_foreground)
+            .child(
+                div()
+                    .h(px(26.))
+                    .px(px(4.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(2.))
+                    .border_1()
+                    .border_color(colors.quick_input_border)
+                    .bg(colors.quick_input_field)
+                    .child(div().flex_1().min_w_0().child(Input::new(&goto.input))),
+            )
+            .child(
+                div()
+                    .h(px(22.))
+                    .px(px(11.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(3.))
+                    .bg(colors.quick_input_focus)
+                    .child(
+                        label(goto.target.label.clone())
+                            .size(13.)
+                            .line_height(22.)
+                            .color(colors.quick_input_focus_ink),
+                    ),
+            );
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(widget)
+                .into_any_element(),
+        )
     }
 
     // --- rendering --------------------------------------------------------------------------
@@ -1333,6 +1670,7 @@ impl RemoteEditorWorkspace {
             line: line as usize + 1,
             column: character as usize + 1,
             selected,
+            problems: document.features.problem_counts(),
             tab_size: document.tab_size,
             hard_tabs: document.hard_tabs,
             crlf: document.crlf,
@@ -1440,13 +1778,26 @@ impl RemoteEditorWorkspace {
                 "editor-status-position",
                 format!("Ln {}, Col {}", status.line, status.column),
             )
-            .tooltip(Tooltip::text("Go to line (Ctrl/Cmd+G)")),
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .tooltip(Tooltip::text("Go to line (Ctrl/Cmd+G)"))
+            .on_click(cx.listener(|this, _, window, cx| this.open_goto_line(window, cx))),
         );
         if status.selected > 0 {
             bar = bar.child(item(
                 "editor-status-selection",
                 format!("{} selected", status.selected),
             ));
+        }
+        let (errors, warnings) = status.problems;
+        if errors + warnings > 0 {
+            bar = bar.child(
+                item("editor-status-problems", format!("ⓧ {errors} △ {warnings}"))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .tooltip(Tooltip::text("Go to next problem (F8)"))
+                    .on_click(cx.listener(|this, _, window, cx| this.next_problem(window, cx))),
+            );
         }
         bar = bar.child(div().flex_1().min_w(px(8.)));
         let wrap = div()
@@ -1474,6 +1825,11 @@ impl RemoteEditorWorkspace {
             .when_disabled(readonly)
             .when_hoverable(!readonly, hover)
             .tooltip(Tooltip::text("Format document (Shift+Alt+F)"))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if !readonly {
+                    this.format_document(window, cx);
+                }
+            }))
             .child(text("{ }".into()));
         let indentation = if status.hard_tabs {
             "Tabs".to_string()
@@ -1641,6 +1997,8 @@ struct SelectWidths {
 struct StatusLine {
     line: usize,
     column: usize,
+    /// Errors and warnings.
+    problems: (usize, usize),
     selected: usize,
     tab_size: usize,
     hard_tabs: bool,
@@ -1763,9 +2121,24 @@ impl Render for RemoteEditorWorkspace {
                     )
             }
             Some(document) if !document.loading => {
-                let colors = MonacoColors::new(theme.mode.is_dark());
+                let dark = theme.mode.is_dark();
+                let colors = MonacoColors::new(dark);
+                let mut overlay = document.features.overlay_data(&document.editor, dark, cx);
+                overlay.previewed_line = self
+                    .goto
+                    .as_ref()
+                    .filter(|goto| Some(&goto.path) == active_path.as_ref())
+                    .and_then(|goto| goto.target.line)
+                    .map(|line| line - 1);
+                let frame = EditorFrame {
+                    padding_top: px(EDITOR_PADDING_TOP),
+                    padding_bottom: px(EDITOR_PADDING_BOTTOM),
+                    padding_left: px(EDITOR_PADDING_LEFT),
+                    font_size: px(13.),
+                };
                 body.child(
                     div()
+                        .relative()
                         .flex_1()
                         .min_h_0()
                         .bg(colors.background)
@@ -1773,7 +2146,17 @@ impl Render for RemoteEditorWorkspace {
                         .text_size(px(13.))
                         .line_height(px(18.))
                         .text_color(colors.foreground)
-                        .child(Editor::new(&document.editor)),
+                        // Under the text: the current line's box and the overview ruler;
+                        // over the gutter: the line box's gutter part.
+                        .child(under_text_layer(
+                            document.editor.clone(),
+                            overlay.clone(),
+                            frame,
+                            dark,
+                        ))
+                        .child(Editor::new(&document.editor))
+                        .child(gutter_layer(document.editor.clone(), overlay, frame, dark))
+                        .children(self.render_goto_line(&theme)),
                 )
                 .child(self.render_status(&theme, window, cx))
             }
