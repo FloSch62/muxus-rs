@@ -43,7 +43,7 @@ time limit are tested against real processes.
 |---|---|---|---|
 | Scripts dialog: saved scripts list, New, From file… (1 MB limit), Save / Save changes / Saved, Delete with confirmation | components/ScriptsDialog.tsx | done | |
 | Script editor (monospace, 10–16 rows) with the helper line | ScriptsDialog.tsx | done | |
-| Host picker "Run on (n of m SSH hosts)", All SSH hosts, Clear | ScriptsDialog.tsx | partial | picked hosts are chips above the search field instead of inside it |
+| Host picker "Run on (n of m SSH hosts)", All SSH hosts, Clear | ScriptsDialog.tsx | done | MUI `Autocomplete multiple` (`muxus_ui::widgets::autocomplete::Autocomplete::multiple`): picked hosts are small chips inside the search field before the input, wrapping onto more rows; a chip's delete icon or Backspace in the empty field removes one, the clear button all; picked hosts leave the list (`filterSelectedOptions`). Not ported: moving between chips with the arrow keys (`focusedItem`) |
 | Modes, batch size (digits only, picking batches), stop at the first failure (off for all at once), time limit in minutes (at most a week) | ScriptsDialog.tsx | done | |
 | Run button with the reason it is off | ScriptsDialog.tsx | done | `model::run_problem`, tested |
 | Unsaved changes ask before switching scripts or closing | ScriptsDialog.tsx | done | |
