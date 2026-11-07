@@ -669,6 +669,13 @@ impl GraphicsStore {
         self.placements.retain(|g| g.id != id);
     }
 
+    /// Muxus patch: remove a graphic by ID from the placements and the
+    /// scrollback (an image storage limit evicting the oldest images).
+    pub fn remove_graphic_everywhere(&mut self, id: u64) {
+        self.placements.retain(|g| g.id != id);
+        self.scrollback.retain(|g| g.id != id);
+    }
+
     /// Get graphics at a specific row
     pub fn graphics_at_row(&self, row: usize) -> Vec<&TerminalGraphic> {
         self.placements

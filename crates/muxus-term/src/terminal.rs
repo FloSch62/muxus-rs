@@ -89,6 +89,26 @@ pub struct ImagePlacement {
     pub z_index: i32,
 }
 
+/// The image storage of the visible tab, in MB (`ACTIVE_IMAGE_STORAGE_MB` in
+/// `TerminalViewImpl.tsx`).
+pub const ACTIVE_IMAGE_STORAGE_MB: f64 = 64.0;
+/// The image storage of a tab in the background, in MB.
+pub const BACKGROUND_IMAGE_STORAGE_MB: f64 = 16.0;
+
+/// Pixels a storage limit in MB holds (4 bytes a pixel; the addon accepts 0.5 MB to 1 GB).
+fn image_pixel_limit(megabytes: f64) -> usize {
+    (megabytes.clamp(0.5, 1000.0) / 4.0 * 1_000_000.0) as usize
+}
+
+fn stored_image_pixels(core: &Core) -> usize {
+    core.all_graphics()
+        .iter()
+        .chain(core.all_scrollback_graphics())
+        .filter(|graphic| !graphic.is_virtual)
+        .map(|graphic| graphic.width * graphic.height)
+        .sum()
+}
+
 /// Settings a terminal is created with.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EmulatorConfig {
@@ -248,6 +268,8 @@ pub struct Emulator {
     scrollback_limit: usize,
     /// A received LF also returns to the start of the line (a host's implicit CR).
     implicit_cr: bool,
+    /// Pixels the stored images may hold (the image addon's `storageLimit`).
+    image_pixel_limit: usize,
 }
 
 impl std::fmt::Debug for Emulator {
@@ -296,6 +318,7 @@ impl Emulator {
             image_tops: HashMap::new(),
             scrollback_limit: config.scrollback,
             implicit_cr: false,
+            image_pixel_limit: image_pixel_limit(ACTIVE_IMAGE_STORAGE_MB),
         };
         emulator.init_pen();
         emulator.apply_palette();
@@ -383,6 +406,67 @@ impl Emulator {
 
     pub fn scrollback_limit(&self) -> usize {
         self.scrollback_limit
+    }
+
+    /// Change the scrollback size of the running terminal (xterm's `options.scrollback`). A
+    /// smaller size drops the oldest lines as trimming does, so absolute line numbers hold.
+    pub fn set_scrollback_limit(&mut self, lines: usize) {
+        if lines == self.scrollback_limit {
+            return;
+        }
+        let before = self.lines_trimmed();
+        self.scrollback_limit = lines;
+        self.core.set_max_scrollback(lines);
+        self.after_change(before);
+    }
+
+    /// How much image data the terminal keeps, in MB (the image addon's `storageLimit`:
+    /// 4 bytes a pixel). The oldest images go first when new ones need the room, and when the
+    /// limit shrinks.
+    pub fn set_image_storage_limit(&mut self, megabytes: f64) {
+        let limit = image_pixel_limit(megabytes);
+        if limit == self.image_pixel_limit {
+            return;
+        }
+        self.image_pixel_limit = limit;
+        self.enforce_image_limit();
+        self.track_images();
+    }
+
+    /// The image storage limit in MB.
+    pub fn image_storage_limit(&self) -> f64 {
+        self.image_pixel_limit as f64 * 4.0 / 1_000_000.0
+    }
+
+    /// Image data held, in MB (the image addon's `storageUsage`).
+    pub fn image_storage_usage(&self) -> f64 {
+        stored_image_pixels(&self.core) as f64 * 4.0 / 1_000_000.0
+    }
+
+    /// The image addon's `_evictOldest`: drop the oldest images until the rest fit the limit.
+    /// The newest image always stays, as the addon stores it after making room.
+    fn enforce_image_limit(&mut self) {
+        let mut images: Vec<(u64, usize)> = self
+            .core
+            .all_graphics()
+            .iter()
+            .chain(self.core.all_scrollback_graphics())
+            .filter(|graphic| !graphic.is_virtual)
+            .map(|graphic| (graphic.id, graphic.width * graphic.height))
+            .collect();
+        let mut stored: usize = images.iter().map(|(_, pixels)| pixels).sum();
+        if stored <= self.image_pixel_limit {
+            return;
+        }
+        images.sort_by_key(|(id, _)| *id);
+        let store = self.core.graphics_store_mut();
+        for (id, pixels) in &images[..images.len() - 1] {
+            if stored <= self.image_pixel_limit {
+                break;
+            }
+            store.remove_graphic_everywhere(*id);
+            stored -= pixels;
+        }
     }
 
     // ---- geometry ------------------------------------------------------------------------
@@ -475,6 +559,7 @@ impl Emulator {
             self.display_offset += (after - before) as usize;
         }
         self.display_offset = self.display_offset.min(self.scrollback_len());
+        self.enforce_image_limit();
         self.track_images();
     }
 
@@ -1253,6 +1338,67 @@ mod tests {
             "the image scrolls into the scrollback with its line"
         );
         assert_eq!(images[0].line, 1);
+    }
+
+    fn kitty_image(id: u32, side: usize) -> String {
+        use base64::Engine;
+        let pixels = base64::engine::general_purpose::STANDARD.encode(vec![255u8; side * side * 4]);
+        format!("\x1b_Ga=T,i={id},f=32,s={side},v={side},C=1;{pixels}\x1b\\")
+    }
+
+    #[test]
+    fn keeps_images_within_the_storage_limit_dropping_the_oldest() {
+        let mut term = emulator(20, 4);
+        term.set_cell_size(8.0, 16.0);
+        assert_eq!(term.image_storage_limit(), ACTIVE_IMAGE_STORAGE_MB);
+        // Three images of 250×250 pixels: 0.25 MB each.
+        for id in 1..=3 {
+            term.write(kitty_image(id, 250).as_bytes());
+        }
+        assert_eq!(term.images().len(), 3);
+        assert!((term.image_storage_usage() - 0.75).abs() < 1e-9);
+        // The smallest limit the addon takes holds two of them: the oldest goes.
+        term.set_image_storage_limit(0.5);
+        let ids: Vec<u64> = term.images().iter().map(|image| image.id).collect();
+        assert_eq!(ids.len(), 2);
+        let newest = *ids.iter().max().unwrap();
+        // A new image makes room by dropping the oldest again.
+        term.write(kitty_image(4, 250).as_bytes());
+        let after: Vec<u64> = term.images().iter().map(|image| image.id).collect();
+        assert_eq!(after.len(), 2);
+        assert!(after.contains(&newest));
+        assert!(!after.contains(&ids.iter().copied().min().unwrap()));
+        // An image larger than the whole limit is still shown, alone.
+        term.write(kitty_image(5, 400).as_bytes());
+        assert_eq!(term.images().len(), 1);
+        assert_eq!(term.images()[0].width, 400);
+        // A background tab's limit is a quarter of the visible one's.
+        assert_eq!(BACKGROUND_IMAGE_STORAGE_MB * 4.0, ACTIVE_IMAGE_STORAGE_MB);
+    }
+
+    #[test]
+    fn changes_the_scrollback_size_of_a_running_terminal() {
+        let mut term = emulator(10, 3);
+        for i in 0..50 {
+            term.write(format!("{i}\r\n").as_bytes());
+        }
+        assert_eq!(term.scrollback_len(), 48);
+        let trimmed = term.lines_trimmed();
+        term.scroll_to_top();
+        term.set_scrollback_limit(10);
+        assert_eq!(term.scrollback_limit(), 10);
+        assert_eq!(term.scrollback_len(), 10);
+        // The dropped lines count as trimmed; the viewport stays inside the buffer.
+        assert_eq!(term.lines_trimmed(), trimmed + 38);
+        assert_eq!(term.display_offset(), 10);
+        assert_eq!(line_text(&term, 0).unwrap(), "38");
+        // More scrollback keeps what is there and lets more in.
+        term.set_scrollback_limit(100);
+        for i in 50..70 {
+            term.write(format!("{i}\r\n").as_bytes());
+        }
+        assert_eq!(term.scrollback_len(), 30);
+        assert_eq!(line_text(&term, 0).unwrap(), "38");
     }
 
     #[test]
