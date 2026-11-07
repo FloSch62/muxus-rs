@@ -3,12 +3,15 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 use muxus_core::stream::{TerminalSize, TransportChannels, TransportEvent, TransportInput};
+#[cfg(unix)]
+use muxus_local::pty::spawn_local_pty;
 use muxus_local::pty::{
-    LocalEnvironment, local_pty_args, local_shell_prompt_ready, local_startup_input,
-    plan_local_pty, spawn_local_pty,
+    LocalEnvironment, local_pty_args, local_shell_prompt_ready, local_startup_input, plan_local_pty,
 };
 use muxus_local::shell_integration::write_integration_files;
 use muxus_local::{LocalProfile, Platform};
@@ -134,12 +137,15 @@ fn enters_a_container_instead_of_starting_a_shell() {
     assert_eq!(plan.env["ZDOTDIR"], "/home/u/.config/zsh");
 }
 
+// The live sessions run on Unix only.
+#[cfg(unix)]
 struct Collected {
     output: String,
     exit: Option<TransportEvent>,
 }
 
 /// Read events until `until` matches the output or the session ends.
+#[cfg(unix)]
 fn collect(
     channels: &TransportChannels,
     until: impl Fn(&str) -> bool,
@@ -172,6 +178,7 @@ fn collect(
     Collected { output, exit: None }
 }
 
+#[cfg(unix)]
 fn size() -> TerminalSize {
     TerminalSize {
         cols: 100,

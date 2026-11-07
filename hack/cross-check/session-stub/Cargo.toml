@@ -1,0 +1,9 @@
+# The one `muxus_session` item the included modules name.
+[package]
+name = "muxus-session-stub"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "muxus_session"

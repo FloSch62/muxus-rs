@@ -12,6 +12,7 @@ muxus-store.workspace = true
 muxus-ssh.workspace = true
 muxus-local.workspace = true
 muxus-mgmt.workspace = true
+muxus-os.workspace = true
 muxus-telnet.workspace = true
 muxus-serial.workspace = true
 muxus-rdp.workspace = true

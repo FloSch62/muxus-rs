@@ -68,13 +68,13 @@ CARGO_TARGET_DIR=target-core cargo test -p muxus-store --test vault -- --ignored
 | Credential refs, vault header, sealed values | database.ts | done | WAL checkpoint / VACUUM after deletes, as in TypeScript |
 | `assertSecretFree` | database.ts | done | |
 | Password vault (crypto, policies, secrets) | server/src/security/password-vault.ts | done | scrypt + AES-256-GCM + HMAC key check; TypeScript vaults open in Rust and Rust vaults open in TypeScript (fixtures + `verify.mts`) |
-| OS credential store | server/src/security/vault-key-store.ts | partial | same service/account and the same store crates as `@napi-rs/keyring` (Secret Service, then keyutils); the real-keyring smoke test is opt-in (`MUXUS_OS_KEYRING_SMOKE=1`) and was not run; macOS/Windows backends not compiled here |
+| OS credential store | server/src/security/vault-key-store.ts | partial | same service/account and the same store crates as `@napi-rs/keyring` (Secret Service, then keyutils; Keychain on macOS, Credential Manager on Windows); the real-keyring smoke test is opt-in (`MUXUS_OS_KEYRING_SMOKE=1`) and was not run; the macOS and Windows backends (`key_store.rs` with `apple-native-keyring-store` 1.0.2 / `windows-native-keyring-store` 1.1.0) are clippy-clean for `x86_64-apple-darwin` and `x86_64-pc-windows-gnu` through `hack/cross-check.sh`, never run there |
 | Typing vault secrets | server/src/security/vault-secret-input.ts | done | writers are closures; `TerminalInputs` lives in muxus-session |
 | Development database seeding | electron/src/development-database.ts | done | backup API, vault id namespacing, key copy |
 | Session history store (async facade, worker thread) | session-logging/history-store.ts | done | async-channel facade, failure listeners, 8 MiB backpressure |
 | History root storage (schema, .muxlog segments, zstd, trash) | session-logging/history-worker.js | done | byte-compatible both ways, checked against the TypeScript build |
 | History search, preview window, cursors, raw export | history-worker.js | done | FTS prefix, snippet markers, match counts, context anchoring |
-| History retention, quota and maintenance | history-worker.js | done | same thresholds and warning text; Windows disk space not built here |
+| History retention, quota and maintenance | history-worker.js | done | same thresholds and warning text; the Windows disk space (`GetDiskFreeSpaceExW`, `disk.rs`) is clippy-clean for `x86_64-pc-windows-gnu` through `hack/cross-check.sh`, never run there |
 | Crash recovery and v6 legacy import | history-worker.js | done | then `Database::finalize_session_history_separation` |
 | `client-state.json` store | electron/src/main.ts | done | key order, 0600, tmp + rename |
 | Prefs envelope + rehydrate | client/src/state/prefs.ts, zustand persist | done | byte-equal golden cases (v0, v8, v15, v17, v18, none, bad JSON, empty) |

@@ -2,11 +2,11 @@
 //! `electron/src/launch-menu.ts`): a new window and the recent hosts and workspaces, each
 //! opened again through the command line (`--host`, `--workspace`, `--new-window`).
 //!
-//! This is the menus' content only. Handing it to the platform (GPUI's `update_jump_list` and
-//! `set_dock_menu`) cannot be built or run on Linux and is not wired yet.
+//! This is the menus' content; `launch_menu_os` hands it to the platform.
 
 use muxus_core::api::{CommandLineLaunch, SavedHostProfile, SshHostEntry, WorkspaceSummary};
 use muxus_import::locale_compare;
+pub use muxus_os::jump_list::{JumpListCategory, JumpListTask};
 
 /// electron-builder's appId, which the installer stamps on its shortcuts. The windows and the
 /// jump list must carry it to belong to that taskbar entry.
@@ -173,36 +173,6 @@ pub fn windows_argument(value: &str) -> String {
 pub struct JumpListLauncher {
     pub program: String,
     pub args: Vec<String>,
-}
-
-/// One jump list entry (`app.setJumpList`'s task).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JumpListTask {
-    pub title: String,
-    pub description: String,
-    pub program: String,
-    pub args: String,
-    pub icon_path: String,
-    pub icon_index: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum JumpListCategory {
-    Custom {
-        name: String,
-        items: Vec<JumpListTask>,
-    },
-    Tasks {
-        items: Vec<JumpListTask>,
-    },
-}
-
-impl JumpListCategory {
-    pub fn items(&self) -> &[JumpListTask] {
-        match self {
-            Self::Custom { items, .. } | Self::Tasks { items } => items,
-        }
-    }
 }
 
 fn launch_flag(launch: &CommandLineLaunch) -> String {

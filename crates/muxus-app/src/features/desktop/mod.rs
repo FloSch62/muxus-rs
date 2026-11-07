@@ -22,11 +22,16 @@
 //!    installs from its own `on_app_quit` handler.
 //! 5. Windows set the Wayland app id / X11 class to [`APP_ID`], so the desktop file and its
 //!    icon belong to them.
+//! 6. On Windows and macOS ([`launch_menu_os::launch_menu_kind`]): before the first window,
+//!    [`launch_menu_os::set_app_user_model_id`]; once the backend runs,
+//!    [`launch_menu_os::start_launch_menu`] keeps the taskbar jump list or the Dock menu up to
+//!    date, its Dock entries delivered like the launches of step 3.
 
 pub mod app_menu;
 pub mod events;
 pub mod launch;
 pub mod launch_menu;
+pub mod launch_menu_os;
 pub mod links_view;
 pub mod main_log;
 pub mod single_instance;
