@@ -33,6 +33,7 @@ fn layers() -> BTreeMap<&'static str, u8> {
         ("muxus-vnc", 2),
         ("muxus-mgmt", 2),
         ("muxus-import", 2),
+        ("muxus-os", 2),
         ("muxus-term", 2),
         ("muxus-session", 3),
         ("muxus-ui", 4),

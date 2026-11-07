@@ -6025,6 +6025,7 @@ dependencies = [
  "muxus-import",
  "muxus-local",
  "muxus-mgmt",
+ "muxus-os",
  "muxus-session",
  "muxus-ssh",
  "muxus-store",
@@ -6144,6 +6145,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "muxus-os"
+version = "0.11.1"
+dependencies = [
+ "libc",
+ "muxus-core",
+ "windows 0.62.2",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "muxus-rdp"
 version = "0.11.1"
 dependencies = [
@@ -6199,6 +6210,7 @@ dependencies = [
  "muxus-core",
  "muxus-local",
  "muxus-mgmt",
+ "muxus-os",
  "muxus-rdp",
  "muxus-serial",
  "muxus-ssh",

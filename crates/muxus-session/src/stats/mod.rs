@@ -542,8 +542,17 @@ where
     })
 }
 
-/// Read the machine local terminals run on.
+/// Read the machine local terminals run on. Windows has no `sh`: everything comes from the
+/// system (`muxus_os::machine`, Node's `os` module in TS). Elsewhere the script runs locally,
+/// and a reading without CPU time (macOS has no cumulative counters in the script) takes it
+/// from the system too.
 pub async fn read_local_host_stats() -> HostStatsSample {
+    #[cfg(windows)]
+    {
+        tokio::task::spawn_blocking(muxus_os::machine::windows_host_stats)
+            .await
+            .unwrap_or_default()
+    }
     #[cfg(unix)]
     {
         use std::process::Stdio;
@@ -569,17 +578,15 @@ pub async fn read_local_host_stats() -> HostStatsSample {
             }
             Err(_) => HostStatsSample::default(),
         };
+        muxus_os::machine::fill_cpu_time(&mut sample);
         if sample.hostname.is_none() {
             sample.hostname = local_hostname();
         }
         sample
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
-        HostStatsSample {
-            hostname: std::env::var("COMPUTERNAME").ok(),
-            ..HostStatsSample::default()
-        }
+        HostStatsSample::default()
     }
 }
 
