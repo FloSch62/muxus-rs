@@ -8,7 +8,6 @@ edition = "2021"
 rust-version = "1.99"
 authors = ["Paul Robello <probello@gmail.com>"]
 description = "Terminal emulator core for par-term-emu-core-rust: VT100-VT520 state machine, grid, PTY session, Sixel/iTerm2/Kitty graphics, screenshot renderer"
-readme = "DESIGN.md"
 license = "MIT"
 repository = "https://github.com/paulrobello/par-term-emu-core-rust"
 homepage = "https://github.com/paulrobello/par-term-emu-core-rust"
@@ -25,7 +24,6 @@ semver = { version = "1", optional = true }
 tempfile = { version = "3.27", optional = true }
 vte = "0.15.0"
 unicode-width = "0.2.2"
-portable-pty = { version = "0.9.0", optional = true }
 base64 = "0.22.1"
 smallvec = "1.13.0"
 bitflags = "2.13.0"
@@ -76,7 +74,7 @@ self-update = ["dep:sha2", "dep:semver", "dep:tempfile"]
 # Terminal-to-image renderer (embedded fonts + swash).
 screenshot = ["dep:swash"]
 # Real PTY backend (PtySession).
-pty_session = ["dep:portable-pty"]
+pty_session = []
 # Serde derives on the replay-snapshot types (par-mux persistence format).
 serde = ["smallvec/serde", "bitflags/serde"]
 # `Macro::{save_yaml, load_yaml, to_yaml, from_yaml}`.
