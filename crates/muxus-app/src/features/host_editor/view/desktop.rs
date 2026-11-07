@@ -93,7 +93,15 @@ pub(super) fn gateway_field<V: Form>(
     let suggestions: Vec<Suggestion> = options
         .iter()
         .map(|(key, label, detail, _)| {
-            Suggestion::new(key.clone(), label.clone()).detail(detail.clone())
+            // Carrying a connection through a host needs the built-in client.
+            let unavailable = super::gateway_route::gateway_unavailable(data, key);
+            Suggestion::new(key.clone(), label.clone())
+                .detail(if unavailable {
+                    crate::hosts::system_openssh::SYSTEM_OPENSSH_UNAVAILABLE.to_owned()
+                } else {
+                    detail.clone()
+                })
+                .disabled(unavailable)
         })
         .collect();
     let on_change = Rc::new(on_change);
@@ -317,8 +325,6 @@ impl HostEditor {
     ) -> AnyElement {
         let theme = *cx.theme();
         let rdp = self.kind == SavedHostKind::Rdp;
-        let data = self.data.clone();
-        let gateway = self.desktop.ssh_gateway.clone();
         stack(2.)
             .child(intro(
                 &theme,
@@ -328,10 +334,24 @@ impl HostEditor {
                     if rdp { "Remote Desktop" } else { "VNC" }
                 ),
             ))
-            .child(gateway_field(self, "desktop-gateway", "SSH gateway", gateway.as_ref(), &data, window, cx, |this, gateway, cx| {
-                this.desktop.ssh_gateway = gateway;
-                this.changed(cx);
-            }))
+            .child(self.gateway_route_field(
+                "desktop-gateway",
+                "SSH gateway",
+                super::gateway_route::GatewayRoute {
+                    get: |this| {
+                        (
+                            this.desktop.ssh_gateway.clone(),
+                            this.desktop.ssh_gateway_fallbacks.clone(),
+                        )
+                    },
+                    set: |this, gateway, fallbacks| {
+                        this.desktop.ssh_gateway = gateway;
+                        this.desktop.ssh_gateway_fallbacks = fallbacks;
+                    },
+                },
+                window,
+                cx,
+            ))
             .into_any_element()
     }
 

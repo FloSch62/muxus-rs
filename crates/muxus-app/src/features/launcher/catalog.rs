@@ -521,7 +521,7 @@ pub fn build_catalog_results(input: CatalogInput<'_>) -> Vec<LauncherResult> {
         .collect();
     for tunnel in input.tunnels {
         let running = running_by_tunnel.get(tunnel.id.as_str()).copied();
-        results.push(result(
+        let mut entry = result(
             format!("tunnel:{}", tunnel.id),
             tunnel.name.clone().unwrap_or_else(|| tunnel.target.clone()),
             format!("{} · {}", tunnel_state(running), describe_tunnel(tunnel)),
@@ -537,7 +537,12 @@ pub fn build_catalog_results(input: CatalogInput<'_>) -> Vec<LauncherResult> {
                 tunnel: tunnel.clone(),
                 running: running.cloned(),
             },
-        ));
+        );
+        // A running tunnel can always be stopped.
+        entry.disabled_reason = (running.is_none()
+            && crate::hosts::system_openssh::tunnel_uses_system_open_ssh(tunnel, input.ssh_hosts))
+        .then(|| crate::hosts::system_openssh::SYSTEM_OPENSSH_UNAVAILABLE.into());
+        results.push(entry);
     }
 
     results
@@ -635,6 +640,9 @@ pub enum BreakState {
     None,
     Waiting,
     Ready,
+    /// A system OpenSSH session: `ssh` only sends BREAK through an escape sequence, which its
+    /// sessions here turn off.
+    SystemOpenSsh,
 }
 
 impl BreakState {
@@ -650,6 +658,9 @@ impl BreakState {
         });
         if !supports {
             return BreakState::None;
+        }
+        if tab.system_open_ssh == Some(true) {
+            return BreakState::SystemOpenSsh;
         }
         // An SSH console that has printed nothing yet still counts: a silent
         // console is exactly when BREAK is wanted.
@@ -737,7 +748,13 @@ pub fn build_action_results(
         "Browse files over SFTP for the active SSH session",
         &["files", "upload", "download"],
     );
-    sftp.disabled_reason = (!active_ssh).then(|| "Select a connected SSH session first".into());
+    sftp.disabled_reason = (!active_ssh).then(|| {
+        if active_break == BreakState::SystemOpenSsh {
+            "Not available for this system OpenSSH session".into()
+        } else {
+            "Select a connected SSH session first".into()
+        }
+    });
     results.push(sftp);
     let mut find = action_result(
         LauncherAction::FindTerminal,
@@ -775,8 +792,12 @@ pub fn build_action_results(
                 chord: chords.first().cloned(),
             },
         );
-        entry.disabled_reason = (sends_break && active_break == BreakState::Waiting)
-            .then(|| "Wait for the session to connect first".into());
+        entry.disabled_reason = if sends_break && active_break == BreakState::SystemOpenSsh {
+            Some(crate::hosts::system_openssh::SYSTEM_OPENSSH_UNAVAILABLE.into())
+        } else {
+            (sends_break && active_break == BreakState::Waiting)
+                .then(|| "Wait for the session to connect first".into())
+        };
         results.push(entry);
     }
 

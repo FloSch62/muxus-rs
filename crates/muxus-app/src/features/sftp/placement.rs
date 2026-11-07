@@ -98,6 +98,8 @@ pub struct BrowserTabFacts {
     /// `connecting`, `connected`, `interrupted`, `closed`, `idle`.
     pub status: String,
     pub sftp_available: Option<bool>,
+    /// The session runs the computer's `ssh` program.
+    pub system_open_ssh: bool,
 }
 
 /// Why the sidebar's browser has no files to show for the active tab.
@@ -110,7 +112,11 @@ pub fn file_browser_unavailable_reason(tab: Option<&BrowserTabFacts>) -> &'stati
         return "Only SSH sessions have a file browser.";
     }
     if tab.sftp_available == Some(false) {
-        return "SFTP is turned off for this host.";
+        return if tab.system_open_ssh {
+            "The file browser is not available for this system OpenSSH session."
+        } else {
+            "SFTP is turned off for this host."
+        };
     }
     if tab.status == "connecting" {
         return "Waiting for the session to connect…";
@@ -341,6 +347,7 @@ mod tests {
     #[test]
     fn says_why_for_each_kind_of_tab() {
         let facts = |kind: Option<&str>, status: &str, sftp: Option<bool>| BrowserTabFacts {
+            system_open_ssh: false,
             profile_kind: kind.map(Into::into),
             status: status.into(),
             sftp_available: sftp,
@@ -361,6 +368,11 @@ mod tests {
             file_browser_unavailable_reason(Some(&facts(Some("ssh"), "connected", Some(false)))),
             "SFTP is turned off for this host."
         );
+        let system = BrowserTabFacts {
+            system_open_ssh: true,
+            ..facts(Some("ssh"), "connected", Some(false))
+        };
+        assert!(file_browser_unavailable_reason(Some(&system)).contains("system OpenSSH"));
         assert_eq!(
             file_browser_unavailable_reason(Some(&facts(Some("ssh"), "connecting", None))),
             "Waiting for the session to connect…"

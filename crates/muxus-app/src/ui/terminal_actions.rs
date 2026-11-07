@@ -4,6 +4,7 @@
 //! (`keymap/commands.ts`), clipboard paste with its preview, and exports.
 
 use muxus_app::export::export_filename;
+use muxus_app::hosts::system_openssh::SystemOpenSshMenuItem;
 use muxus_app::keymap::bindings::KeybindingOverrides;
 use muxus_app::keymap::hints::chord_label;
 use muxus_app::model::{ProfileKind, SessionProfile};
@@ -289,7 +290,12 @@ impl AppShell {
                 .map(SessionProfile::kind),
             Some(ProfileKind::Serial | ProfileKind::Telnet | ProfileKind::Ssh)
         );
+        // `ssh` only sends BREAK through an escape sequence, which system OpenSSH sessions turn off.
+        let system_open_ssh = tab
+            .as_ref()
+            .is_some_and(|tab| tab.system_open_ssh == Some(true));
         let can_break = supports_break
+            && !system_open_ssh
             && tab.as_ref().is_some_and(|tab| {
                 tab.status == TabStatus::Connected
                     || (tab.status == TabStatus::Connecting && tab.conn_id.is_some())
@@ -369,6 +375,7 @@ impl AppShell {
                 MenuItem::new("send-break", "Send BREAK")
                     .icon("PowerInputOutlined")
                     .chord(chord("terminal.send-break"))
+                    .unavailable_with_system_open_ssh(system_open_ssh)
                     .disabled(!can_break)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.menu = None;

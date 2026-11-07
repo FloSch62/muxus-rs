@@ -4,11 +4,14 @@
 
 mod desktop;
 pub mod form;
+mod gateway_route;
 mod management;
 mod native;
+mod route_fallbacks;
 pub mod shared;
 mod ssh;
 pub mod ssh_access;
+mod system_openssh;
 mod terminal;
 
 pub use terminal::{custom_schemes, scheme_select, terminal_color_defaults};
@@ -69,6 +72,9 @@ pub struct NewHost {
     pub prefill_target: Option<String>,
     /// Name for the new host, e.g. when adding a gNMI host for an SSH one.
     pub prefill_name: Option<String>,
+    /// The SSH gateway a new gNMI or NETCONF host is reached through, carried over from the
+    /// SSH host's jump host.
+    pub prefill_gateway: Option<muxus_core::protocol::SshGateway>,
     pub group: Option<String>,
     pub kind: Option<SavedHostKind>,
 }
@@ -335,6 +341,9 @@ impl HostEditor {
                     && !name.is_empty()
                 {
                     self.management.name = name.clone();
+                }
+                if new.prefill_gateway.is_some() {
+                    self.management.ssh_gateway = new.prefill_gateway.clone();
                 }
             }
             HostEditorTarget::Edit(host) | HostEditorTarget::Duplicate(host) => {
@@ -680,7 +689,8 @@ impl HostEditor {
                         Some(
                             d.extras.len()
                                 + usize::from(d.disable_sftp)
-                                + usize::from(d.console_compatibility),
+                                + usize::from(d.console_compatibility)
+                                + usize::from(d.system_open_ssh),
                         ),
                     ),
                 ]

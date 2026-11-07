@@ -9,6 +9,7 @@ pub mod forwards;
 pub mod help;
 pub mod js;
 pub mod management_draft;
+pub mod management_prefill;
 pub mod native_draft;
 pub mod session_logging;
 pub mod tunnel;

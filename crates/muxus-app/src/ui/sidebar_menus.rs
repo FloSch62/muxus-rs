@@ -3,6 +3,7 @@
 //! item. Actions that open dialogs or write to the store go to the window as
 //! [`SidebarEvent::Action`].
 
+use muxus_app::features::host_editor::logic::management_prefill::management_host_prefill;
 use muxus_app::hosts::ManagedHost;
 use muxus_app::hosts::managed::{managed_host_copy_command, managed_host_supports_sftp};
 use muxus_app::hosts::tree::{
@@ -176,11 +177,21 @@ impl SessionSidebar {
                             )),
                     );
                 if managed_host_supports_sftp(&host) {
-                    paper = paper.child(
-                        MenuItem::new("host-sftp", "Open SFTP file browser")
-                            .icon("FolderOpenOutlined")
-                            .on_click(Self::action(SidebarAction::OpenSftp(host.clone()), cx)),
-                    );
+                    // Windows OpenSSH cannot share a login, so nothing runs beside its terminal.
+                    let system_on_windows =
+                        muxus_app::hosts::system_openssh::managed_host_uses_system_open_ssh(&host)
+                            && muxus_core::platform::Platform::current()
+                                == muxus_core::platform::Platform::Windows;
+                    let mut item = MenuItem::new("host-sftp", "Open SFTP file browser")
+                        .icon("FolderOpenOutlined")
+                        .disabled(system_on_windows)
+                        .on_click(Self::action(SidebarAction::OpenSftp(host.clone()), cx));
+                    if system_on_windows {
+                        item = item.detail(
+                            muxus_app::hosts::system_openssh::SYSTEM_OPENSSH_WINDOWS_UNAVAILABLE,
+                        );
+                    }
+                    paper = paper.child(item);
                 }
                 paper = paper
                     .child(
@@ -254,7 +265,11 @@ impl SessionSidebar {
                             MenuItem::new("host-gnmi", "Add gNMI host for it…")
                                 .icon("SensorsOutlined")
                                 .on_click(Self::action(
-                                    SidebarAction::NewHost(management_host_for(&host, true)),
+                                    SidebarAction::NewHost(management_host_prefill(
+                                        &host,
+                                        true,
+                                        &self.catalog.profiles,
+                                    )),
                                     cx,
                                 )),
                         )
@@ -262,7 +277,11 @@ impl SessionSidebar {
                             MenuItem::new("host-netconf", "Add NETCONF host for it…")
                                 .icon("AccountTreeOutlined")
                                 .on_click(Self::action(
-                                    SidebarAction::NewHost(management_host_for(&host, false)),
+                                    SidebarAction::NewHost(management_host_prefill(
+                                        &host,
+                                        false,
+                                        &self.catalog.profiles,
+                                    )),
                                     cx,
                                 )),
                         );
@@ -517,74 +536,5 @@ impl SessionSidebar {
             let _ = sidebar.update(cx, |this, cx| this.close_menu(cx));
         };
         menu::popup(position, dismiss, paper).into_any_element()
-    }
-}
-
-/// `managementHostFor`: a new gNMI (`gnmi`) or NETCONF host for an SSH host, its address,
-/// user, folder and a name saying which protocol it speaks.
-fn management_host_for(host: &ManagedHost, gnmi: bool) -> NewHost {
-    let protocol = if gnmi { "gNMI" } else { "NETCONF" };
-    let kind = if gnmi {
-        muxus_app::model::SavedHostKind::Gnmi
-    } else {
-        muxus_app::model::SavedHostKind::Netconf
-    };
-    match host {
-        ManagedHost::Ssh(entry) => {
-            let target = if gnmi {
-                entry.resolved.hostname.clone()
-            } else {
-                entry.alias.clone()
-            };
-            let user = entry
-                .resolved
-                .user
-                .as_deref()
-                .map(|user| format!("{user}@"))
-                .unwrap_or_default();
-            NewHost {
-                prefill_target: Some(format!("{user}{target}")),
-                prefill_name: Some(format!(
-                    "{} ({protocol})",
-                    muxus_app::hosts::managed::managed_host_display_name(host)
-                )),
-                group: entry.metadata.as_ref().and_then(|m| m.group.clone()),
-                kind: Some(kind),
-            }
-        }
-        ManagedHost::Profile(entry) => {
-            let (address, user) = match &entry.profile {
-                muxus_app::model::SavedHostSessionProfile::Ssh(profile) => {
-                    let address = match profile.target.split_once('@') {
-                        Some((_, rest)) => rest.to_string(),
-                        None => profile.target.clone(),
-                    };
-                    let user = profile.user.clone().or_else(|| {
-                        profile
-                            .target
-                            .split_once('@')
-                            .map(|(user, _)| user.to_string())
-                    });
-                    (address, user)
-                }
-                _ => (String::new(), None),
-            };
-            let parts: Vec<&str> = address.split(':').collect();
-            let target = if parts.len() == 2 {
-                parts[0].to_string()
-            } else {
-                address.clone()
-            };
-            let user = user.map(|user| format!("{user}@")).unwrap_or_default();
-            NewHost {
-                prefill_target: Some(format!("{user}{target}")),
-                prefill_name: Some(format!(
-                    "{} ({protocol})",
-                    muxus_app::hosts::managed::managed_host_display_name(host)
-                )),
-                group: entry.metadata.group.clone(),
-                kind: Some(kind),
-            }
-        }
     }
 }

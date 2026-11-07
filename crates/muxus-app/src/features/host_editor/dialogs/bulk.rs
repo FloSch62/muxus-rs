@@ -90,6 +90,7 @@ const SECTIONS: [(Section, &str, &str, &str, &[BulkHostField]); 6] = [
             BulkHostField::ForwardAgent,
             BulkHostField::ForwardX11,
             BulkHostField::ConsoleCompatibility,
+            BulkHostField::SystemOpenSsh,
             BulkHostField::DisableSftp,
         ],
     ),
@@ -620,6 +621,12 @@ impl BulkEditDialog {
                     &self.changes.disable_sftp,
                     &plan,
                 );
+                let system = self.field(
+                    BulkHostField::SystemOpenSsh,
+                    &summary.system_open_ssh,
+                    &self.changes.system_open_ssh,
+                    &plan,
+                );
                 let ssh_count = user.summary.count();
                 let hosts = self.hosts();
                 let open_ssh = hosts
@@ -777,6 +784,19 @@ impl BulkEditDialog {
                     .child(div().child(agent_select).children(self.status(&theme, BulkHostField::ForwardAgent, &agent, false, None, false, cx)))
                     .child(div().child(x11_select).children(self.status(&theme, BulkHostField::ForwardX11, &x11, false, None, false, cx)))
                     .child(divider(&theme))
+                    .child(
+                        div()
+                            .child(self.bulk_checkbox(
+                                &theme,
+                                "bulk-system-openssh",
+                                &system,
+                                "Use system OpenSSH",
+                                "Connects with this computer's ssh program, for authentication such as Kerberos (GSSAPI). Windows gets the terminal only; elsewhere the file browser, statistics and container listing work too.",
+                                |this, v, cx| this.set(BulkHostField::SystemOpenSsh, v, |s| &s.system_open_ssh, |c| &mut c.system_open_ssh, cx),
+                                cx,
+                            ))
+                            .children(self.status(&theme, BulkHostField::SystemOpenSsh, &system, false, None, false, cx)),
+                    )
                     .child(
                         div()
                             .child(self.bulk_checkbox(

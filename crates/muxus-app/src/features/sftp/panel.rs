@@ -71,6 +71,8 @@ pub struct SftpPanelOptions {
     pub opens_in_new_window: bool,
     /// Offer the "Follow terminal folder" box (`onFollowTerminalFolderChange`).
     pub follow_toggle: bool,
+    /// The terminal has no shell integration to report its folder with (system OpenSSH).
+    pub follow_terminal_folder_unavailable: bool,
     /// `sftpPanelWidth` preference.
     pub width: f32,
     /// `sidebarPosition === 'left'`: mirrors the move-to-sidebar glyph.
@@ -91,6 +93,7 @@ impl SftpPanelOptions {
             movable: false,
             opens_in_new_window: false,
             follow_toggle: false,
+            follow_terminal_folder_unavailable: false,
             width: DEFAULT_SFTP_PANEL_WIDTH,
             sidebar_on_left: true,
         }
@@ -2047,6 +2050,7 @@ impl Render for SftpPanel {
                     .child(
                         Checkbox::new("sftp-follow", follow)
                             .small()
+                            .disabled(self.options.follow_terminal_folder_unavailable)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.set_follow_terminal_folder(!follow, window, cx);
                                 cx.emit(SftpPanelEvent::FollowTerminalFolder(!follow));
