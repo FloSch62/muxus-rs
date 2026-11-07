@@ -1,15 +1,20 @@
 //! What Monaco draws around the text: the current line's box (`renderLineHighlight: 'all'`,
 //! `editor.lineHighlightBorder`) and the overview ruler on the right edge, where the cursor,
-//! occurrences and problems show for the whole document. The minimap (`autohide: 'mouseover'`)
-//! is not drawn, but its room is kept: the line box ends where it would start.
+//! occurrences and problems show for the whole document. The line box ends where the minimap
+//! (`minimap.rs`) starts.
 
+use std::cell::Cell;
 use std::ops::Range;
+use std::rc::Rc;
 
 use muxus_ui::gpui_kit::base::input::EditorState;
 use muxus_ui::gpui_kit::{
     App, Bounds, Entity, Hsla, IntoElement, Pixels, Styled, Window, canvas, fill, point, size,
 };
 use muxus_ui::syntax::MonacoColors;
+
+use super::minimap::{MinimapInput, minimap_geometry};
+use crate::util::code_editor::SharedProbe;
 
 /// The overview ruler's width (`verticalScrollbarSize`).
 pub const RULER_WIDTH: f32 = 14.;
@@ -18,9 +23,6 @@ const MIN_MARK_HEIGHT: f32 = 6.;
 const CURSOR_MARK_HEIGHT: f32 = 2.;
 /// `editor.lineHighlightBorder` is 2px wide.
 const LINE_BOX_BORDER: f32 = 2.;
-/// `minimap.maxColumn` and Monaco's gutter beside the minimap.
-const MINIMAP_MAX_COLUMN: f32 = 90.;
-const MINIMAP_GUTTER_WIDTH: f32 = 8.;
 
 /// A ruler lane. Monaco's ruler shows two lanes at the editor's width: occurrences on the
 /// left, problems on the right, the cursor across both.
@@ -144,22 +146,19 @@ pub fn minimap_width(
     map: &RulerMap,
     scale: f32,
 ) -> f32 {
-    let minimap_scale = if scale >= 2. { 2. } else { 1. };
-    let line_height_device = 3. * minimap_scale;
-    let extra_lines = ((map.padding_top + map.padding_bottom) / map.line_height.max(1.)).floor();
-    let fits = (line_count as f32 + extra_lines) * line_height_device <= map.height * scale;
-    let char_width_minimap = if fits {
-        minimap_scale / scale
-    } else {
-        1. / scale
-    };
-    let remaining = outer_width - content_left;
-    let max_width = (MINIMAP_MAX_COLUMN * char_width_minimap).floor();
-    let fitted = ((remaining - RULER_WIDTH - 2.) * char_width_minimap
-        / (char_width + char_width_minimap))
-        .floor()
-        .max(0.);
-    max_width.min(fitted + MINIMAP_GUTTER_WIDTH)
+    minimap_geometry(&MinimapInput {
+        outer_width,
+        outer_height: map.height,
+        content_left,
+        line_height: map.line_height,
+        char_width,
+        padding_top: map.padding_top,
+        padding_bottom: map.padding_bottom,
+        line_count,
+        pixel_ratio: scale,
+        scrollbar_width: RULER_WIDTH,
+    })
+    .width
 }
 
 /// The current line's boxes: the gutter part and, without a selection, the text part, as
@@ -192,7 +191,7 @@ pub fn line_boxes(
 }
 
 /// What the overlays need from the document besides the editor's own geometry.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct OverlayData {
     pub marks: Vec<Mark>,
     pub cursor_line: usize,
@@ -200,6 +199,12 @@ pub struct OverlayData {
     pub selection_empty: bool,
     /// The line Go to Line previews (0-based), banded across the editor.
     pub previewed_line: Option<usize>,
+    /// The highlighter's probe and the parse the problems come from: a parse made while the
+    /// editor rendered asks for another frame, so the problems follow it.
+    pub probe: Option<(SharedProbe, u64)>,
+    /// Where the minimap's width is reported for the next frame (the text and the problem
+    /// widget end where it starts).
+    pub minimap_room: Option<Rc<Cell<f32>>>,
 }
 
 /// The editor paddings the workspace sets (top, bottom, left), and the text's font size.
@@ -211,9 +216,20 @@ pub struct EditorFrame {
     pub font_size: Pixels,
 }
 
+/// The width of a digit of the editor's font (`typicalHalfwidthCharacterWidth`).
+pub fn char_width(frame: &EditorFrame, window: &mut Window) -> f32 {
+    muxus_ui::text::measure_text(
+        window,
+        "0",
+        muxus_ui::theme::fonts::MONO,
+        f32::from(frame.font_size) / muxus_ui::zoom::zoom(),
+        400.,
+    ) * muxus_ui::zoom::zoom()
+}
+
 /// Where the text starts: the paddings, the line numbers (three digits at least), the gap
 /// after them and the fold chevrons' column, as the engine lays the gutter out.
-fn content_left(frame: &EditorFrame, line_count: usize, window: &mut Window) -> f32 {
+pub fn content_left(frame: &EditorFrame, line_count: usize, window: &mut Window) -> f32 {
     let digits = (line_count.max(1).ilog10() as usize + 1).clamp(3, 7);
     let numbers = muxus_ui::text::measure_text(
         window,
@@ -304,17 +320,22 @@ pub fn under_text_layer(
                 padding_bottom: f32::from(frame.padding_bottom),
                 line_count: data.line_count,
             };
+            if let Some((probe, seen)) = &data.probe
+                && probe.borrow().version() != *seen
+            {
+                window.refresh();
+            }
             let left = content_left(&frame, data.line_count, window);
-            let char_width = muxus_ui::text::measure_text(
-                window,
-                "0",
-                muxus_ui::theme::fonts::MONO,
-                f32::from(frame.font_size) / muxus_ui::zoom::zoom(),
-                400.,
-            ) * muxus_ui::zoom::zoom();
+            let char_width = char_width(&frame, window);
             // The text area ends where the minimap's room starts.
-            let right =
-                width - minimap_width(width, left, char_width, data.line_count, &map, scale);
+            let minimap = minimap_width(width, left, char_width, data.line_count, &map, scale);
+            let right = width - minimap;
+            if let Some(room) = &data.minimap_room
+                && room.get() != minimap
+            {
+                room.set(minimap);
+                window.refresh();
+            }
             if let (Some(line), Some(geometry)) = (
                 data.previewed_line,
                 editor.read(cx).prepaint_caret_geometry(),

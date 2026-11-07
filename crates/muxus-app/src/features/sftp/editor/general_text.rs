@@ -21,7 +21,10 @@ use muxus_ui::gpui_kit::{Context, HighlightStyle, SharedString, Window};
 use regex_automata::{Anchored, Input, meta, util::syntax};
 
 use super::language::GENERAL_TEXT_LANGUAGE_ID;
-use crate::util::code_editor::{BracketColor, BracketPools, color_brackets, highlighter_factory};
+use crate::util::code_editor::{
+    BracketColor, BracketPools, SharedProbe, color_brackets, probe_highlighter,
+    probed_highlighter_factory,
+};
 
 /// What a rule makes of its match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -339,11 +342,15 @@ pub fn indentation_folds(lines: &[String], tab_size: usize) -> Vec<(usize, usize
 
 /// The remote editor's highlighters: General Text by its tokenizer, every other language by
 /// its tree-sitter grammar (brackets colored per kind, `independentColorPoolPerBracketType`).
-pub fn remote_editor_highlighters() -> InputHighlighterFactory {
-    let grammars = highlighter_factory(BracketPools::PerKind);
+/// Each parse is reported to `probe` (problem markers, the minimap).
+pub fn remote_editor_highlighters(probe: SharedProbe) -> InputHighlighterFactory {
+    let grammars = probed_highlighter_factory(BracketPools::PerKind, probe.clone());
     Rc::new(move |language: &str| {
         if language == GENERAL_TEXT_LANGUAGE_ID {
-            Some(Box::new(GeneralTextHighlighter::new()) as Box<dyn InputHighlighter>)
+            Some(probe_highlighter(
+                Box::new(GeneralTextHighlighter::new()),
+                &probe,
+            ))
         } else {
             grammars(language)
         }

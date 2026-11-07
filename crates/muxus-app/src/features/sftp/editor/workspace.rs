@@ -8,6 +8,7 @@
 //! highlighting); the chrome around it (file strip, header, conflict alert,
 //! status bar) and the save, dirty and conflict handling are the client's.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -36,16 +37,20 @@ use super::super::format::base_name;
 use super::super::icons::file_type_icon;
 use super::super::services::{notify, notify_error, services};
 use super::features::DocumentFeatures;
+use super::formatting::format_document;
 use super::general_text::remote_editor_highlighters;
 use super::goto_line::{GotoTarget, parse_position};
-use super::json::{FormatOptions, format_json};
 use super::language::{
     GENERAL_TEXT_LANGUAGE_ID, header_language_label, highlighter_language, language_for_path,
     language_label, language_options,
 };
-use super::overlays::{EditorFrame, gutter_layer, under_text_layer};
+use super::minimap::{MinimapFrame, SharedMinimap, minimap_layer};
+use super::overlays::{
+    EditorFrame, RULER_WIDTH, char_width, content_left, gutter_layer, under_text_layer,
+};
+use super::problem_widget::{WidgetActions, WidgetPlace, render_problem_widget};
 use super::registry::{RemoteEditorHandle, RemoteEditorRegistration, register_remote_editor};
-use crate::util::code_editor::MAX_HIGHLIGHT_BYTES;
+use crate::util::code_editor::{HighlighterProbe, MAX_HIGHLIGHT_BYTES, SharedProbe};
 use muxus_ui::syntax::MonacoColors;
 use muxus_ui::widgets::progress::CircularProgress;
 
@@ -70,6 +75,10 @@ impl EditorSource {
         *self == EditorSource::Local
     }
 }
+
+/// The front file's problem count (errors, warnings) and the problem F8's widget shows (its
+/// number from 1 and its start), as [`RemoteEditorWorkspace::problems`] reports them.
+pub type ProblemsInFront = ((usize, usize), Option<(usize, usize)>);
 
 /// What the workspace asks of the tab that holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,6 +142,9 @@ struct Document {
     styled: Option<(bool, &'static str)>,
     /// Links, highlights and problems (Monaco's language features).
     features: DocumentFeatures,
+    /// The minimap's hover, drag and drawn lines, and its width as the last frame laid it out.
+    minimap: SharedMinimap,
+    minimap_room: Rc<Cell<f32>>,
     /// A later look at a large text after typing pauses.
     analysis: Option<Task<()>>,
     _events: Subscription,
@@ -344,6 +356,23 @@ impl RemoteEditorWorkspace {
         self.options.active_path.as_deref()
     }
 
+    /// The file in front's problems (errors, warnings) and, while F8's widget is open, the
+    /// problem it shows (its number from 1, and its start).
+    pub fn problems(&self) -> Option<ProblemsInFront> {
+        let document = self.documents.get(self.options.active_path.as_ref()?)?;
+        let widget = document
+            .features
+            .widget()
+            .map(|widget| (widget.number, widget.marker.range.start));
+        Some((document.features.problem_counts(), widget))
+    }
+
+    /// The cursor's byte offset in the file in front.
+    pub fn cursor_offset(&self, cx: &App) -> Option<usize> {
+        let document = self.documents.get(self.options.active_path.as_ref()?)?;
+        Some(document.editor.read(cx).cursor())
+    }
+
     /// Whether any open file has unsaved changes.
     pub fn has_dirty(&self) -> bool {
         self.documents.values().any(|document| document.dirty)
@@ -409,6 +438,8 @@ impl RemoteEditorWorkspace {
         };
         let readonly = !self.options.source.available();
         let value = content.to_string();
+        let probe: SharedProbe = Rc::new(RefCell::new(HighlighterProbe::default()));
+        let factory_probe = probe.clone();
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .language(grammar)
@@ -418,7 +449,7 @@ impl RemoteEditorWorkspace {
                 })
                 .soft_wrap(false)
                 .default_value(value);
-            state.set_highlighter_factory(remote_editor_highlighters(), cx);
+            state.set_highlighter_factory(remote_editor_highlighters(factory_probe), cx);
             state.set_readonly(readonly, cx);
             state
         });
@@ -444,7 +475,7 @@ impl RemoteEditorWorkspace {
             cx.notify();
         })
         .detach();
-        let features = DocumentFeatures::install(&editor, cx);
+        let features = DocumentFeatures::install(&editor, probe, cx);
         (editor, events, features)
     }
 
@@ -526,6 +557,8 @@ impl RemoteEditorWorkspace {
                     wrap: false,
                     styled: None,
                     features,
+                    minimap: SharedMinimap::default(),
+                    minimap_room: Rc::new(Cell::new(0.)),
                     analysis: None,
                     _events: events,
                 },
@@ -876,13 +909,19 @@ impl RemoteEditorWorkspace {
                 cx.stop_propagation();
                 self.format_document(window, cx);
             }
-            (false, false, false, "f8") => {
+            // F8 / Shift+F8 (`marker.nextInFiles`/`prevInFiles`) and Alt+F8 / Shift+Alt+F8
+            // (`marker.next`/`prev`): one file, so the same walk.
+            (false, shift, _, "f8") => {
                 cx.stop_propagation();
-                self.next_problem(window, cx);
+                self.step_marker(!shift, window, cx);
             }
             (false, false, false, "escape") if self.goto.is_some() => {
                 cx.stop_propagation();
                 self.close_goto_line(false, window, cx);
+            }
+            (false, _, false, "escape") if self.problem_widget_open() => {
+                cx.stop_propagation();
+                self.close_problem_widget(window, cx);
             }
             _ => {}
         }
@@ -1079,8 +1118,8 @@ impl RemoteEditorWorkspace {
         }
     }
 
-    /// Format Document (Shift+Alt+F, the status bar's `{ }`): the languages Monaco has a
-    /// formatter for here (JSON); the others are left as they are, as Monaco leaves them.
+    /// Format Document (Shift+Alt+F, the status bar's `{ }`): the languages Monaco formats
+    /// here (JSON, CSS, SCSS, Less); the others are left as they are, as Monaco leaves them.
     fn format_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.options.source.available() {
             return;
@@ -1096,14 +1135,12 @@ impl RemoteEditorWorkspace {
         }
         let text = document.editor.read(cx).value().to_string();
         let first_line = text.lines().next().unwrap_or("");
-        if self.language(&path, first_line) != "json" {
+        let language = self.language(&path, first_line);
+        let Some(formatted) =
+            format_document(&language, &text, document.tab_size, !document.hard_tabs)
+        else {
             return;
-        }
-        let options = FormatOptions {
-            tab_size: document.tab_size,
-            insert_spaces: !document.hard_tabs,
         };
-        let formatted = format_json(&text, options);
         if formatted == text {
             return;
         }
@@ -1117,22 +1154,129 @@ impl RemoteEditorWorkspace {
         });
     }
 
-    /// F8 (the status bar's problem count): the cursor moves to the next problem.
-    fn next_problem(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// F8 / Shift+F8 (and the status bar's problem count, `editor.action.marker.next`): the
+    /// next or previous problem opens in Monaco's marker widget, with the cursor on it and
+    /// the view centered on it when it was out of sight.
+    fn step_marker(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = self.options.active_path.clone() else {
             return;
         };
-        let Some(document) = self.documents.get(&path) else {
+        let Some(document) = self.documents.get_mut(&path) else {
             return;
         };
-        let editor = document.editor.clone();
-        let offset = editor.read(cx).cursor();
-        if let Some(start) = document.features.next_problem(offset) {
-            let position = editor.read(cx).text().offset_to_position(start);
-            editor.update(cx, |state, cx| {
-                state.set_cursor_position(position, window, cx)
-            });
+        if document.loading || document.error.is_some() {
+            return;
         }
+        let editor = document.editor.clone();
+        let (offset, text) = {
+            let state = editor.read(cx);
+            (state.cursor(), state.text().to_string())
+        };
+        if document
+            .features
+            .step_marker(forward, offset, &text)
+            .is_none()
+        {
+            return;
+        }
+        let Some(position) = document.features.widget().map(|widget| widget.position) else {
+            return;
+        };
+        let (cursor, line, line_height, viewport, scroll) = {
+            let state = editor.read(cx);
+            (
+                state.text().offset_to_position(position),
+                state.text().offset_to_point(position).row,
+                state.line_height().unwrap_or(px(18.)),
+                state.input_bounds().size.height,
+                state.scroll_offset(),
+            )
+        };
+        let top = px(EDITOR_PADDING_TOP) + line_height * line as f32;
+        let visible = top + scroll.y >= px(0.) && top + scroll.y + line_height <= viewport;
+        editor.update(cx, |state, cx| {
+            state.set_cursor_position(cursor, window, cx);
+            if !visible && viewport > px(0.) {
+                // `revealPositionInCenterIfOutsideViewport`.
+                let y = ((viewport - line_height) / 2. - top).min(px(0.));
+                state.set_scroll_offset(muxus_ui::gpui_kit::point(scroll.x, y), cx);
+            }
+            state.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn problem_widget_open(&self) -> bool {
+        self.options
+            .active_path
+            .as_ref()
+            .and_then(|path| self.documents.get(path))
+            .is_some_and(|document| document.features.widget().is_some())
+    }
+
+    /// Escape, the widget's close button: the widget goes, the editor keeps the keyboard.
+    fn close_problem_widget(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(document) = self.active_document_mut()
+            && document.features.close_widget()
+        {
+            let editor = document.editor.clone();
+            editor.update(cx, |state, cx| state.focus(window, cx));
+            cx.notify();
+        }
+    }
+
+    /// The marker widget of the file in front, placed under its problem's line.
+    fn render_problem_widget(
+        &self,
+        frame: EditorFrame,
+        dark: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let path = self.options.active_path.as_ref()?;
+        let document = self.documents.get(path)?;
+        let widget = document.features.widget()?;
+        let state = document.editor.read(cx);
+        let line_height = state.line_height().unwrap_or(px(18.));
+        let point = state.text().offset_to_point(widget.position);
+        let scroll = state.scroll_offset();
+        let line_count = state.text().lines_len().max(1);
+        // The arrow points at the problem's column (the second when it is the first, as
+        // Monaco moves it there), tabs expanded.
+        let line_text = state.text().slice_line(point.row).to_string();
+        let mut column = 0usize;
+        for c in line_text[..point.column.min(line_text.len())].chars() {
+            column += if c == '\t' {
+                document.tab_size - column % document.tab_size.max(1)
+            } else {
+                1
+            };
+        }
+        let column = column.max(1);
+        let left = content_left(&frame, line_count, window);
+        let digit = char_width(&frame, window);
+        let place = WidgetPlace {
+            top: px(EDITOR_PADDING_TOP) + line_height * (point.row + 1) as f32 + scroll.y,
+            arrow_x: Pixels::from(left + column as f32 * digit) + scroll.x,
+            right: Pixels::from(document.minimap_room.get() + RULER_WIDTH),
+            line_height: 18.,
+        };
+        let actions = WidgetActions {
+            next: Box::new(cx.listener(|this, _, window, cx| this.step_marker(true, window, cx))),
+            previous: Box::new(
+                cx.listener(|this, _, window, cx| this.step_marker(false, window, cx)),
+            ),
+            close: Box::new(
+                cx.listener(|this, _, window, cx| this.close_problem_widget(window, cx)),
+            ),
+        };
+        Some(render_problem_widget(
+            widget,
+            base_name(path).to_string().into(),
+            place,
+            dark,
+            actions,
+        ))
     }
 
     /// Go to Line (Ctrl/Cmd+G, the status bar's position).
@@ -1796,7 +1940,9 @@ impl RemoteEditorWorkspace {
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
                     .tooltip(Tooltip::text("Go to next problem (F8)"))
-                    .on_click(cx.listener(|this, _, window, cx| this.next_problem(window, cx))),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.step_marker(true, window, cx)),
+                    ),
             );
         }
         bar = bar.child(div().flex_1().min_w(px(8.)));
@@ -2045,7 +2191,26 @@ impl Render for RemoteEditorWorkspace {
             && let Some(document) = self.documents.get(path)
         {
             let editor = document.editor.clone();
+            // The highlighter parsed a newly set grammar while the editor rendered: the
+            // problems follow that parse.
+            let reparsed =
+                document.features.probe_moved() && document.analysis.is_none() && !document.loading;
             self.style_editor(path, &editor, cx);
+            if reparsed {
+                self.analyze(path, cx);
+            }
+            // The text ends where the minimap starts (Monaco's content width).
+            if let Some(document) = self.documents.get(path) {
+                let right = Pixels::from(document.minimap_room.get() + RULER_WIDTH);
+                editor.update(cx, |state, _| {
+                    state.set_editor_paddings(Edges {
+                        top: px(EDITOR_PADDING_TOP),
+                        right,
+                        bottom: px(EDITOR_PADDING_BOTTOM),
+                        left: px(EDITOR_PADDING_LEFT),
+                    });
+                });
+            }
         }
         let mut root = div()
             .id("remote-editor")
@@ -2124,6 +2289,7 @@ impl Render for RemoteEditorWorkspace {
                 let dark = theme.mode.is_dark();
                 let colors = MonacoColors::new(dark);
                 let mut overlay = document.features.overlay_data(&document.editor, dark, cx);
+                overlay.minimap_room = Some(document.minimap_room.clone());
                 overlay.previewed_line = self
                     .goto
                     .as_ref()
@@ -2136,6 +2302,21 @@ impl Render for RemoteEditorWorkspace {
                     padding_left: px(EDITOR_PADDING_LEFT),
                     font_size: px(13.),
                 };
+                let minimap_frame = MinimapFrame {
+                    padding_top: f32::from(frame.padding_top),
+                    padding_bottom: f32::from(frame.padding_bottom),
+                    content_left: content_left(&frame, overlay.line_count, window),
+                    char_width: char_width(&frame, window),
+                    scrollbar_width: RULER_WIDTH,
+                };
+                let minimap = minimap_layer(
+                    document.editor.clone(),
+                    document.minimap.clone(),
+                    Rc::new(document.features.minimap_data(document.tab_size)),
+                    minimap_frame,
+                    dark,
+                );
+                let problem_widget = self.render_problem_widget(frame, dark, window, cx);
                 body.child(
                     div()
                         .relative()
@@ -2155,7 +2336,9 @@ impl Render for RemoteEditorWorkspace {
                             dark,
                         ))
                         .child(Editor::new(&document.editor))
+                        .child(minimap)
                         .child(gutter_layer(document.editor.clone(), overlay, frame, dark))
+                        .children(problem_widget)
                         .children(self.render_goto_line(&theme)),
                 )
                 .child(self.render_status(&theme, window, cx))
