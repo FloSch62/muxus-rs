@@ -28,7 +28,7 @@ A crate may depend only on crates in lower layers. `cargo xtask layering` enforc
 |---|---|---|
 | L0 | `muxus-core` | `shared/src` |
 | L1 | `muxus-store` | `server/src/persistence`, `server/src/security` (secret storage), settings/prefs |
-| L2 | `muxus-ssh`, `muxus-local`, `muxus-telnet`, `muxus-serial`, `muxus-rdp`, `muxus-vnc`, `muxus-mgmt`, `muxus-import`, `muxus-term` | `server/src/{ssh,forwards,x11,local,telnet,serial,remote-desktop,management}`, client import modules, `client/src/terminal` |
+| L2 | `muxus-ssh`, `muxus-local`, `muxus-telnet`, `muxus-serial`, `muxus-rdp`, `muxus-vnc`, `muxus-mgmt`, `muxus-import`, `muxus-term`, `muxus-os` | `server/src/{ssh,forwards,x11,local,telnet,serial,remote-desktop,management}`, client import modules, `client/src/terminal`; `muxus-os`: the Windows/macOS calls Node and Electron made (`os.cpus()`, `app.setJumpList`) |
 | L3 | `muxus-session` | `server/src/{ws,routes,session-logging,login-sequence,diagnostics,stats}` |
 | L4 | `muxus-ui` | `client/src/theme.ts`, the shared MUI look |
 | L5 | `muxus-term-view`, `muxus-webview` | `client/src/components/TerminalViewImpl.tsx` and its addons; `electron/src/web-windows.ts` |
@@ -99,6 +99,15 @@ cargo xtask ci                  # fmt, clippy, tests, layering, style
 
 The Linux packages build with `--features webview`; without it saved web pages open in the system
 browser, and nothing needs WebKitGTK.
+
+## Checking Windows and macOS code from Linux
+
+`hack/cross-check.sh` runs clippy for `x86_64-pc-windows-gnu` and `x86_64-apple-darwin` (rustup
+targets, no C toolchain) on every crate without a C build step, and on `hack/cross-check`, which
+compiles the platform modules of the other crates on their own. Crates that build C (SQLite, zstd,
+ring, aws-lc, libz, tree-sitter, GPUI's shaders) cannot be checked that way, so new Windows or macOS
+code goes into a checkable crate (`muxus-os` holds what has no better home) or into a module the
+harness includes. It proves the code compiles, not that it works: none of it runs here.
 
 `.cargo/config.toml` caps build jobs. Use `CARGO_TARGET_DIR` to give independent builds their own
 target directory.

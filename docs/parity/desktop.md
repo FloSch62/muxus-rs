@@ -7,7 +7,9 @@ Windows, tabs, detaching and window placement belong to the app integration.
 
 ```bash
 CARGO_TARGET_DIR=target-ui-a cargo test -p muxus-session --lib -- updater links    # 68 tests
-CARGO_TARGET_DIR=target-ui-a cargo test -p muxus-app --lib features::desktop        # 13 tests
+CARGO_TARGET_DIR=target-ui-a cargo test -p muxus-app --lib features::desktop        # 34 tests
+cargo test -p muxus-os                                                             # 17 tests
+hack/cross-check.sh       # clippy for x86_64-pc-windows-gnu and x86_64-apple-darwin
 CARGO_TARGET_DIR=target-release cargo build --release -p muxus-app
 MUXUS_BINARY=target-release/release/muxus packaging/build-deb.sh
 MUXUS_BINARY=target-release/release/muxus packaging/build-appimage.sh
@@ -23,14 +25,14 @@ tests in scratch runtime folders.
 
 | Feature | TypeScript source | State | Notes |
 |---|---|---|---|
-| Single instance per data folder, second launch hands over and exits | `main.ts` (`requestSingleInstanceLock`, `second-instance`) | done (Linux), partial (Windows) | `single_instance::acquire`: exclusive `File::try_lock` on `<runtime>/muxus-rs-<hash>.lock`, a 0600 Unix socket next to it, one JSON line per launch (`argv` + the launch the sender parsed), validated again by the receiver. Keyed by the data folder, so `MUXUS_DATA_DIR` sandboxes and development builds never hand over to the installed app. Stale sockets are replaced. Windows uses a named pipe (`\\.\pipe\muxus-rs-<hash>-<user>`, remote clients rejected); that code has not been compiled here (no Windows target). |
+| Single instance per data folder, second launch hands over and exits | `main.ts` (`requestSingleInstanceLock`, `second-instance`) | done (Linux), partial (Windows) | `single_instance::acquire`: exclusive `File::try_lock` on `<runtime>/muxus-rs-<hash>.lock`, a 0600 Unix socket next to it, one JSON line per launch (`argv` + the launch the sender parsed), validated again by the receiver. Keyed by the data folder, so `MUXUS_DATA_DIR` sandboxes and development builds never hand over to the installed app. Stale sockets are replaced. Windows uses a named pipe (`\\.\pipe\muxus-rs-<hash>-<user>`, remote clients rejected); that code is clippy-clean for `x86_64-pc-windows-gnu` (`hack/cross-check.sh` compiles `single_instance.rs` on its own) but has never run. |
 | Command line and links of later launches | `command-line.ts`, `main.ts` (`deliverCommandLineLaunch`, `open-url`) | done | `events::DesktopEvent::{Launch, Focus}`; `from_open_url` for macOS `open-url`; `initial_launch(argv)`. Parsing itself is `muxus_import::launch` (golden-tested there). |
 | `--new-window`: another, empty window from a running Muxus; at startup the usual window | `command-line.ts`, `main.ts` `deliverCommandLineLaunch`, `CommandLineLaunchHandler.tsx` (7d8f2d6) | done | Parsed (`muxus_import::launch`, the new `command-line.test.ts` cases ported; a value starting with `--` is taken after `=`, as generated IDs may), forwarded through the single instance, and opened by `ui/desktop.rs` as `MainWindowLaunch::Blank` (a blank workspace, as the TypeScript window gets). `initial_launch` drops it, so starting up shows the startup workspace. |
-| Taskbar jump list (Windows) and Dock menu (macOS): New window, recent hosts and workspaces | `launch-menu.ts`, `main.ts` `refreshLaunchMenu` (7d8f2d6, d4bc9a2) | partial | The menus' content is ported with `launch-menu.test.ts` (`features/desktop/launch_menu.rs`: recent hosts and workspaces, Windows argument quoting, jump list categories with removed entries, Dock entries). Handing it to the platform (GPUI's `update_jump_list` and `set_dock_menu`, the 15 s refresh, the AppUserModelID) is not wired: it cannot be compiled or run here. The stale-entry message of d4bc9a2 is done: a host or workspace launched by a name that no longer resolves says "This host is no longer in Muxus. It may have been renamed or deleted." |
+| Taskbar jump list (Windows) and Dock menu (macOS): New window, recent hosts and workspaces | `launch-menu.ts`, `main.ts` `refreshLaunchMenu`, `startLaunchMenu`, `hasJumpList` (7d8f2d6, d4bc9a2) | partial (implemented, never run on Windows or macOS) | Content ported with `launch-menu.test.ts` (`features/desktop/launch_menu.rs`: recent hosts and workspaces, Windows argument quoting, jump list categories with removed entries, Dock entries). Wiring (`launch_menu_os.rs`, started by `ui::run` once the backend runs): every 15 s the backend's ssh_config hosts, saved hosts and workspaces (a failed read logs "could not update the jump list or Dock menu"); the menu is set again only when it changed. **Windows**: not for Store packages; the AppUserModelID `io.github.flosch62.muxus` (`.development` for a development data folder) through GPUI's `set_app_identity` before the first window; removed entries read and kept until restart (`getJumpListSettings`), the list set through `muxus_os::jump_list` (`ICustomDestinationList` with `SetAppID`, custom categories and user tasks of shell links to this executable with title, tooltip and icon, as Electron's `jump_list.cc`; GPUI's own `update_jump_list` only builds Zed's "Recent Folders" and `--dock-action` tasks), kept only once Windows took it, a failure logged once per result ("the jump list was only partly set (customCategoryAccessDeniedError)"). An entry starts `muxus.exe --host=…`, which hands over through the single instance. **macOS**: GPUI's `set_dock_menu` with `DockMenuLaunch` actions delivered like a later launch (`ui/desktop.rs` `deliver`) and headings as disabled `DockMenuHeading` items (no handler, so the menu validates them off). Linux-tested: the refresh state (unchanged menus, retries, warn-once, removed entries), the Dock items, the AppUserModelID, which platform gets which menu. `muxus-os` is clippy-clean for both targets, the app code compiles everywhere (the platform calls are runtime branches); GPUI's macOS Dock menu and the COM calls have never run. GPUI keeps every Dock action it was given (`menu_actions` is never cleared), so a long run with many changes grows that list slowly. The stale-entry message of d4bc9a2 is done: a host or workspace launched by a name that no longer resolves says "This host is no longer in Muxus. It may have been renamed or deleted." |
 | Launch planning against the catalogs | `CommandLineLaunchHandler.tsx` | done | `launch::plan_launch(backend, request)` → owned `PlannedLaunch` (action + toast). Performing it (opening tabs, focusing a workspace window, the request queue) is the app integration's. |
 | Relaunch after an update waits for the old process | electron-updater relaunch | done | `RELAUNCH_AFTER_PID_VAR`; `acquire` waits up to 60 s for that pid before taking the lock. |
 | Link handlers, Linux (xdg-mime, generated hidden desktop file, alias link for paths xdg-utils cannot quote, installed `muxus.desktop`) | `link-handlers.ts` | done | `muxus_session::links::LinuxLinkHandlers`; every `link-handlers.test.ts` Linux case ported. The Desktop Entry helpers it needs (`parseKeyFileGroup`, `splitExec`, `unescapeDesktopString`, `dataDirectories`) are small copies, because the SFTP feature's `linux_apps.rs` lives in the app layer. |
-| Link handlers, macOS and Windows | `link-handlers.ts` (`SystemLinkHandlers`) | partial | Decision logic ported with all its tests (`ProtocolClientApi` fake). The real APIs are command based and untested here: Windows through `reg.exe` (the keys `setAsDefaultProtocolClient` writes; resolution through `UserChoice` → `shell\open\command`), macOS through `osascript` (JavaScript for Automation calling `LSSetDefaultHandlerForURLScheme` and `NSWorkspace`). Electron's source-checkout registration (Electron plus app path) has no Rust counterpart. |
+| Link handlers, macOS and Windows | `link-handlers.ts` (`SystemLinkHandlers`) | partial | Decision logic ported with all its tests (`ProtocolClientApi` fake). The real APIs are command based (no platform `cfg`, so they compile on Linux) and have not run on those systems: Windows through `reg.exe` (the keys `setAsDefaultProtocolClient` writes; resolution through `UserChoice` → `shell\open\command`), macOS through `osascript` (JavaScript for Automation calling `LSSetDefaultHandlerForURLScheme` and `NSWorkspace`). Electron's source-checkout registration (Electron plus app path) has no Rust counterpart. |
 | Backend for Settings → Behavior → Links | `main.ts` (`muxus:link-handlers:get/register`) | done | `Backend::link_handlers()` (`None` where unsupported) and `Backend::register_link_handler(scheme)`, logging like `mainLog`. Tested end to end in a sandbox with a scripted xdg-mime. |
 | Links group in Settings → Behavior | `LinkHandlerSettings.tsx` | done | `links_view::LinkHandlerSettings`, embedded by one line in `settings/view/behavior.rs`; status texts, disabled rules and toasts are unit tested; refreshes when the settings window is focused. Built from the settings layout (`group`, `row`, `status_text`) and the muxus-ui `Button`; no raw styling. No screenshot reference: the browser capture the settings use has no desktop bridge, so the TypeScript renders no Links group there. |
 | Muxus link scheme | — | n/a | Muxus registers only ssh:// and telnet://; there is no own scheme. |
@@ -40,7 +42,7 @@ tests in scratch runtime folders.
 | Release feed (electron-builder `latest*.yml`, GitHub `/releases/latest` then the release's feed, generic mirror) | electron-updater `GitHubProvider`, `GenericProvider`, `findFile` | done | `updater::feed` (YAML subset + JSON) and `updater::transport::FeedTransport`. The feed constant is `RELEASE_OWNER`/`RELEASE_REPO` (`FloSch62/muxus`); `MUXUS_UPDATE_FEED=<folder URL>` points the app at a mirror. Plain http only to loopback. Staging percentages and differential (blockmap) downloads are not implemented. |
 | Download with verification | electron-updater `DownloadedUpdateHelper` | done | Into `<cache>/muxus-rs-updater/pending/<name>.part`, size and base64 SHA-512 checked, then renamed; a verified earlier download is reused; older files are cleared. |
 | Install handoff, Linux AppImage | electron-updater `AppImageUpdater.doInstall` | done | Same destination rules (keep a renamed file's name, follow versioned names); staged next to the target and renamed over it instead of unlinking first; started detached with `APPIMAGE_SILENT_INSTALL` and the relaunch pid. Tested with a recording launcher. Feeds without an AppImage are refused rather than installing another kind of file. |
-| Install handoff, Windows (NSIS `--updated --force-run`) and macOS (zip → swap the `.app`, `open -n`) | `NsisUpdater`, `MacUpdater` | partial | Implemented, never run: there are no Windows or macOS packages of the Rust build yet, and no code-signature checks (electron-updater verified the Windows publisher; Squirrel.Mac the signature). |
+| Install handoff, Windows (NSIS `--updated --force-run`) and macOS (zip → swap the `.app`, `open -n`) | `NsisUpdater`, `MacUpdater` | partial | Implemented and clippy-clean for both targets (`hack/cross-check.sh` compiles `updater/install.rs`), never run: there are no Windows or macOS packages of the Rust build yet, and no code-signature checks (electron-updater verified the Windows publisher; Squirrel.Mac the signature). |
 | Microsoft Store updater (`check`/`install` through the Store helper, progress, cancel, errors) | `store-updater.ts`, `store-bridge.ts` | done (logic), n/a (Linux) | `updater::store::StoreUpdater` with every `store-updater.test.ts` case; `HelperStoreBridge` tested against a scripted helper. Only Windows Store packages build one (`MUXUS_UPDATE_MODE=store` at build time); elsewhere it never exists. |
 | Store routing of the plain update check | `store-updates.ts` | done | `check_store_update`, `store_page_url` with all `store-updates.test.ts` cases. Not wired into `Backend::update_check` (session routes are not this area's); only relevant to Store packages. |
 | App wiring: update entity, settings hooks, notice, restart confirmation, quit then install | `main.ts` (`createDesktopUpdater`, `before-quit`), `DesktopUpdateControls.tsx` | done (off by default) | `ui::run` calls `init_desktop_updates` only when `MUXUS_UPDATE_FEED` is set: the feed constant still names the Electron releases. Without it About shows "No updates are published for this build." (the backend's manifest check is off too, see `session.md`). Single instance, main log, crash capture and launch planning are wired in `ui::run` / `ui/desktop.rs` (`app.md`). |
@@ -85,9 +87,14 @@ difference is reported.
   `updater::store` (7, including `store-updates.test.ts`), `links::tests` (22,
   `link-handlers.test.ts` plus the Desktop Entry helpers, the registry parser and a backend
   round trip with a scripted xdg-mime).
-- `muxus-app` (13): `features::desktop` events (3), launch planning against a sandboxed
-  backend (1), Links view logic (2), main log (2), single instance (5: hand-over over a real
-  socket, focus, other data folders, stale socket, garbage, waiting for a replaced process).
+- `muxus-app` (34): `features::desktop` app menu (1), events (3), launch planning against a
+  sandboxed backend (1), launch menu content (13, `launch-menu.test.ts`), launch menu wiring (7:
+  refresh state, Dock items, AppUserModelID, platform choice), Links view logic (2), main log (2),
+  single instance (5: hand-over over a real socket, focus, other data folders, stale socket,
+  garbage, waiting for a replaced process).
+- `muxus-os` (17): jump list result codes and their precedence (5), machine readings (12: CPU
+  time sums, Mach tick and NT time conversions, Windows version name and kernel, drive space,
+  the Windows sample).
 - `features::settings` still passes its 117 tests with the Links group embedded.
 
 ## Risks
@@ -111,6 +118,7 @@ difference is reported.
 | `Backend::link_handlers()`, `Backend::register_link_handler(scheme)` | The Links backend. |
 | `muxus_session::updater::AppUpdater` | The updater itself, for anything beyond the hooks. |
 | `desktop::APP_ID` | `muxus`: the Wayland app id / X11 class windows must use. |
+| `desktop::launch_menu_os::{launch_menu_kind, app_user_model_id, set_app_user_model_id, start_launch_menu}` | The jump list or Dock menu; wired in `ui::run`. |
 
 ## Known differences
 
@@ -123,7 +131,10 @@ difference is reported.
 
 ## Attribution
 
-No third-party code was adapted. Everything here is ported from Muxus itself (MIT). The
+No third-party code was adapted. Everything here is ported from Muxus itself (MIT); the jump
+list follows Electron's `jump_list.cc` (MIT) without copying it (`ATTRIBUTION.md`). The
 AppImage runtime appended by `build-appimage.sh` (AppImage/type2-runtime, MIT) is downloaded at
 build time and not stored in the repository. Dependencies added: `futures-util`, `sha2`
-(muxus-session, MIT/Apache-2.0); tokio `net` on Windows (muxus-app).
+(muxus-session, MIT/Apache-2.0); tokio `net` on Windows (muxus-app); `windows` 0.62 and
+`windows-sys` 0.61 on Windows, `libc` on macOS (muxus-os, MIT/Apache-2.0; versions the tree
+already built).
