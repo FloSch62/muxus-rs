@@ -15,6 +15,7 @@ pub mod link;
 pub mod list;
 pub mod listbox;
 pub mod menu;
+pub mod menu_keyboard;
 pub mod progress;
 pub mod scrollbar;
 pub mod search_field;
@@ -45,4 +46,5 @@ use gpui_kit::App;
 
 pub fn init(cx: &mut App) {
     focus::init(cx);
+    menu_keyboard::init(cx);
 }

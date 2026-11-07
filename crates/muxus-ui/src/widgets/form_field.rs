@@ -17,9 +17,10 @@ use std::rc::Rc;
 use crate::zoom::px;
 use gpui_kit::base::input::{Input, InputState};
 use gpui_kit::{
-    AnyElement, App, ClickEvent, ElementId, Entity, Focusable, FontWeight, Hsla,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, RenderOnce, SharedString,
-    StatefulInteractiveElement, Styled, Transformation, Window, div, percentage, relative,
+    AnyElement, App, Bounds, ClickEvent, ElementId, Entity, Focusable, FontWeight, Hsla,
+    InteractiveElement, IntoElement, KeyboardButton, KeyboardClickEvent, MouseButton,
+    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Transformation,
+    Window, div, percentage, relative,
 };
 
 use crate::icon::icon;
@@ -595,6 +596,25 @@ impl RenderOnce for FormField {
             input_root = input_root
                 .track_focus(focus)
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default());
+            // MUI's Select opens on the up and down arrows too, not only Enter and Space.
+            if self.select
+                && !self.disabled
+                && let Some(handler) = self.on_click.clone()
+            {
+                input_root = input_root.on_key_down(move |event, window, cx| {
+                    let keystroke = &event.keystroke;
+                    if matches!(keystroke.key.as_str(), "up" | "down")
+                        && !keystroke.modifiers.modified()
+                    {
+                        cx.stop_propagation();
+                        let click = ClickEvent::Keyboard(KeyboardClickEvent {
+                            button: KeyboardButton::Enter,
+                            bounds: Bounds::default(),
+                        });
+                        handler(&click, window, cx);
+                    }
+                });
+            }
         }
         if !self.disabled {
             if self.select || self.on_click.is_some() {

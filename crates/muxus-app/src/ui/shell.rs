@@ -148,6 +148,11 @@ pub struct AppShell {
     pub window_handle: Option<AnyWindowHandle>,
     /// What programs reported with OSC 7501, per tab (`ui::program_status`).
     pub program_status: muxus_app::state::program_status::ProgramStatusStore,
+    /// Tab drags, slides and the strips' scroll reveal (`ui::tab_drag`).
+    pub tab_motion: crate::ui::tab_drag::TabMotion,
+    /// What has the keyboard when no control does (a page's `body`): the
+    /// window's shortcuts and its Tab order answer from there.
+    pub body_focus: muxus_ui::gpui_kit::FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -256,6 +261,8 @@ impl AppShell {
             prompt_seq: 0,
             window_handle: Some(window.window_handle()),
             program_status: Default::default(),
+            tab_motion: Default::default(),
+            body_focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
         shell.apply_theme(window, cx);
@@ -613,8 +620,17 @@ impl Render for AppShell {
                 .child(canvas)
         };
 
-        let mut root = div()
-            .id("app-shell")
+        // Nothing has the keyboard (the window just opened, or what had it went
+        // away): the body takes it, so shortcuts and Tab still reach the window.
+        if window.focused(cx).is_none() {
+            cx.defer_in(window, |this, window, cx| {
+                if window.focused(cx).is_none() {
+                    window.focus(&this.body_focus, cx);
+                }
+            });
+        }
+        // Tab walks the window's controls as it does a page; a terminal keeps it.
+        let mut root = muxus_ui::widgets::focus::tab_order(div().id("app-shell"))
             .relative()
             .flex()
             .flex_col()
@@ -635,6 +651,13 @@ impl Render for AppShell {
             ))
             .on_mouse_move(cx.listener(Self::on_drag_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_drag_end))
+            .child(
+                div()
+                    .id("shell-body-focus")
+                    .absolute()
+                    .size_0()
+                    .track_focus(&self.body_focus),
+            )
             .child(self.render_top_bar(window, cx));
         if !self.focus_mode && !command_bar_bottom {
             root = root.children(self.render_action_bar(cx));
@@ -664,6 +687,8 @@ impl Render for AppShell {
         if let Some(toast) = self.render_toast(window, cx) {
             root = root.child(toast);
         }
+        // A tab drag ends wherever the button is let go, inside the window or not.
+        root = root.children(self.render_tab_drag_listener(cx));
         if let Some(perf) = crate::ui::perf::perf() {
             root = root.child(
                 muxus_ui::gpui_kit::canvas(|_, _, _| {}, move |_, _, _, _| perf.frame())

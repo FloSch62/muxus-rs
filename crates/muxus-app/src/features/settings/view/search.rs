@@ -147,6 +147,21 @@ impl SettingsWindow {
 
     /// `SettingsSearch`: the field atop the section list.
     pub fn search_field(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .px(px(8.))
+            .pt(px(12.))
+            .pb(px(6.))
+            .child(self.search_autocomplete(window, cx))
+            .into_any_element()
+    }
+
+    /// The search field itself: atop the section list, or above the section
+    /// picker in a narrow window (one shows at a time).
+    pub fn search_autocomplete(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let input = self.search_input(window, cx);
         let theme = *cx.theme();
         let query = self.state.search.query.clone();
@@ -172,36 +187,30 @@ impl SettingsWindow {
                 muxus_ui::icon::SMALL,
                 theme.palette.text.secondary,
             ));
-        div()
-            .px(px(8.))
-            .pt(px(12.))
-            .pb(px(6.))
-            .child(
-                Autocomplete::new("settings-search", &input, field, options)
-                    .unfiltered()
-                    .auto_highlight()
-                    .hide_popup_indicator()
-                    .clear_on_pick()
-                    .clear_on_escape()
-                    .list_min_width(380.)
-                    .no_options_text("No settings match")
-                    .open_when(!query.trim().is_empty())
-                    .on_pick(move |option, window, cx| {
-                        let Some(entry) = SETTINGS_SEARCH_INDEX
-                            .iter()
-                            .find(|entry| entry.key() == option.value)
-                        else {
-                            return;
-                        };
-                        let _ = this.update(cx, |this, cx| {
-                            this.state.search.query.clear();
-                            // `blurOnSelect`: the keyboard goes back to the window.
-                            let focus = this.focus_handle_ref().clone();
-                            window.focus(&focus, cx);
-                            this.reveal(entry, window, cx);
-                        });
-                    }),
-            )
+        Autocomplete::new("settings-search", &input, field, options)
+            .unfiltered()
+            .auto_highlight()
+            .hide_popup_indicator()
+            .clear_on_pick()
+            .clear_on_escape()
+            .list_min_width(380.)
+            .no_options_text("No settings match")
+            .open_when(!query.trim().is_empty())
+            .on_pick(move |option, window, cx| {
+                let Some(entry) = SETTINGS_SEARCH_INDEX
+                    .iter()
+                    .find(|entry| entry.key() == option.value)
+                else {
+                    return;
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.state.search.query.clear();
+                    // `blurOnSelect`: the keyboard goes back to the window.
+                    let focus = this.focus_handle_ref().clone();
+                    window.focus(&focus, cx);
+                    this.reveal(entry, window, cx);
+                });
+            })
             .into_any_element()
     }
 

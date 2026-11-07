@@ -40,11 +40,14 @@ pub use view::{
 pub const KEY_CONTEXT: &str = "RemoteDesktop";
 
 /// Keep chords the window binds for itself out of a focused desktop: the developer
-/// inspector's Ctrl+Shift+I (Cmd+Alt+I on macOS) belongs to the remote computer there, as it
-/// went to the canvas in the TypeScript build. App shortcuts still run first, as they did.
+/// inspector's Ctrl+Shift+I (Cmd+Alt+I on macOS) and the window's Tab order belong to the
+/// remote computer there, as they went to the canvas in the TypeScript build. App shortcuts
+/// still run first, as they did.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("ctrl-shift-i", NoAction, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-alt-i", NoAction, Some(KEY_CONTEXT)),
+        KeyBinding::new("tab", NoAction, Some(KEY_CONTEXT)),
+        KeyBinding::new("shift-tab", NoAction, Some(KEY_CONTEXT)),
     ]);
 }
