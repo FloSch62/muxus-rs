@@ -10,6 +10,8 @@ pub mod help;
 pub mod js;
 pub mod management_draft;
 pub mod management_prefill;
+pub mod name_range;
 pub mod native_draft;
+pub mod range_save;
 pub mod session_logging;
 pub mod tunnel;

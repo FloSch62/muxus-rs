@@ -138,7 +138,8 @@ impl Group {
 
     pub fn render(self, theme: &Theme) -> AnyElement {
         let p = &theme.palette;
-        let mut section = div().flex().flex_col();
+        let (probe, outline) = super::search::group_focus(self.title.as_deref(), 16.).unzip();
+        let mut section = div().relative().flex().flex_col().children(probe);
         if self.title.is_some() || !self.actions.is_empty() {
             let mut head = div()
                 .flex()
@@ -185,6 +186,7 @@ impl Group {
         section
             .child(
                 div()
+                    .relative()
                     .flex()
                     .flex_col()
                     .border_1()
@@ -192,7 +194,8 @@ impl Group {
                     .rounded(px(16.))
                     .bg(p.background_paper)
                     .overflow_hidden()
-                    .children(rows),
+                    .children(rows)
+                    .children(outline),
             )
             .into_any_element()
     }
@@ -201,6 +204,8 @@ impl Group {
 /// `SettingRow`.
 pub struct Row {
     label: AnyElement,
+    /// The label's text, which a settings search pick outlines.
+    text: SharedString,
     description: Option<AnyElement>,
     controls: Vec<AnyElement>,
     stacked: bool,
@@ -214,8 +219,10 @@ pub fn row(theme: &Theme, text: impl Into<SharedString>) -> Row {
 
 impl Row {
     fn with_label(theme: &Theme, text: impl Into<SharedString>, disabled: bool) -> Self {
+        let text: SharedString = text.into();
         Row {
-            label: row_label(theme, text, disabled),
+            label: row_label(theme, text.clone(), disabled),
+            text,
             description: None,
             controls: Vec::new(),
             stacked: false,
@@ -232,7 +239,8 @@ impl Row {
         disabled: bool,
     ) -> Self {
         self.disabled = disabled;
-        self.label = row_label(theme, text, disabled);
+        self.text = text.into();
+        self.label = row_label(theme, self.text.clone(), disabled);
         self
     }
 
@@ -306,10 +314,12 @@ impl Row {
             line = line.child(controls);
         }
         div()
+            .relative()
             .px(px(16.))
             .py(px(12.))
             .child(line)
             .children(self.extra)
+            .children(super::search::row_focus(&self.text))
             .into_any_element()
     }
 }

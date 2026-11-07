@@ -96,6 +96,7 @@ pub struct SectionState {
     /// Installed WSL distributions (Windows), read when Local shells opens.
     pub wsl: Option<super::window::Load<Vec<muxus_core::api::WslDistribution>>>,
     pub update: super::about::UpdateState,
+    pub search: super::search::SearchState,
     pub data: super::data::DataState,
 }
 

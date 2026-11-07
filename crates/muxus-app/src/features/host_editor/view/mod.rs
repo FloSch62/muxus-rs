@@ -7,6 +7,7 @@ pub mod form;
 mod gateway_route;
 mod management;
 mod native;
+mod range;
 mod route_fallbacks;
 pub mod session_input;
 pub mod shared;
@@ -39,7 +40,7 @@ use super::logic::desktop_draft::{
 };
 use super::logic::draft::{
     EnvironmentDiscoveryDraft, HostDraft, Storage, blank_draft, draft_from_entry,
-    draft_from_saved_ssh_profile, draft_problem, identity_agent_for_detection,
+    draft_from_saved_ssh_profile, identity_agent_for_detection,
 };
 use super::logic::forwards::ForwardRuleDraft;
 use super::logic::management_draft::{
@@ -179,6 +180,8 @@ pub struct HostEditor {
     /// `savedProfile.current`: the profile this dialog saved, so a second save updates it.
     saved_profile: Option<muxus_core::api::SavedHostProfile>,
     pub(super) busy: bool,
+    /// A range save's progress, while it runs; the dialog stays open meanwhile.
+    pub(super) range_progress: Option<String>,
     delete_pending: bool,
     confirm_delete: bool,
     pub(super) inputs: InputCache,
@@ -303,6 +306,7 @@ impl HostEditor {
             _preview_task: None,
             saved_profile: None,
             busy: false,
+            range_progress: None,
             delete_pending: false,
             confirm_delete: false,
             inputs: InputCache::default(),
@@ -492,13 +496,13 @@ impl HostEditor {
             return;
         }
         let previous = self.editing_entry().map(|e| e.alias.clone());
-        let request = super::logic::draft::draft_to_request(&self.ssh, previous.as_deref());
+        let draft = self.preview_draft();
+        let request = super::logic::draft::draft_to_request(&draft, previous.as_deref());
         if self.preview_for.as_ref() == Some(&request) {
             return;
         }
         self.preview_for = Some(request);
         let backend = self.backend.clone();
-        let draft = self.ssh.clone();
         self._preview_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(350))
@@ -564,7 +568,7 @@ impl HostEditor {
             return None;
         }
         match self.kind {
-            SavedHostKind::Ssh => draft_problem(&self.ssh),
+            SavedHostKind::Ssh => self.ssh_problem(),
             SavedHostKind::Telnet | SavedHostKind::Serial => {
                 native_draft_problem(&self.native, self.native_kind())
             }
@@ -867,6 +871,10 @@ impl HostEditor {
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
+        // A range save keeps running after its dialog is gone; keep it open.
+        if self.range_progress.is_some() {
+            return;
+        }
         cx.emit(HostEditorEvent::Close);
     }
 
@@ -883,6 +891,9 @@ impl HostEditor {
     /// Save, then close (and connect with `connect`).
     pub fn save(&mut self, connect: bool, cx: &mut Context<Self>) {
         if self.busy || self.problem().is_some() || self.loading().is_some() {
+            return;
+        }
+        if self.kind == SavedHostKind::Ssh && self.save_range(connect, cx) {
             return;
         }
         self.busy = true;

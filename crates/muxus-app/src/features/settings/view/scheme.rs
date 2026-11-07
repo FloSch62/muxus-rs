@@ -41,31 +41,39 @@ pub fn custom_terminal_schemes(prefs: &PrefsState) -> Vec<TerminalScheme> {
     terminal_schemes_from_custom(&term_custom_schemes(prefs))
 }
 
-/// Every scheme on offer, the user's own first (`terminalSchemeGroups`).
+/// Which built-in group leads a scheme menu (`firstMode`): a picker dedicated
+/// to one mode lists that mode's schemes first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SchemeMode {
+    #[default]
+    Light,
+    Dark,
+}
+
+/// Every scheme on offer: the user's own first, then the built-ins, `first`
+/// leading (`terminalSchemeGroups`).
 pub fn terminal_scheme_groups(
     custom: &[TerminalScheme],
+    first: SchemeMode,
 ) -> Vec<(&'static str, Vec<TerminalScheme>)> {
     let builtin = terminal_schemes();
+    let of_mode = |light: bool| -> Vec<TerminalScheme> {
+        builtin
+            .iter()
+            .filter(|scheme| scheme.light == light)
+            .cloned()
+            .collect()
+    };
     let mut groups = Vec::new();
     if !custom.is_empty() {
         groups.push(("Custom schemes", custom.to_vec()));
     }
-    groups.push((
-        "Light schemes",
-        builtin
-            .iter()
-            .filter(|scheme| scheme.light)
-            .cloned()
-            .collect(),
-    ));
-    groups.push((
-        "Dark schemes",
-        builtin
-            .iter()
-            .filter(|scheme| !scheme.light)
-            .cloned()
-            .collect(),
-    ));
+    let light = ("Light schemes", of_mode(true));
+    let dark = ("Dark schemes", of_mode(false));
+    match first {
+        SchemeMode::Light => groups.extend([light, dark]),
+        SchemeMode::Dark => groups.extend([dark, light]),
+    }
     groups
 }
 
@@ -135,9 +143,13 @@ pub fn scheme_label(theme: &Theme, scheme: &TerminalScheme, show_mode: bool) -> 
 }
 
 /// The scheme menu: a subheader per group, then each scheme with its preview.
-pub fn scheme_menu_entries(custom: &[TerminalScheme], header_prefix: &str) -> Vec<MenuEntry> {
+pub fn scheme_menu_entries(
+    custom: &[TerminalScheme],
+    header_prefix: &str,
+    first: SchemeMode,
+) -> Vec<MenuEntry> {
     let mut entries = Vec::new();
-    for (title, schemes) in terminal_scheme_groups(custom) {
+    for (title, schemes) in terminal_scheme_groups(custom, first) {
         entries.push(MenuEntry::Header(format!("{header_prefix}{title}").into()));
         for scheme in schemes {
             let rich_scheme = scheme.clone();
@@ -157,4 +169,40 @@ pub fn scheme_menu_entries(custom: &[TerminalScheme], header_prefix: &str) -> Ve
 /// The closed picker's value (`renderValue`).
 pub fn scheme_value(theme: &Theme, scheme: &TerminalScheme) -> AnyElement {
     scheme_label(theme, scheme, true).into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    //! `tests/unit/client/terminal-scheme-groups.test.ts`.
+
+    use super::*;
+
+    fn titles(groups: &[(&'static str, Vec<TerminalScheme>)]) -> Vec<&'static str> {
+        groups.iter().map(|(title, _)| *title).collect()
+    }
+
+    #[test]
+    fn lists_light_schemes_first_by_default() {
+        assert_eq!(
+            titles(&terminal_scheme_groups(&[], SchemeMode::default())),
+            ["Light schemes", "Dark schemes"]
+        );
+    }
+
+    #[test]
+    fn lists_dark_schemes_first_for_a_dark_picker() {
+        let groups = terminal_scheme_groups(&[], SchemeMode::Dark);
+        assert_eq!(titles(&groups), ["Dark schemes", "Light schemes"]);
+        assert!(groups[0].1.iter().all(|scheme| !scheme.light));
+        assert!(groups[1].1.iter().all(|scheme| scheme.light));
+    }
+
+    #[test]
+    fn keeps_the_users_own_schemes_ahead_of_the_builtins() {
+        let custom = [terminal_schemes()[0].clone()];
+        assert_eq!(
+            titles(&terminal_scheme_groups(&custom, SchemeMode::Dark)),
+            ["Custom schemes", "Dark schemes", "Light schemes"]
+        );
+    }
 }

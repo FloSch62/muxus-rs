@@ -398,8 +398,10 @@ pub fn merge_custom_terminal_schemes(
         }
     }
     if merged.len() > MAX_CUSTOM_TERMINAL_SCHEMES {
+        let added = merged.len() - current.len();
+        let room = MAX_CUSTOM_TERMINAL_SCHEMES.saturating_sub(current.len());
         return error(format!(
-            "This import would exceed the limit of {MAX_CUSTOM_TERMINAL_SCHEMES} custom color schemes. Delete an existing scheme and try again."
+            "This import would exceed the limit of {MAX_CUSTOM_TERMINAL_SCHEMES} custom color schemes: it adds {added}, and {room} more fit. Delete existing schemes or import fewer files."
         ));
     }
     Ok(merged)

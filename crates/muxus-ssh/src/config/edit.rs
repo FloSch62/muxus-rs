@@ -119,6 +119,64 @@ pub fn upsert_host(
     Ok(UpsertResult { file: target_file })
 }
 
+/// Add many new Host blocks at once, as a range duplicate does. Every alias is checked before
+/// anything is written, and each touched file is written once, so its `.muxus.bak` holds the
+/// content from before the whole save rather than from before its last block. Returns the number
+/// of blocks created.
+pub fn create_hosts(
+    reqs: &[HostUpsertRequest],
+    root: &Path,
+    env: &LocalEnv,
+) -> Result<usize, Problem> {
+    if reqs.is_empty() {
+        return Err(bad("no hosts to create"));
+    }
+    let mut doc = load_config_document(root, env);
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut targets: Vec<PathBuf> = Vec::with_capacity(reqs.len());
+    for req in reqs {
+        validate_upsert(req)?;
+        if req.previous_alias.is_some() {
+            return Err(bad("a batch only creates new hosts"));
+        }
+        for alias in &req.aliases {
+            if !seen.insert(alias) {
+                return Err(bad(format!("Host \"{alias}\" is named twice")));
+            }
+            if let Some(other) = find_host_block(&doc, alias) {
+                return Err(Problem::with_code(
+                    409,
+                    format!(
+                        "Host \"{alias}\" already exists in {}",
+                        basename(&doc.blocks[other].file)
+                    ),
+                    "host-exists",
+                ));
+            }
+        }
+        let requested = req
+            .file
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| doc.root_path.clone());
+        targets.push(resolve_target_file(&requested, &doc.root_path)?);
+    }
+
+    let mut changed: BTreeSet<PathBuf> = BTreeSet::new();
+    for (req, target_file) in reqs.iter().zip(&targets) {
+        let rendered = render_host_block(req, &detect_indent(&doc, target_file), &[]);
+        append_block(&mut doc.files, target_file, rendered);
+        changed.insert(target_file.clone());
+        if ensure_included(&mut doc, target_file) {
+            changed.insert(doc.root_path.clone());
+        }
+    }
+    for file in &changed {
+        write_config_file(file, doc.files.get(file).map(Vec::as_slice).unwrap_or(&[]))?;
+    }
+    Ok(reqs.len())
+}
+
 fn non_concrete(block: &HostBlock) -> Vec<String> {
     block
         .patterns

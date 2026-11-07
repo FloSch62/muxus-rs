@@ -86,6 +86,28 @@ pub fn line_text<B: TextBuffer + ?Sized>(buffer: &B, line: usize) -> Option<Stri
     Some(translate_to_string(&cells, true, 0, None))
 }
 
+/// Plain-text contents of scrollback + screen, trailing blank rows trimmed, each line ending in a
+/// newline (`terminal/buffer-text.ts`). Rows the terminal soft-wrapped are joined back into one
+/// line, so a long line compares and copies whole.
+pub fn buffer_text<B: TextBuffer + ?Sized>(buffer: &B) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for line in 0..buffer.length() {
+        let text = line_text(buffer, line).unwrap_or_default();
+        match lines.last_mut() {
+            Some(last) if buffer.is_wrapped(line) => last.push_str(&text),
+            _ => lines.push(text),
+        }
+    }
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", lines.join("\n"))
+    }
+}
+
 /// Cells for a plain string as a program would write it (spaces are content), with Unicode
 /// widths.
 pub fn cells_from_str(text: &str) -> Vec<CellText> {
@@ -166,6 +188,35 @@ mod tests {
         assert_eq!(translate_to_string(&cells, true, 0, None), "a 中b");
         assert_eq!(translate_to_string(&cells, true, 2, Some(4)), "中");
         assert_eq!(trimmed_length(&cells), 5);
+    }
+
+    #[test]
+    fn joins_soft_wrapped_rows_back_into_one_line() {
+        let buffer = StringBuffer::new(
+            8,
+            &[
+                ("interfac", false),
+                ("e Gi0/1", true),
+                (" shut", false),
+                ("", false),
+                ("", false),
+            ],
+        );
+        assert_eq!(buffer_text(&buffer), "interface Gi0/1\n shut\n");
+    }
+
+    #[test]
+    fn keeps_a_real_space_that_ends_a_row_before_the_wrap() {
+        let buffer = StringBuffer::new(5, &[("word ", false), ("2", true)]);
+        assert_eq!(buffer_text(&buffer), "word 2\n");
+    }
+
+    #[test]
+    fn a_blank_buffer_has_no_text() {
+        assert_eq!(
+            buffer_text(&StringBuffer::new(4, &[("", false), ("", false)])),
+            ""
+        );
     }
 
     #[test]

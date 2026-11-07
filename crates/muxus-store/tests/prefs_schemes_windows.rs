@@ -405,95 +405,100 @@ fn rect(x: f64, y: f64, width: f64, height: f64) -> Rectangle {
 }
 
 #[test]
-fn settings_window_reopens_where_it_was_left() {
-    let saved = rect(2400.0, 100.0, 900.0, 700.0);
-    assert_eq!(
-        window_bounds(Some(saved), Some(LAPTOP), &[LAPTOP, MONITOR], SIZE),
-        WindowBounds::Placed(saved)
-    );
+fn settings_window_opens_centered_over_the_app_window() {
     assert_eq!(
         window_bounds(
-            Some(rect(1300.0, 50.0, 1000.0, 700.0)),
-            Some(LAPTOP),
-            &[LAPTOP, MONITOR],
-            SIZE
+            SIZE,
+            Some(rect(2000.0, 0.0, 1600.0, 1000.0)),
+            &[LAPTOP, MONITOR]
         ),
-        WindowBounds::Placed(rect(920.0, 50.0, 1000.0, 700.0))
-    );
-    assert_eq!(
-        window_bounds(
-            Some(rect(100.0, 100.0, 2400.0, 1300.0)),
-            None,
-            &[LAPTOP],
-            SIZE
-        ),
-        WindowBounds::Placed(rect(0.0, 0.0, 1920.0, 1080.0))
+        WindowBounds::Placed(rect(2300.0, 140.0, 1000.0, 720.0))
     );
 }
 
 #[test]
-fn settings_window_centers_over_the_app_window_when_it_cannot_reopen() {
+fn settings_window_opens_at_the_size_it_was_left_still_centered() {
     let owner = rect(100.0, 100.0, 1400.0, 900.0);
+    let left = WindowPlacement {
+        width: 900.0,
+        height: 700.0,
+        maximized: true,
+    };
     assert_eq!(
-        window_bounds(
-            Some(rect(2400.0, 100.0, 900.0, 700.0)),
-            Some(owner),
-            &[LAPTOP],
-            SIZE
-        ),
+        window_bounds(left.size(), Some(owner), &[LAPTOP]),
         WindowBounds::Placed(rect(350.0, 200.0, 900.0, 700.0))
     );
+}
+
+#[test]
+fn settings_window_stays_inside_the_display_of_a_window_near_its_edge() {
     assert_eq!(
-        window_bounds(
-            None,
-            Some(rect(2000.0, 0.0, 1600.0, 1000.0)),
-            &[LAPTOP, MONITOR],
-            SIZE
-        ),
-        WindowBounds::Placed(rect(2300.0, 140.0, 1000.0, 720.0))
-    );
-    assert_eq!(
-        window_bounds(
-            None,
-            Some(rect(-300.0, 900.0, 800.0, 600.0)),
-            &[LAPTOP],
-            SIZE
-        ),
+        window_bounds(SIZE, Some(rect(-300.0, 900.0, 800.0, 600.0)), &[LAPTOP]),
         WindowBounds::Placed(rect(0.0, 360.0, 1000.0, 720.0))
     );
+}
+
+#[test]
+fn settings_window_larger_than_the_display_shrinks_to_its_work_area() {
+    let owner = rect(0.0, 0.0, 1920.0, 1080.0);
+    let size = Size {
+        width: 2400.0,
+        height: 1300.0,
+    };
     assert_eq!(
-        window_bounds(None, None, &[LAPTOP], SIZE),
+        window_bounds(size, Some(owner), &[LAPTOP]),
+        WindowBounds::Placed(LAPTOP)
+    );
+}
+
+#[test]
+fn settings_window_leaves_the_position_to_the_system_without_an_owner() {
+    assert_eq!(
+        window_bounds(SIZE, None, &[LAPTOP]),
         WindowBounds::SizeOnly(SIZE)
     );
 }
 
 #[test]
 fn reads_only_well_formed_stored_placements() {
-    let placement = parse_window_placement(
-        &json!({ "x": 10, "y": 20, "width": 900, "height": 700, "maximized": true }),
-    )
-    .unwrap();
     assert_eq!(
-        placement,
-        WindowPlacement {
-            bounds: rect(10.0, 20.0, 900.0, 700.0),
+        parse_window_placement(&json!({ "width": 900, "height": 700, "maximized": true })),
+        Some(WindowPlacement {
+            width: 900.0,
+            height: 700.0,
             maximized: true
-        }
+        })
     );
-    let not_max = parse_window_placement(
-        &json!({ "x": 10, "y": 20, "width": 900, "height": 700, "maximized": "yes" }),
-    )
-    .unwrap();
-    assert!(!not_max.maximized);
     assert_eq!(
-        parse_window_placement(&json!({ "x": 10, "y": 20, "width": 0, "height": 700 })),
+        parse_window_placement(&json!({ "width": 900, "height": 700, "maximized": "yes" })),
+        Some(WindowPlacement {
+            width: 900.0,
+            height: 700.0,
+            maximized: false
+        })
+    );
+    // Placements saved by earlier versions also carry a position, which is dropped.
+    assert_eq!(
+        parse_window_placement(&json!({ "x": 10, "y": 20, "width": 900, "height": 700 })),
+        Some(WindowPlacement {
+            width: 900.0,
+            height: 700.0,
+            maximized: false
+        })
+    );
+    assert_eq!(
+        parse_window_placement(&json!({ "width": 0, "height": 700 })),
         None
     );
     assert_eq!(
-        parse_window_placement(&json!({ "x": "10", "y": 20, "width": 900, "height": 700 })),
+        parse_window_placement(&json!({ "width": "900", "height": 700 })),
         None
     );
-    assert_eq!(parse_window_placement(&json!([10, 20, 900, 700])), None);
+    assert_eq!(
+        parse_window_placement(&json!({ "width": 900, "height": f64::NAN })),
+        None
+    );
+    assert_eq!(parse_window_placement(&json!([900, 700])), None);
     assert_eq!(parse_window_placement(&Value::Null), None);
 }
 
@@ -502,11 +507,7 @@ fn window_state_files_round_trip_like_electron() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("window-state.json");
     assert_eq!(load_window_state(&path), DEFAULT_WINDOW_STATE);
-    let placement = WindowPlacement {
-        bounds: rect(12.0, 34.0, 1280.0, 800.0),
-        maximized: false,
-    };
-    save_window_placement(&path, &placement).unwrap();
+    save_window_state(&path, rect(12.0, 34.0, 1280.0, 800.0), false).unwrap();
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         r#"{"x":12,"y":34,"width":1280,"height":800,"maximized":false}"#
@@ -516,7 +517,19 @@ fn window_state_files_round_trip_like_electron() {
         (state.width, state.height, state.x, state.y, state.maximized),
         (1280.0, 800.0, Some(12.0), Some(34.0), false)
     );
-    assert_eq!(load_window_placement(&path), Some(placement));
+
+    let settings = dir.path().join("settings-window-state.json");
+    let placement = WindowPlacement {
+        width: 1000.0,
+        height: 720.0,
+        maximized: true,
+    };
+    save_window_placement(&settings, &placement).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&settings).unwrap(),
+        r#"{"width":1000,"height":720,"maximized":true}"#
+    );
+    assert_eq!(load_window_placement(&settings), Some(placement));
     std::fs::write(&path, r#"{"width":"wide"}"#).unwrap();
     assert_eq!(load_window_state(&path), DEFAULT_WINDOW_STATE);
 }

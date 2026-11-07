@@ -5528,6 +5528,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
+ "fancy-regex 0.14.0",
  "futures-lite",
  "gpui-pre",
  "h2",

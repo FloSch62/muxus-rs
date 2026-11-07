@@ -2,14 +2,16 @@
 //! (`server/src/routes/ssh.ts`).
 
 use muxus_core::api::{
-    ConfigForward, HostBulkDeleteRequest, HostBulkDeleteResponse, HostBulkUpdateRequest,
-    HostBulkUpdateResponse, HostPreviewResponse, HostUpsertRequest, OpenSshMetadataPatch,
-    OpenSshProfileMetadata, SshConfigResponse, SshKeysResponse,
+    ConfigForward, HostBatchCreateRequest, HostBatchCreateResponse, HostBulkDeleteRequest,
+    HostBulkDeleteResponse, HostBulkUpdateRequest, HostBulkUpdateResponse, HostPreviewResponse,
+    HostUpsertRequest, OpenSshMetadataPatch, OpenSshProfileMetadata, SshConfigResponse,
+    SshKeysResponse,
 };
 use muxus_core::collate::locale_compare;
 use muxus_core::js::utf16_len;
+use muxus_core::validate::Validate;
 use muxus_ssh::config::edit::{
-    UpsertResult, delete_host, delete_hosts, patch_hosts, preview_host, upsert_host,
+    UpsertResult, create_hosts, delete_host, delete_hosts, patch_hosts, preview_host, upsert_host,
 };
 use muxus_ssh::config::{OptionLine, list_hosts, load_config_document};
 use muxus_ssh::folder_auth::batch_folder_auth_resolver;
@@ -122,6 +124,29 @@ impl Backend {
                     .rename_open_ssh_alias(previous, &request.aliases[0])?;
             }
             Ok(result)
+        })
+        .await
+    }
+
+    /// `POST /api/ssh/config/hosts/batch`: many new hosts (a range duplicate), in a single
+    /// write per config file. Each host passes the checks a single upsert does.
+    pub async fn create_ssh_hosts(
+        &self,
+        request: HostBatchCreateRequest,
+    ) -> ApiResult<HostBatchCreateResponse> {
+        let mut request = request;
+        request.validate().map_err(ApiError::invalid)?;
+        for host in &request.hosts {
+            check_upsert(host)?;
+        }
+        self.blocking(move |shared| {
+            Ok(HostBatchCreateResponse {
+                created: create_hosts(
+                    &request.hosts,
+                    &shared.ssh_config_path(),
+                    &shared.local_env,
+                )?,
+            })
         })
         .await
     }

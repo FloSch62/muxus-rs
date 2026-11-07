@@ -28,6 +28,8 @@ muxus-ui.workspace = true
 async-channel = "2"
 indexmap = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Lookarounds of the compare dialog's timestamp pattern (already in the tree via muxus-term).
+fancy-regex = "0.14"
 futures-lite = "2"
 regex = "1"
 sha2 = "0.10"

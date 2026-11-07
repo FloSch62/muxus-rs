@@ -21,6 +21,15 @@
 //! divider border, the menu shadow) with 8px of padding, options of body1 at
 //! 6px × 16px, at most 40% of the window tall; "Loading…" or "No options"
 //! stand in for an empty list (a `freeSolo` field shows no list then).
+//!
+//! A search field over options its owner already ranked (Settings search) sets
+//! [`Autocomplete::unfiltered`] (`filterOptions={(options) => options}`),
+//! [`Autocomplete::auto_highlight`], [`Autocomplete::hide_popup_indicator`]
+//! (`forcePopupIcon={false}`), [`Autocomplete::clear_on_pick`] (a controlled
+//! empty `value`), [`Autocomplete::clear_on_escape`], a list wider than the
+//! field ([`Autocomplete::list_min_width`]), its own empty text
+//! ([`Autocomplete::no_options_text`]) and a controlled `open`
+//! ([`Autocomplete::open_when`]).
 
 use std::rc::Rc;
 
@@ -199,6 +208,15 @@ impl AutocompleteModel {
             .and_then(|selected| shown.iter().position(|label| *label == selected));
     }
 
+    /// `autoHighlight`: like [`AutocompleteModel::sync`], but the first option is
+    /// highlighted when the picked one is not shown.
+    pub fn sync_auto_highlight(&mut self, shown: &[&str]) {
+        self.sync(shown);
+        if self.highlighted.is_none() && !shown.is_empty() {
+            self.highlighted = Some(0);
+        }
+    }
+
     /// A key while the field has the keyboard (`handleKeyDown`), with `count` options
     /// shown and `input` in the field.
     pub fn key(&mut self, key: &str, count: usize, free_solo: bool, input: &str) -> KeyOutcome {
@@ -302,6 +320,14 @@ pub struct Autocomplete {
     free_solo: bool,
     loading: bool,
     disable_clearable: bool,
+    unfiltered: bool,
+    auto_highlight: bool,
+    popup_indicator: bool,
+    clear_on_pick: bool,
+    clear_on_escape: bool,
+    list_min_width: Option<f32>,
+    no_options_text: Option<SharedString>,
+    open_when: bool,
     on_pick: Option<PickHandler>,
     on_clear: Option<ClearHandler>,
 }
@@ -322,9 +348,68 @@ impl Autocomplete {
             free_solo: false,
             loading: false,
             disable_clearable: false,
+            unfiltered: false,
+            auto_highlight: false,
+            popup_indicator: true,
+            clear_on_pick: false,
+            clear_on_escape: false,
+            list_min_width: None,
+            no_options_text: None,
+            open_when: true,
             on_pick: None,
             on_clear: None,
         }
+    }
+
+    /// `filterOptions={(options) => options}`: the options are shown as given,
+    /// already filtered and ranked by the owner.
+    pub fn unfiltered(mut self) -> Self {
+        self.unfiltered = true;
+        self
+    }
+
+    /// `autoHighlight`: the first option is highlighted, so Enter picks it.
+    pub fn auto_highlight(mut self) -> Self {
+        self.auto_highlight = true;
+        self
+    }
+
+    /// `forcePopupIcon={false}`: no popup button.
+    pub fn hide_popup_indicator(mut self) -> Self {
+        self.popup_indicator = false;
+        self
+    }
+
+    /// A controlled empty `value`: a pick empties the field instead of showing
+    /// the option.
+    pub fn clear_on_pick(mut self) -> Self {
+        self.clear_on_pick = true;
+        self
+    }
+
+    /// `clearOnEscape`: Escape on a closed list empties the field.
+    pub fn clear_on_escape(mut self) -> Self {
+        self.clear_on_escape = true;
+        self
+    }
+
+    /// The list is at least this wide (`slotProps.popper.style.minWidth`), and
+    /// at most the window less 32px.
+    pub fn list_min_width(mut self, width: f32) -> Self {
+        self.list_min_width = Some(width);
+        self
+    }
+
+    /// `noOptionsText`.
+    pub fn no_options_text(mut self, text: impl Into<SharedString>) -> Self {
+        self.no_options_text = Some(text.into());
+        self
+    }
+
+    /// A controlled `open`: the list shows only while this holds.
+    pub fn open_when(mut self, open: bool) -> Self {
+        self.open_when = open;
+        self
     }
 
     /// `freeSolo`: any text is a value; no popup button, no "No options".
@@ -399,19 +484,30 @@ impl RenderOnce for Autocomplete {
         let value = self.input.read(cx).value().to_string();
 
         // Filter, and keep the highlight in step with what is shown.
+        let (unfiltered, auto_highlight) = (self.unfiltered, self.auto_highlight);
+        let open_when = self.open_when;
         let options = Rc::new(self.options);
         let (shown, model, anchor, scroll) = state.update(cx, |state, _| {
-            if state.model.open && !focused {
+            // A controlled `open` that is false closes the list, so Escape reaches the owner.
+            if state.model.open && (!focused || !open_when) {
                 state.model.close();
             }
             let needle = state.model.needle(&value).to_owned();
-            let shown = filter_labels(options.iter().map(|o| o.label.as_ref()), &needle);
+            let shown = if unfiltered {
+                (0..options.len()).collect()
+            } else {
+                filter_labels(options.iter().map(|o| o.label.as_ref()), &needle)
+            };
             if state.model.open {
                 let labels: Vec<SharedString> =
                     shown.iter().map(|&i| options[i].label.clone()).collect();
                 if labels != state.shown {
                     let refs: Vec<&str> = labels.iter().map(|l| l.as_ref()).collect();
-                    state.model.sync(&refs);
+                    if auto_highlight {
+                        state.model.sync_auto_highlight(&refs);
+                    } else {
+                        state.model.sync(&refs);
+                    }
                     state.shown = labels;
                 }
             } else {
@@ -427,7 +523,7 @@ impl RenderOnce for Autocomplete {
         let shown = Rc::new(shown);
 
         let has_clear = !self.disable_clearable && !value.is_empty();
-        let has_popup = !self.free_solo;
+        let has_popup = !self.free_solo && self.popup_indicator;
         let group: SharedString = format!("autocomplete-{:?}", self.id).into();
 
         // The end adornment: clear button and popup indicator.
@@ -508,15 +604,22 @@ impl RenderOnce for Autocomplete {
             let options = options.clone();
             let shown = shown.clone();
             let on_pick = self.on_pick.clone();
+            let clear_on_pick = self.clear_on_pick;
             Rc::new(move |index, window, cx| {
                 let Some(option) = shown.get(index).map(|&i| options[i].clone()) else {
                     return;
                 };
-                input.update(cx, |input, cx| {
-                    input.set_value(option.label.to_string(), window, cx)
-                });
+                let text = if clear_on_pick {
+                    String::new()
+                } else {
+                    option.label.to_string()
+                };
+                input.update(cx, |input, cx| input.set_value(text, window, cx));
                 state.update(cx, |state, cx| {
                     state.model.picked(&option.label);
+                    if clear_on_pick {
+                        state.model.selected = None;
+                    }
                     cx.notify();
                 });
                 if let Some(on_pick) = &on_pick {
@@ -529,6 +632,7 @@ impl RenderOnce for Autocomplete {
         let key_input = self.input.clone();
         let key_pick = pick.clone();
         let free_solo = self.free_solo;
+        let clear_on_escape = self.clear_on_escape;
         let count = shown.len();
         let mut root = div()
             .id(self.id)
@@ -542,6 +646,16 @@ impl RenderOnce for Autocomplete {
                 }
                 let text = key_input.read(cx).value().to_string();
                 let key = event.keystroke.key.clone();
+                let list_open = key_state.read(cx).model.open;
+                if clear_on_escape && key == "escape" && !list_open && !text.is_empty() {
+                    cx.stop_propagation();
+                    key_input.update(cx, |input, cx| input.set_value("", window, cx));
+                    key_state.update(cx, |state, cx| {
+                        state.model.selected = None;
+                        cx.notify();
+                    });
+                    return;
+                }
                 let (outcome, highlighted, rows, scroll) = key_state.update(cx, |state, cx| {
                     let outcome = state.model.key(&key, count, free_solo, &text);
                     if outcome != KeyOutcome::Ignored {
@@ -572,14 +686,19 @@ impl RenderOnce for Autocomplete {
 
         let has_content = !shown.is_empty() || self.loading || !self.free_solo;
         if model.open
+            && self.open_when
             && has_content
             && let Some(bounds) = anchor.get()
         {
+            let no_options = self
+                .no_options_text
+                .clone()
+                .unwrap_or_else(|| SharedString::new_static("No options"));
             let status = if shown.is_empty() {
                 Some(if self.loading {
-                    "Loading…"
+                    SharedString::new_static("Loading…")
                 } else {
-                    "No options"
+                    no_options
                 })
             } else {
                 None
@@ -610,10 +729,18 @@ impl RenderOnce for Autocomplete {
             state.update(cx, |state, _| state.rows = rows);
             let max_height = crate::zoom::unzoom(window.viewport_size().height) * 0.4;
             let dismiss_state = state.clone();
+            let field_width = crate::zoom::unzoom(bounds.size.width);
+            let list_width = match self.list_min_width {
+                Some(min) => {
+                    let room = crate::zoom::unzoom(window.viewport_size().width) - 32.;
+                    field_width.max(min).min(room.max(field_width))
+                }
+                None => field_width,
+            };
             let paper = menu::paper(&theme)
                 .py(px(0.))
                 .min_w(px(0.))
-                .w(bounds.size.width)
+                .w(px(list_width))
                 .overflow_hidden()
                 .child(match status {
                     Some(status) => div()
@@ -816,6 +943,21 @@ mod tests {
         assert_eq!(model.highlighted, Some(0));
         model.sync(&["Ubuntu Mono"]);
         assert_eq!(model.highlighted, None);
+    }
+
+    #[test]
+    fn auto_highlight_starts_on_the_first_option() {
+        let mut model = AutocompleteModel::default();
+        model.open();
+        model.sync_auto_highlight(&["Font family", "Font size"]);
+        assert_eq!(model.highlighted, Some(0));
+        model.sync_auto_highlight(&[]);
+        assert_eq!(model.highlighted, None);
+        // The picked option keeps its highlight when it is shown.
+        model.picked("Font size");
+        model.open();
+        model.sync_auto_highlight(&["Font family", "Font size"]);
+        assert_eq!(model.highlighted, Some(1));
     }
 
     #[test]

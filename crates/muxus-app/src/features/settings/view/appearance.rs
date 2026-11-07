@@ -29,7 +29,7 @@ use super::kit::{
     secondary_text, slider_value, snap, toggle_group,
 };
 use super::layout_preview::layout_preview;
-use super::scheme::{custom_terminal_schemes, scheme_menu_entries, scheme_value};
+use super::scheme::{SchemeMode, custom_terminal_schemes, scheme_menu_entries, scheme_value};
 use super::window::SettingsWindow;
 
 impl SettingsWindow {
@@ -324,6 +324,7 @@ impl SettingsWindow {
             theme,
             "light-terminal-theme",
             &prefs.light_terminal_scheme,
+            SchemeMode::Light,
             cx,
             |p, id| {
                 p.light_terminal_scheme = id;
@@ -333,6 +334,7 @@ impl SettingsWindow {
             theme,
             "dark-terminal-theme",
             &prefs.dark_terminal_scheme,
+            SchemeMode::Dark,
             cx,
             |p, id| {
                 p.dark_terminal_scheme = id;
@@ -382,6 +384,7 @@ impl SettingsWindow {
         theme: &Theme,
         key: &'static str,
         value: &str,
+        first: SchemeMode,
         cx: &mut Context<Self>,
         set: fn(&mut muxus_store::prefs::PrefsState, String),
     ) -> AnyElement {
@@ -390,7 +393,7 @@ impl SettingsWindow {
         let scheme = terminal_scheme(Some(value), &custom).clone();
         let anchor = self.anchor(key);
         let open = self.menu_open(key);
-        let entries = scheme_menu_entries(&custom, "");
+        let entries = scheme_menu_entries(&custom, "", first);
         let selected = value.to_string();
         let this = cx.entity().downgrade();
         super::kit::row_select(

@@ -626,6 +626,9 @@ impl SettingsWindow {
     /// Esc closes the window as it closes the dialog; menus, dialogs and the
     /// shortcut recorder take their Esc first.
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search_shortcut(event, window, cx) {
+            return;
+        }
         if event.keystroke.key != "escape" {
             return;
         }
@@ -717,7 +720,7 @@ impl SettingsWindow {
         .into_any_element()
     }
 
-    fn render_nav(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_nav(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = *cx.theme();
         let p = theme.palette;
         let dark = theme.mode.is_dark();
@@ -727,7 +730,7 @@ impl SettingsWindow {
             alpha(p.text.primary, 0.02)
         };
         let selected_bg = alpha(p.primary.main, if dark { 0.16 } else { 0.09 });
-        let mut list = div().flex().flex_col().py(px(8.));
+        let mut list = div().flex().flex_col().pb(px(8.));
         for section in SettingsSection::ALL {
             let selected = section == self.nav.section;
             let ink = if selected {
@@ -792,16 +795,26 @@ impl SettingsWindow {
             }
             list = list.child(tab);
         }
+        let search = self.search_field(window, cx);
         div()
-            .id("settings-nav")
+            .flex()
+            .flex_col()
             .flex_none()
             .w(px(196.))
             .h_full()
+            .min_h_0()
             .border_r_1()
             .border_color(p.divider)
             .bg(bg)
-            .overflow_y_scroll()
-            .child(list)
+            .child(search)
+            .child(
+                div()
+                    .id("settings-nav")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(list),
+            )
             .into_any_element()
     }
 
@@ -1042,8 +1055,11 @@ impl Render for SettingsWindow {
         let p = theme.palette;
         self.state.before_render(self.nav.section, cx);
         let title_bar = self.render_title_bar(window, cx);
-        let nav = self.render_nav(cx);
+        let nav = self.render_nav(window, cx);
+        let focus = super::search::focus_scope(&self.state.search, p.primary.main);
         let section = self.render_section(window, cx);
+        drop(focus);
+        self.follow_search_focus(window, cx);
         let content = div()
             .relative()
             .flex_1()

@@ -7,11 +7,12 @@ mod support;
 use std::time::Duration;
 
 use muxus_core::api::{
-    ConnectionCheck, ConnectionCheckStatus, EditorFileSaveRequest, HostBulkDeleteRequest,
-    HostBulkUpdateRequest, HostOrderRequest, HostUpsertRequest, OpenSshMetadataPatch,
-    PasswordVaultUnlockPolicy, SavedHostProfileInput, SessionEndStatus, SessionHistorySettings,
-    SessionLogCreateInput, SessionLogDirection, SessionLogFileSettings, SessionLoggingPolicyInput,
-    TunnelInput, UpdateCheckResult, VaultSecretInput, WorkspaceSaveRequest, X11SettingsUpdate,
+    ConnectionCheck, ConnectionCheckStatus, EditorFileSaveRequest, HostBatchCreateRequest,
+    HostBulkDeleteRequest, HostBulkUpdateRequest, HostOrderRequest, HostUpsertRequest,
+    OpenSshMetadataPatch, PasswordVaultUnlockPolicy, SavedHostProfileInput, SessionEndStatus,
+    SessionHistorySettings, SessionLogCreateInput, SessionLogDirection, SessionLogFileSettings,
+    SessionLoggingPolicyInput, TunnelInput, UpdateCheckResult, VaultSecretInput,
+    WorkspaceSaveRequest, X11SettingsUpdate,
 };
 use muxus_core::protocol::{ProfileKind, TerminalProfile};
 use muxus_session::routes::folders::FolderSettingsUpsert;
@@ -697,6 +698,47 @@ async fn bulk_host_updates_patch_every_alias_or_nothing() {
         .unwrap_err();
     assert_eq!(unknown.status, 404);
     assert!(sandbox.ssh_config().contains("User ops"));
+    sandbox.stop().await;
+}
+
+#[tokio::test]
+async fn batch_host_creates_add_every_block_or_nothing() {
+    let sandbox = start().await;
+    let backend = &sandbox.backend;
+    sandbox.write_ssh_config(&["Host app1", "  HostName app1.corp.local"]);
+    let empty = backend
+        .create_ssh_hosts(HostBatchCreateRequest { hosts: vec![] })
+        .await
+        .unwrap_err();
+    assert_eq!(empty.status, 400);
+    let taken = backend
+        .create_ssh_hosts(body(json!({ "hosts": [
+            { "aliases": ["app2"], "options": {} },
+            { "aliases": ["app1"], "options": {} },
+        ] })))
+        .await
+        .unwrap_err();
+    assert_eq!(taken.status, 409);
+    assert!(!sandbox.ssh_config().contains("app2"));
+    // Each host passes the checks a single upsert makes.
+    let bad_port = backend
+        .create_ssh_hosts(body(json!({ "hosts": [
+            { "aliases": ["app2"], "options": { "port": 0 } },
+        ] })))
+        .await
+        .unwrap_err();
+    assert_eq!(bad_port.status, 400);
+    let created = backend
+        .create_ssh_hosts(body(json!({ "hosts": [
+            { "aliases": ["app2"], "options": { "hostname": "app2.corp.local" } },
+            { "aliases": ["app3"], "options": { "hostname": "app3.corp.local" } },
+        ] })))
+        .await
+        .unwrap();
+    assert_eq!(created.created, 2);
+    let config = sandbox.ssh_config();
+    assert!(config.contains("Host app2\n  HostName app2.corp.local"));
+    assert!(config.contains("Host app3\n  HostName app3.corp.local"));
     sandbox.stop().await;
 }
 

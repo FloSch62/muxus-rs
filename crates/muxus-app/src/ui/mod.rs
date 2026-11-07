@@ -9,6 +9,7 @@
 //!   hosts' shells run locally.
 
 mod closing;
+mod compare;
 mod confirm;
 mod desktop;
 mod environments;
@@ -220,6 +221,7 @@ pub fn run() {
                 Mode::Light
             };
             muxus_ui::init(mode, cx);
+            muxus_app::features::desktop::app_menu::install(cx);
             if let Some(instance) = primary {
                 let events = instance.events();
                 cx.set_global(InstanceGuard(instance));
