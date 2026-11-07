@@ -1291,7 +1291,41 @@ impl SftpPanel {
                 self.open_with = Some((dialog, subscription));
                 cx.notify();
             }
-            Some(OpenWithChooser::ProgramPicker) | None => {}
+            Some(OpenWithChooser::ProgramPicker) => {
+                // macOS: an application picked with the native file picker
+                // (`chooseLocalProgram`).
+                let picked = crate::util::file_dialog::pick_paths(
+                    muxus_ui::gpui_kit::PathPromptOptions {
+                        files: true,
+                        directories: false,
+                        multiple: false,
+                        prompt: Some("Open".into()),
+                    },
+                    cx,
+                );
+                cx.spawn_in(window, async move |this, cx| {
+                    let Some(program) = picked.await.and_then(|paths| paths.into_iter().next())
+                    else {
+                        return;
+                    };
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        if let Err(message) = super::local_open::check_picked_program(&program) {
+                            super::services::notify(Status::Error, message, cx);
+                            return;
+                        }
+                        let id =
+                            format!("{}{}", super::open_with::PICKED_PREFIX, program.display());
+                        this.open_locally(
+                            entry,
+                            muxus_core::api::LocalOpenTarget::Application { id },
+                            window,
+                            cx,
+                        );
+                    });
+                })
+                .detach();
+            }
+            None => {}
         }
     }
 
@@ -1850,7 +1884,9 @@ impl SftpPanel {
         if is_file && let Some(ticket) = entry.download_ticket.clone() {
             // Drag out to download: the file is fetched (by its drag ticket)
             // as soon as the drag starts and handed to the desktop as a file
-            // once the pointer leaves the window.
+            // once the pointer leaves the window, still downloading or not:
+            // it takes its name when it is complete, so a drop that comes
+            // first finds nothing rather than half a file.
             row = row
                 .on_drag(
                     DraggedFile {
@@ -2160,33 +2196,36 @@ struct DraggedFile {
     conn_id: String,
     ticket: String,
     name: String,
-    /// The downloaded copy, once it is on disk.
+    /// Where the downloaded copy goes (it appears there once complete).
     local: Rc<std::cell::RefCell<Option<PathBuf>>>,
 }
 
 impl DraggedFile {
     fn fetch(&self, cx: &mut App) {
+        let root = super::local_open::local_copy_root();
+        let Ok(pending) = super::local_open::create_pending_local_copy(&root, &self.name) else {
+            return;
+        };
+        *self.local.borrow_mut() = Some(pending.file.clone());
         let backend = services(cx).backend;
-        let (conn, ticket, name) = (self.conn_id.clone(), self.ticket.clone(), self.name.clone());
-        let slot = self.local.clone();
+        let (conn, ticket) = (self.conn_id.clone(), self.ticket.clone());
         cx.spawn(async move |cx| {
-            let Ok(stream) = backend.sftp_drag_download(&conn, &ticket).await else {
-                return;
+            let bytes = match backend.sftp_drag_download(&conn, &ticket).await {
+                Ok(stream) => stream.read_all().await.ok(),
+                Err(_) => None,
             };
-            let Ok(bytes) = stream.read_all().await else {
-                return;
-            };
-            let written = cx
-                .background_executor()
+            cx.background_executor()
                 .spawn(async move {
                     use std::io::Write;
-                    let root = super::local_open::local_copy_root();
-                    let mut copy = super::local_open::create_local_copy(&root, &name).ok()?;
-                    copy.handle.write_all(&bytes).ok()?;
-                    Some(copy.file)
+                    let mut pending = pending;
+                    match bytes {
+                        Some(bytes) if pending.handle.write_all(&bytes).is_ok() => {
+                            let _ = pending.finish();
+                        }
+                        _ => pending.discard(),
+                    }
                 })
                 .await;
-            *slot.borrow_mut() = written;
         })
         .detach();
     }

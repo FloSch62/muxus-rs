@@ -2,15 +2,17 @@
 //! desktop has no chooser Muxus can call: the installed programs, those that
 //! handle the file's type first (issue #221).
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use muxus_core::api::LocalOpenTarget;
 use muxus_ui::gpui_kit::base::input::{Input, InputEvent, InputState};
 use muxus_ui::gpui_kit::{
     AnyElement, AppContext, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle,
-    Focusable, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, ParentElement,
-    PathPromptOptions, Render, ScrollHandle, StatefulInteractiveElement, Styled, Subscription,
-    Window, div, px, relative,
+    Focusable, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, ObjectFit, ParentElement,
+    PathPromptOptions, Render, ScrollHandle, StatefulInteractiveElement, Styled, StyledImage,
+    Subscription, Window, div, img, px, relative,
 };
 use muxus_ui::icon::{SMALL, icon};
 use muxus_ui::label::{label, paragraph};
@@ -65,6 +67,8 @@ pub fn initial_selection(visible: &[&ApplicationChoice], query: &str) -> Option<
 pub struct OpenWithDialog {
     file_name: String,
     choices: Option<Arc<Vec<ApplicationChoice>>>,
+    /// The programs' icons from the desktop's icon theme, by program ID.
+    icons: Arc<HashMap<String, PathBuf>>,
     failed: bool,
     query: Entity<InputState>,
     selected: Option<String>,
@@ -96,18 +100,28 @@ impl OpenWithDialog {
         window.focus(&focus, cx);
         let name = file_name.clone();
         cx.spawn(async move |this, cx| {
-            let choices = cx
+            let (choices, icons) = cx
                 .background_executor()
                 .spawn(async move {
-                    let env: std::collections::HashMap<String, String> = std::env::vars().collect();
+                    let env: HashMap<String, String> = std::env::vars().collect();
                     let home = std::env::var_os("HOME")
-                        .map(std::path::PathBuf::from)
+                        .map(PathBuf::from)
                         .unwrap_or_default();
-                    LinuxApplicationCatalog::read(&env, &home).applications_for(&name)
+                    let catalog = LinuxApplicationCatalog::read(&env, &home);
+                    let choices = catalog.applications_for(&name);
+                    let icons: HashMap<String, PathBuf> = choices
+                        .iter()
+                        .filter_map(|choice| {
+                            let icon = catalog.icon_file(&choice.application)?;
+                            Some((choice.application.id.clone(), icon))
+                        })
+                        .collect();
+                    (choices, icons)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.choices = Some(Arc::new(choices));
+                this.icons = Arc::new(icons);
                 this.reselect(cx);
                 cx.notify();
             });
@@ -116,6 +130,7 @@ impl OpenWithDialog {
         Self {
             file_name,
             choices: None,
+            icons: Arc::default(),
             failed: false,
             query,
             selected: None,
@@ -175,7 +190,7 @@ impl OpenWithDialog {
         cx.notify();
     }
 
-    /// `Browse…`: any executable, picked with the native file picker.
+    /// `Browse…`: a desktop entry or any executable, picked with the native file picker.
     fn browse(&mut self, cx: &mut Context<Self>) {
         let picked = crate::util::file_dialog::pick_paths(
             PathPromptOptions {
@@ -194,16 +209,9 @@ impl OpenWithDialog {
                 return;
             };
             let _ = this.update(cx, |_, cx| {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                if super::linux_apps::find_program(&path.to_string_lossy(), "").is_none() {
-                    notify(
-                        muxus_ui::theme::Status::Error,
-                        format!("{name} is not an executable program."),
-                        cx,
-                    );
+                // A desktop entry or an executable.
+                if let Err(message) = super::local_open::check_picked_program(&path) {
+                    notify(muxus_ui::theme::Status::Error, message, cx);
                     return;
                 }
                 cx.emit(OpenWithEvent::Open(LocalOpenTarget::Application {
@@ -332,11 +340,17 @@ impl OpenWithDialog {
                     }
                     cx.notify();
                 }))
-                .child(div().flex_none().min_w(px(36.)).child(icon(
-                    "AppsOutlined",
-                    22.,
-                    p.text.secondary,
-                )));
+                .child(
+                    div().flex_none().min_w(px(36.)).child(
+                        match self.icons.get(&choice.application.id) {
+                            Some(file) => img(file.clone())
+                                .size(px(24.))
+                                .object_fit(ObjectFit::Contain)
+                                .into_any_element(),
+                            None => icon("AppsOutlined", 22., p.text.secondary).into_any_element(),
+                        },
+                    ),
+                );
             let mut text = div().flex().flex_col().flex_1().min_w_0().child(
                 label(choice.application.name.clone())
                     .size(13.)

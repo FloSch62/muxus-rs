@@ -50,12 +50,55 @@ pub fn can_open_locally() -> bool {
 pub fn open_with_chooser() -> Option<OpenWithChooser> {
     if cfg!(windows) {
         Some(OpenWithChooser::System)
+    } else if cfg!(target_os = "macos") {
+        Some(OpenWithChooser::ProgramPicker)
     } else if cfg!(target_os = "linux") {
         Some(OpenWithChooser::ApplicationList)
     } else {
-        // macOS's program picker is not ported yet.
         None
     }
+}
+
+/// `muxus:local-open:choose-program`'s checks on a program picked with the file picker: on
+/// macOS any application bundle; elsewhere a desktop entry Muxus can start, or an executable.
+/// The error is the sentence the user sees.
+pub fn check_picked_program(file: &Path) -> Result<(), String> {
+    let name = file
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    if name.ends_with(".desktop") {
+        picked_desktop_entry(file).map(|_| ())
+    } else if super::linux_apps::find_program(&file.to_string_lossy(), "").is_some() {
+        Ok(())
+    } else {
+        Err(format!("{name} is not an executable program."))
+    }
+}
+
+/// A picked `.desktop` file as the program it describes.
+fn picked_desktop_entry(file: &Path) -> Result<super::linux_apps::DesktopApplication, String> {
+    let name = file
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let text = fs::metadata(file)
+        .ok()
+        .filter(|info| info.is_file() && info.len() <= 256 * 1024)
+        .and_then(|_| fs::read_to_string(file).ok())
+        .ok_or_else(|| format!("{name} could not be read."))?;
+    let environment: HashMap<String, String> = std::env::vars().collect();
+    super::linux_apps::desktop_application_from_text(
+        &text,
+        &name,
+        &file.to_string_lossy(),
+        &[],
+        &super::linux_apps::current_desktops(&environment),
+    )
+    .ok_or_else(|| format!("{name} does not describe a program Muxus can start."))
 }
 
 pub const LOCAL_COPY_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
@@ -145,6 +188,79 @@ fn private_dir(path: &Path) -> std::io::Result<()> {
 
 /// Create an owner-only folder under `root` and an empty file named after the remote one.
 pub fn create_local_copy(root: &Path, name: &str) -> std::io::Result<LocalCopy> {
+    let directory = private_copy_directory(root)?;
+    let file = directory.join(local_copy_file_name(name));
+    match create_private_file(&file) {
+        Ok(handle) => Ok(LocalCopy {
+            directory,
+            file,
+            handle,
+        }),
+        Err(error) => {
+            let _ = fs::remove_dir_all(&directory);
+            Err(error)
+        }
+    }
+}
+
+/// A local copy still being written: the data goes to a hidden file beside the copy, which
+/// takes the copy's name only once it is complete, so nobody can read half of it.
+pub struct PendingLocalCopy {
+    pub directory: PathBuf,
+    /// Where the copy will be.
+    pub file: PathBuf,
+    part: PathBuf,
+    pub handle: File,
+}
+
+impl PendingLocalCopy {
+    /// The data is all there: the copy appears under its name.
+    pub fn finish(self) -> std::io::Result<PathBuf> {
+        drop(self.handle);
+        fs::rename(&self.part, &self.file)?;
+        Ok(self.file)
+    }
+
+    /// The copy will not be completed: nothing of it stays.
+    pub fn discard(self) {
+        drop(self.handle);
+        let _ = fs::remove_dir_all(&self.directory);
+    }
+}
+
+/// Like [`create_local_copy`], but the copy's name stays free until [`PendingLocalCopy::finish`].
+pub fn create_pending_local_copy(root: &Path, name: &str) -> std::io::Result<PendingLocalCopy> {
+    let directory = private_copy_directory(root)?;
+    let file_name = local_copy_file_name(name);
+    let file = directory.join(&file_name);
+    let part = directory.join(format!(".{file_name}.part"));
+    match create_private_file(&part) {
+        Ok(handle) => Ok(PendingLocalCopy {
+            directory,
+            file,
+            part,
+            handle,
+        }),
+        Err(error) => {
+            let _ = fs::remove_dir_all(&directory);
+            Err(error)
+        }
+    }
+}
+
+fn create_private_file(file: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(file)
+}
+
+/// A new owner-only folder under the owner-only `root`.
+fn private_copy_directory(root: &Path) -> std::io::Result<PathBuf> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
@@ -164,26 +280,7 @@ pub fn create_local_copy(root: &Path, name: &str) -> std::io::Result<LocalCopy> 
     }
     #[cfg(not(unix))]
     fs::create_dir_all(root)?;
-    let directory = make_temp_dir(root)?;
-    let file = directory.join(local_copy_file_name(name));
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    match options.open(&file) {
-        Ok(handle) => Ok(LocalCopy {
-            directory,
-            file,
-            handle,
-        }),
-        Err(error) => {
-            let _ = fs::remove_dir_all(&directory);
-            Err(error)
-        }
-    }
+    make_temp_dir(root)
 }
 
 /// `mkdtemp(root/open-)`.
@@ -350,11 +447,31 @@ pub fn open_local_copy(file: &Path, target: &LocalOpenTarget) -> Result<(), Stri
         }
         LocalOpenTarget::Application { id } => {
             if let Some(program) = id.strip_prefix(super::open_with::PICKED_PREFIX) {
-                return Command::new(program)
+                if cfg!(target_os = "macos") {
+                    // An application bundle the program picker chose.
+                    return run_opener(
+                        "/usr/bin/open",
+                        &["-a", program, &path],
+                        Duration::from_secs(10),
+                    );
+                }
+                if program.ends_with(".desktop") {
+                    let application = picked_desktop_entry(Path::new(program))?;
+                    return super::linux_apps::launch(&application, &path);
+                }
+                let environment: HashMap<String, String> = std::env::vars().collect();
+                let mut command = Command::new(program);
+                command
                     .arg(&path)
+                    .env_clear()
+                    .envs(launch_environment(&environment))
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
-                    .stderr(Stdio::null())
+                    .stderr(Stdio::null());
+                if let Some(home) = std::env::var_os("HOME") {
+                    command.current_dir(home);
+                }
+                return command
                     .spawn()
                     .map(|_| ())
                     .map_err(|error| error.to_string());
@@ -762,6 +879,59 @@ mod tests {
             assert_eq!(mode(&first.directory) & 0o777, 0o700);
             assert_eq!(mode(&first.file) & 0o077, 0);
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn checks_programs_picked_with_the_file_picker() {
+        let scratch = tempfile::tempdir().unwrap();
+        let entry = scratch.path().join("viewer.desktop");
+        fs::write(
+            &entry,
+            "[Desktop Entry]\nType=Application\nName=Viewer\nExec=viewer %f\n",
+        )
+        .unwrap();
+        assert_eq!(check_picked_program(&entry), Ok(()));
+        let link = scratch.path().join("site.desktop");
+        fs::write(
+            &link,
+            "[Desktop Entry]\nType=Link\nName=Site\nURL=https://example.com\n",
+        )
+        .unwrap();
+        assert_eq!(
+            check_picked_program(&link),
+            Err("site.desktop does not describe a program Muxus can start.".into())
+        );
+        assert_eq!(
+            check_picked_program(&scratch.path().join("gone.desktop")),
+            Err("gone.desktop could not be read.".into())
+        );
+        let script = scratch.path().join("notes.txt");
+        fs::write(&script, "x").unwrap();
+        assert_eq!(
+            check_picked_program(&script),
+            Err("notes.txt is not an executable program.".into())
+        );
+    }
+
+    #[test]
+    fn names_a_pending_copy_only_once_it_is_complete() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().join("muxus-open");
+        let mut pending = create_pending_local_copy(&root, "report.pdf").unwrap();
+        let file = pending.file.clone();
+        assert_eq!(file.file_name().unwrap(), "report.pdf");
+        pending.handle.write_all(b"half").unwrap();
+        // Offered already, but not there until the data is.
+        assert!(!file.exists());
+        pending.handle.write_all(b" and the rest").unwrap();
+        assert_eq!(pending.finish().unwrap(), file);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "half and the rest");
+        assert_eq!(fs::read_dir(file.parent().unwrap()).unwrap().count(), 1);
+        let abandoned = create_pending_local_copy(&root, "x.bin").unwrap();
+        let directory = abandoned.directory.clone();
+        abandoned.discard();
+        assert!(!directory.exists());
     }
 
     #[cfg(unix)]

@@ -16,6 +16,9 @@
 //! - `MUXUS_DESKTOP_TOOLBAR=pinned|auto` (default pinned): keep the toolbar in view, as the
 //!   screenshot caught it right after connecting
 //! - `MUXUS_WINDOW=fullscreen` fills the monitor; `MUXUS_DATA_DIR=<dir>` keeps the sandbox
+//! - `MUXUS_DESKTOP_TARGET=host:port` dials a real server instead (a live check, e.g. the
+//!   `muxus-desktop-lab` container), answering logons as `MUXUS_DESKTOP_USER` with
+//!   `MUXUS_DESKTOP_PASSWORD`
 //!
 //! Nothing touches the real home directory or data folder; the desktop host names resolve
 //! to the loopback servers through `MUXUS_DEMO_HOSTMAP`, as `hack/demo-resolve.mjs` did.
@@ -110,6 +113,16 @@ fn main() {
     let pinned = std::env::var("MUXUS_DESKTOP_TOOLBAR").as_deref() != Ok("auto");
     let fullscreen = std::env::var("MUXUS_WINDOW").as_deref() == Ok("fullscreen");
 
+    let target = std::env::var("MUXUS_DESKTOP_TARGET")
+        .ok()
+        .and_then(|target| {
+            let (host, port) = target.rsplit_once(':')?;
+            Some((host.to_string(), port.parse::<u16>().ok()?))
+        });
+    let password =
+        std::env::var("MUXUS_DESKTOP_PASSWORD").unwrap_or_else(|_| demo_rdp::PASSWORD.into());
+    let user = std::env::var("MUXUS_DESKTOP_USER").unwrap_or_else(|_| demo_rdp::USER.into());
+
     // The servers' ports must be known before anything else runs: the host map is read from
     // the environment.
     let desktop = Arc::new(demo_desktop::draw(1132, 786));
@@ -125,12 +138,14 @@ fn main() {
     } else {
         "design-vm.lab.internal"
     };
-    // SAFETY: no other thread has started yet.
-    unsafe {
-        std::env::set_var(
-            DEMO_HOST_MAP_ENV,
-            serde_json::json!({ host: port }).to_string(),
-        );
+    if target.is_none() {
+        // SAFETY: no other thread has started yet.
+        unsafe {
+            std::env::set_var(
+                DEMO_HOST_MAP_ENV,
+                serde_json::json!({ host: port }).to_string(),
+            );
+        }
     }
 
     let scratch = scratch_dir();
@@ -138,19 +153,29 @@ fn main() {
     let _ = std::fs::create_dir_all(&home);
     let backend = Backend::start_blocking(BackendOptions::sandbox(scratch.join("data"), &home))
         .expect("start the sandboxed backend");
-    if rdp {
-        demo_rdp::serve(listener, desktop);
-    } else {
-        let _guard = backend.runtime().enter();
-        demo_vnc::serve(listener, desktop, "design-vm");
+    // A real server needs no demo one.
+    match (&target, rdp) {
+        (Some(_), _) => {}
+        (None, true) => demo_rdp::serve(listener, desktop),
+        (None, false) => {
+            let _guard = backend.runtime().enter();
+            demo_vnc::serve(listener, desktop, "design-vm");
+        }
     }
+    let (host, desktop_port) = match &target {
+        Some((host, port)) => (host.as_str(), *port),
+        None => (host, if rdp { 3389 } else { 5900 }),
+    };
     let profile: DesktopProfile = serde_json::from_value(if rdp {
-        serde_json::json!({ "kind": "rdp", "host": host, "port": 3389, "username": demo_rdp::USER })
+        serde_json::json!({ "kind": "rdp", "host": host, "port": desktop_port, "username": user })
     } else {
-        serde_json::json!({ "kind": "vnc", "host": host, "port": 5900 })
+        serde_json::json!({ "kind": "vnc", "host": host, "port": desktop_port })
     })
     .expect("a desktop profile");
-    let title = if rdp { "win-build" } else { "design-vm" };
+    let title = match &target {
+        Some((host, _)) => host.clone(),
+        None => if rdp { "win-build" } else { "design-vm" }.to_string(),
+    };
 
     muxus_ui::gpui_kit::application()
         .with_assets(muxus_ui::assets::Assets)
@@ -194,7 +219,7 @@ fn main() {
                                         answers: if skip {
                                             Vec::new()
                                         } else {
-                                            vec![demo_rdp::PASSWORD.into()]
+                                            vec![password.clone()]
                                         },
                                         remember_password: None,
                                         skipped: skip.then_some(true),
