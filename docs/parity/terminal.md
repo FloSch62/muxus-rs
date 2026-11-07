@@ -12,7 +12,7 @@ Crates:
 - `muxus-term-view` (L5, GPUI): `TerminalView`, which paints an emulator on the cell grid and
   drives it from any `muxus_core::stream::TransportChannels`.
 
-Tests: `cargo test -p muxus-term -p muxus-term-view` (352 + 18; the view's pointer, IME and settings tests run in GPUI's headless windows). Example:
+Tests: `cargo test -p muxus-term -p muxus-term-view` (354 + 18; the view's pointer, IME and settings tests run in GPUI's headless windows). Example:
 `MUXUS_TERM_FONTS=<dir with ttf> cargo run -p muxus-term-view --example shell`.
 
 ## Emulator decisions
@@ -81,7 +81,7 @@ splits the output at the sequences Muxus handles itself:
 | Bell | xterm `onBell` | done | `TerminalViewEvent::Bell`; how to signal it is the app's. |
 | Zoom (Ctrl+wheel, actions, percent) | `TerminalViewImpl.applyZoom` | done | |
 | Live preference changes | `TerminalViewImpl` effects | done | Font, size, line height, theme, cursor, links, OSC 52, keyword rules and the scrollback size apply live; a smaller scrollback drops the oldest lines as xterm trims them (`Emulator::set_scrollback_limit`, an engine patch: `vendor/par-term-emu-core/PATCHES.md`). |
-| Scrollback reflow on resize | xterm buffer reflow (`Buffer._reflowLarger`, `_reflowSmaller`) | partial | The engine reflows the screen; scrollback lines keep the width they scrolled off at (a narrower window clips them, a wider one leaves them short), and the cursor stays on its row instead of following its line. xterm's reflow rewraps the whole buffer and moves the cursor, markers and selection with their lines; doing that here needs the engine to hand back a line map for the emulator's marks (failed commands, image tops, shell integration) and zones, which is not done. |
+| Scrollback reflow on resize | xterm buffer reflow (`Buffer._reflowLarger`, `_reflowSmaller`) | partial | The scrollback rewraps with the width (an engine patch, `vendor/par-term-emu-core/PATCHES.md`): a narrower window wraps stored lines instead of clipping them, a wider one joins what the old width wrapped; failed-command marks, the running command, image tops and a scrolled-back viewport follow their lines; the selection is cleared on a size change. Left: the screen still reflows on its own (top-aligned, the cursor stays on its row instead of following its line, and lines are not pulled back from the scrollback as xterm's `_reflowLarger` does), and a logical line that continues from the scrollback onto the screen keeps its stored rows. |
 | WebGL renderer preference | `@xterm/addon-webgl` | n/a | GPUI renders on the GPU; the preference has nothing to switch. |
 | Terminal registry / handle | `terminal/terminal-registry.ts` | n/a | Replaced by the `TerminalView` entity API. |
 | Session lifecycle (connect, reconnect, notices, type-ahead, transfer, logging) | `TerminalViewImpl` socket effect, `connection-recovery.ts` | done | In the app (`ui/terminal.rs`, `session/recovery.rs`, `muxus_session`): see `app.md` (session end, reconnect, auto-reconnect, tmux/screen reattach, scrollback kept across restarts, tab transfer) and `session.md` (transferable sessions, session logging, login sequences). The view offers `write_output`, `send_input`, `InputAfterExit` and `Exited`. |

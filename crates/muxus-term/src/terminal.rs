@@ -13,6 +13,7 @@ use par_term_emu_core_rust::cell::{Cell, UnderlineStyle as CoreUnderline};
 use par_term_emu_core_rust::color::{Color, NamedColor};
 use par_term_emu_core_rust::cursor::CursorStyle as CoreCursorStyle;
 use par_term_emu_core_rust::graphics::TerminalGraphic;
+use par_term_emu_core_rust::grid::ScrollbackReflow;
 use par_term_emu_core_rust::terminal::Terminal as Core;
 
 use crate::buffer::{CellText, TextBuffer};
@@ -295,6 +296,9 @@ impl Emulator {
         // Readers already pad short lines (scrollback lines keep the width
         // they scrolled off at, so they are short after the screen widens).
         core.set_compact_scrollback(true);
+        // A width change rewraps the scrollback as well as the screen, as xterm reflows its
+        // whole buffer.
+        core.set_reflow_scrollback(true);
         let mut emulator = Self {
             core,
             filter: StreamFilter::new(),
@@ -487,9 +491,44 @@ impl Emulator {
         }
         let before = self.lines_trimmed();
         self.keep_cursor_on_shorter_screen(rows);
+        let primary = self.core.grid();
+        let floor = (primary.total_lines_scrolled() - primary.scrollback_len()) as u64;
+        // The line at the top of a scrolled-back viewport, to keep it there.
+        let viewed = (!self.core.is_alt_screen_active() && self.display_offset > 0)
+            .then(|| self.absolute_line(self.viewport_top()));
         self.core.resize(cols, rows);
+        if let Some(reflow) = self.core.take_scrollback_reflow() {
+            self.follow_reflow(floor, &reflow, viewed);
+        }
         self.set_cell_size(self.cell_size.0, self.cell_size.1);
         self.after_change(before);
+    }
+
+    /// The scrollback was rewrapped for a new width: what the emulator marks on lines (failed
+    /// commands, the running command, images, the viewport's top line) follows them, as
+    /// xterm's markers follow a reflow. `floor` is the primary screen's first absolute line.
+    fn follow_reflow(&mut self, floor: u64, reflow: &ScrollbackReflow, viewed: Option<u64>) {
+        let moved = |line: u64| -> u64 {
+            match line.checked_sub(floor) {
+                Some(index) if (index as usize) < reflow.old_len => {
+                    floor + reflow.lines[index as usize] as u64
+                }
+                // Screen lines move with the scrollback's new length.
+                Some(_) => (line + reflow.new_len as u64).saturating_sub(reflow.old_len as u64),
+                None => line,
+            }
+        };
+        for line in &mut self.failed_commands {
+            *line = moved(*line);
+        }
+        self.failed_commands.dedup();
+        self.commands.map_marker(|line| moved(*line));
+        for (top, _) in self.image_tops.values_mut() {
+            *top = moved(*top);
+        }
+        if let Some(line) = viewed.and_then(|line| self.buffer_line(moved(line))) {
+            self.display_offset = self.scrollback_len().saturating_sub(line);
+        }
     }
 
     /// xterm's `Buffer.resize` when the screen gets shorter: the rows below
@@ -1374,6 +1413,58 @@ mod tests {
         assert_eq!(term.images()[0].width, 400);
         // A background tab's limit is a quarter of the visible one's.
         assert_eq!(BACKGROUND_IMAGE_STORAGE_MB * 4.0, ACTIVE_IMAGE_STORAGE_MB);
+    }
+
+    #[test]
+    fn rewraps_the_scrollback_with_the_width_and_keeps_marks_on_their_lines() {
+        let mut term = emulator(10, 3);
+        term.write(b"0123456789abcdef\r\n");
+        term.write(b"\x1b]133;C\x07false\r\n\x1b]133;D;1\x07");
+        for i in 0..5 {
+            term.write(format!("line {i}\r\n").as_bytes());
+        }
+        let failed = term.failed_command_lines();
+        assert_eq!(failed.len(), 1);
+        assert!(failed[0] < term.scrollback_len());
+        assert_eq!(line_text(&term, failed[0]).unwrap(), "false");
+        // Wider: the line the old width wrapped joins; the lines below move up with their marks.
+        term.resize(20, 3);
+        assert_eq!(line_text(&term, 0).unwrap(), "0123456789abcdef");
+        let failed = term.failed_command_lines();
+        assert_eq!(line_text(&term, failed[0]).unwrap(), "false");
+        // Narrower: stored lines wrap instead of being clipped.
+        term.resize(4, 3);
+        assert_eq!(line_text(&term, 0).unwrap(), "0123");
+        assert!(term.is_wrapped(1));
+        assert_eq!(term.buffer_text().lines().next(), Some("0123456789abcdef"));
+        let failed = term.failed_command_lines();
+        assert_eq!(line_text(&term, failed[0]).unwrap(), "fals");
+        assert_eq!(line_text(&term, failed[0] + 1).unwrap(), "e");
+    }
+
+    #[test]
+    fn a_scrolled_back_viewport_keeps_its_line_through_a_rewrap() {
+        let mut term = emulator(10, 3);
+        for i in 0..20 {
+            term.write(format!("{i:02}-abcdefghij\r\n").as_bytes());
+        }
+        // Scroll back to the line starting "05-".
+        let target = (0..term.length())
+            .find(|line| line_text(&term, *line).unwrap().starts_with("05-"))
+            .unwrap();
+        term.scroll_to_line(target);
+        term.resize(20, 3);
+        assert!(
+            line_text(&term, term.viewport_top())
+                .unwrap()
+                .starts_with("05-")
+        );
+        term.resize(5, 3);
+        assert!(
+            line_text(&term, term.viewport_top())
+                .unwrap()
+                .starts_with("05-")
+        );
     }
 
     #[test]

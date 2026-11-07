@@ -844,6 +844,14 @@ impl TerminalView {
             pixel_width: (self.cell.width * f32::from(cols)).round() as u16,
             pixel_height: (self.cell.height * f32::from(rows)).round() as u16,
         };
+        if (size.cols, size.rows) != (self.size.cols, self.size.rows) {
+            // The lines moved under the selection (the scrollback reflows with the width);
+            // xterm clears it when the rows change.
+            self.selection = None;
+            if self.search_open && !self.search_term.is_empty() {
+                self.search.refresh(&self.emulator);
+            }
+        }
         if size != self.size {
             self.size = size;
             if !self.closed {

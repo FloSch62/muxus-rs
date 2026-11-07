@@ -177,6 +177,13 @@ impl<M> CommandTracker<M> {
         Self::default()
     }
 
+    /// Move the running command's marker with its line (the buffer was rewrapped).
+    pub fn map_marker(&mut self, map: impl FnOnce(&M) -> M) {
+        if let Some(marker) = &mut self.command_start {
+            *marker = map(marker);
+        }
+    }
+
     /// Handle one OSC 133/633 payload; returns true when consumed.
     pub fn handle<H: CommandMarkerHost<Marker = M>>(&mut self, host: &mut H, data: &str) -> bool {
         let (kind, arg) = match data.find(';') {

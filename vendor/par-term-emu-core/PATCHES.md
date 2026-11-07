@@ -31,6 +31,22 @@ scrollback.
 |---|---|
 | `src/graphics/mod.rs` | `GraphicsStore::remove_graphic_everywhere` removes an image from the placements and the scrollback. The limit itself is `muxus_term::terminal::Emulator::set_image_storage_limit`. |
 
+## Scrollback reflow
+
+xterm.js rewraps its whole buffer when the width changes; the engine rewrapped the screen only
+and kept every stored line at the width it scrolled off at (clipped by a narrower window).
+
+| File | Change |
+|---|---|
+| `src/grid/mod.rs` | `Grid::set_reflow_scrollback` (off by default), `ScrollbackReflow` and `Grid::take_scrollback_reflow`: for every stored line before a rewrap, the line that holds its first cell after it. |
+| `src/grid/scroll.rs` | On a width change `Grid::resize` first rewraps the scrollback (`reflow_scrollback_rows`, `Rewrap`): each logical line is cut again at the new width (a wide character that does not fit moves on and leaves the last cell blank, wrapped rows full width, a line's last row compact when the scrollback is), the lines above keep their absolute numbers, zones follow their lines, lines past the capacity are evicted. A logical line that continues onto the screen is left as it is. |
+| `src/terminal/mod.rs` | `Terminal::set_reflow_scrollback`, `Terminal::take_scrollback_reflow` for the primary screen. |
+| `src/grid/tests.rs` | Wider joins, narrower wraps, wide characters, capacity, the line continuing onto the screen, the switch off. |
+
+The emulator turns it on and moves its marks with the map
+(`muxus_term::terminal::Emulator::resize`). A 10 000-line scrollback of 156-character lines
+rewraps in 6–45 ms (release).
+
 ## Updating
 
 Copy the new release over this folder, keep `LICENSE` and this file, re-apply the throughput

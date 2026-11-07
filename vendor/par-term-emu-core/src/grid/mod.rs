@@ -124,6 +124,26 @@ pub struct Grid {
     /// value from it, so consumers diff against a remembered generation
     /// instead of clearing shared state.
     pub(in crate::grid) gen: u64,
+    /// Muxus patch: a width change rewraps the scrollback too
+    /// ([`Grid::set_reflow_scrollback`]).
+    pub(in crate::grid) reflow_scrollback: bool,
+    /// Muxus patch: where the last scrollback rewrap moved each line.
+    pub(in crate::grid) last_scrollback_reflow: Option<ScrollbackReflow>,
+}
+
+/// Muxus patch: how a width change rewrapped the scrollback
+/// ([`Grid::take_scrollback_reflow`]), for callers that keep line numbers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScrollbackReflow {
+    /// For each scrollback line before the rewrap (oldest first), the
+    /// index of the line that holds its first cell afterwards, counted
+    /// before lines past the capacity were evicted. The absolute numbers
+    /// of the lines above the scrollback do not change.
+    pub lines: Vec<usize>,
+    /// Scrollback lines before the rewrap.
+    pub old_len: usize,
+    /// Scrollback lines after the rewrap, before eviction.
+    pub new_len: usize,
 }
 
 impl Grid {
@@ -149,6 +169,8 @@ impl Grid {
             scroll_ops: VecDeque::new(),
             scroll_epoch: 0,
             gen: 0,
+            reflow_scrollback: false,
+            last_scrollback_reflow: None,
         }
     }
 
@@ -465,6 +487,19 @@ impl Grid {
         // The buffer's lines moved under every remembered position.
         self.invalidate_scroll_log();
         self.mark_rows_content(0, self.rows.saturating_sub(1));
+    }
+
+    /// Muxus patch: rewrap the scrollback's lines too when the width
+    /// changes, as xterm reflows its whole buffer (off by default: stored
+    /// lines keep the width they scrolled off at).
+    pub fn set_reflow_scrollback(&mut self, reflow: bool) {
+        self.reflow_scrollback = reflow;
+    }
+
+    /// Muxus patch: where the last width change moved the scrollback's
+    /// lines, once.
+    pub fn take_scrollback_reflow(&mut self) -> Option<ScrollbackReflow> {
+        self.last_scrollback_reflow.take()
     }
 
     /// Store the lines entering the scrollback without their trailing

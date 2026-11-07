@@ -185,6 +185,9 @@ frames), and feeding the emulator about half of the UI thread during `seq`.
 - **Cell size.** A cell is 40 bytes (xterm.js packs one into 12). Compact
   scrollback keeps short lines small, but full lines still cost 8 KB at 200
   columns.
+- **Scrollback reflow.** A width change now rewraps the whole scrollback, as
+  xterm does, so a resize costs in proportion to the scrollback again: 6–45 ms
+  for 10 000 lines of 156 characters (release), once per settled resize.
 - **Scrollback size changes** are done: `Grid::set_max_scrollback` drops the
   oldest lines from the ring buffer in one drain (`PATCHES.md` in the engine).
 - Non-ASCII text (CJK, emoji) still takes the per-character path.
