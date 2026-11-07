@@ -2,6 +2,7 @@
 
 pub mod command_buttons;
 pub mod desktop;
+pub mod environments;
 pub mod forwarding;
 pub mod history;
 pub mod host_editor;
