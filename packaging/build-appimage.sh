@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # Build the AppImage from a release binary.
 #
-#   CARGO_TARGET_DIR=target-release cargo build --release -p muxus-app
+#   CARGO_TARGET_DIR=target-release cargo build --release -p muxus-app --features webview
 #   MUXUS_BINARY=target-release/release/muxus packaging/build-appimage.sh
+#
+# Like the other libraries Muxus links, WebKitGTK is not bundled: its helper processes live at
+# a path compiled into the library. A binary built with the `webview` feature (saved web pages
+# in Muxus windows) therefore runs where WebKitGTK 4.1 is installed (libwebkit2gtk-4.1-0 on
+# Debian and Ubuntu, webkit2gtk4.1 on Fedora, webkit2gtk-4.1 on Arch); AppRun says so when it
+# is missing.
 #
 # With appimagetool on PATH it is used. Otherwise the AppImage is assembled by hand, which
 # is all appimagetool does for us: a SquashFS of the AppDir (mksquashfs, from squashfs-tools)
@@ -22,6 +28,10 @@ rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications"
 install -m 0755 "$BINARY" "$APPDIR/usr/bin/muxus"
 install -m 0755 "$PACKAGING/linux/AppRun" "$APPDIR/AppRun"
+if LC_ALL=C readelf -d "$BINARY" 2>/dev/null | grep -q 'libwebkit2gtk-4\.1'; then
+    mkdir -p "$APPDIR/usr/share/muxus"
+    : > "$APPDIR/usr/share/muxus/requires-webkitgtk-4.1"
+fi
 desktop_file muxus "$APPDIR/usr/share/applications/muxus.desktop"
 cp "$APPDIR/usr/share/applications/muxus.desktop" "$APPDIR/muxus.desktop"
 install_icons "$APPDIR"

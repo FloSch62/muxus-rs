@@ -37,6 +37,7 @@ mod terminal;
 mod terminal_actions;
 mod toast;
 mod top_bar;
+mod web_hosts;
 mod window_features;
 
 use std::sync::Arc;

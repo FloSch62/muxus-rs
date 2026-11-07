@@ -12,7 +12,7 @@ use muxus_core::protocol::{
     AuthPromptInfo, AuthPromptResponse, HostKeyChallenge, TerminalClientMessage,
     TerminalServerMessage,
 };
-use muxus_session::{Backend, SessionEvent};
+use muxus_session::{Backend, SessionEvent, SessionHandle};
 
 use super::model::{reusable_connection, tunnel_forward_request};
 
@@ -63,8 +63,8 @@ pub async fn start_tunnel<S, A, F>(
     backend: &Backend,
     tunnel: &TunnelRecord,
     keepalive_interval_seconds: Option<f64>,
-    mut on_status: S,
-    mut ask: A,
+    on_status: S,
+    ask: A,
 ) -> Result<ForwardInfo, String>
 where
     S: FnMut(String),
@@ -88,7 +88,38 @@ where
             Err(error) => return Err(error.message),
         }
     }
-    let handle = backend.open_session(dial_message(tunnel, keepalive_interval_seconds)?);
+    let (handle, conn_id) = dial_connection(
+        backend,
+        dial_message(tunnel, keepalive_interval_seconds)?,
+        on_status,
+        ask,
+    )
+    .await?;
+    // The dial lease is released right after; the forward now holds its own.
+    let started = backend
+        .start_forward(tunnel_forward_request(&conn_id, tunnel))
+        .await
+        .map_err(|error| error.message);
+    handle.close();
+    started
+}
+
+/// `dialConnection`: dial a shell-less transport with `message` (an `op: "dial"`), answering
+/// its sign-in questions through `ask`. Returns the session, which holds the connection until
+/// it is closed, and the connection's ID for the forwards to start on it. Giving up (an
+/// unanswered question, a failure) closes the dial.
+pub async fn dial_connection<S, A, F>(
+    backend: &Backend,
+    message: TerminalClientMessage,
+    mut on_status: S,
+    mut ask: A,
+) -> Result<(SessionHandle, String), String>
+where
+    S: FnMut(String),
+    A: FnMut(DialPrompt) -> F,
+    F: Future<Output = DialAnswer>,
+{
+    let handle = backend.open_session(message);
     let mut last_status = String::new();
     let conn_id = loop {
         let Some(event) = handle.next_event().await else {
@@ -125,6 +156,7 @@ where
             }
             SessionEvent::Message(TerminalServerMessage::Ready { conn_id, .. }) => break conn_id,
             SessionEvent::Message(TerminalServerMessage::Exit { message, .. }) => {
+                handle.close();
                 let message = message.filter(|message| !message.is_empty());
                 return Err(message.unwrap_or_else(|| fallback(&last_status, "connection failed")));
             }
@@ -137,13 +169,7 @@ where
             _ => {}
         }
     };
-    // The dial lease is released right after; the forward now holds its own.
-    let started = backend
-        .start_forward(tunnel_forward_request(&conn_id, tunnel))
-        .await
-        .map_err(|error| error.message);
-    handle.close();
-    started
+    Ok((handle, conn_id))
 }
 
 fn fallback(last_status: &str, otherwise: &str) -> String {

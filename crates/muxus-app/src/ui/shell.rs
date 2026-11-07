@@ -12,7 +12,7 @@ use muxus_app::model::Catalog;
 use muxus_app::sidebar::folder_prefs::FolderPrefs;
 use muxus_app::sidebar::live_counts::{LiveStatus, live_host_counts};
 use muxus_app::sidebar_width::clamp_sidebar_width;
-use muxus_app::state::session_actions::{LaunchGuard, connect_managed_host, connect_target};
+use muxus_app::state::session_actions::{LaunchGuard, connect_target};
 use muxus_app::state::tabs::{TabStatus, TabsState};
 use muxus_ui::gpui_kit::{
     AnyWindowHandle, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton,
@@ -482,13 +482,7 @@ impl AppShell {
                 cx.notify();
             }
             _ => {
-                connect_managed_host(
-                    &mut self.tabs,
-                    &mut self.launch_guard,
-                    host,
-                    None,
-                    Instant::now(),
-                );
+                self.connect_host(host, None, cx);
                 self.tabs_changed(cx);
             }
         }

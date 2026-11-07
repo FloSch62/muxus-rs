@@ -3,11 +3,12 @@
 # either replaces the other: /opt/Muxus/muxus, /usr/bin/muxus through update-alternatives,
 # muxus.desktop (also offered for ssh:// and telnet:// links), hicolor icons, licenses.
 #
-#   CARGO_TARGET_DIR=target-release cargo build --release -p muxus-app
+#   CARGO_TARGET_DIR=target-release cargo build --release -p muxus-app --features webview
 #   MUXUS_BINARY=target-release/release/muxus packaging/build-deb.sh
 #
 # Needs dpkg-deb (no root: --root-owner-group); dpkg-shlibdeps, when present, computes the
-# library dependencies.
+# library dependencies. The `webview` feature (saved web pages in Muxus windows) needs
+# libwebkit2gtk-4.1-dev to build, and the package then depends on WebKitGTK 4.1.
 
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
@@ -52,6 +53,14 @@ if command -v dpkg-shlibdeps >/dev/null 2>&1; then
     rm -rf "$SHLIBS"
 fi
 DEPENDS="$DEPENDS, libwayland-client0, libvulkan1 | libegl1"
+# Built with the `webview` feature, `muxus --web-window` shows saved web pages with WebKitGTK
+# 4.1 (its library and helper processes), which dpkg-shlibdeps may not be there to name.
+if LC_ALL=C readelf -d "$STAGE/opt/Muxus/muxus" 2>/dev/null | grep -q 'libwebkit2gtk-4\.1'; then
+    case "$DEPENDS" in
+        *libwebkit2gtk-4.1-0*) ;;
+        *) DEPENDS="$DEPENDS, libwebkit2gtk-4.1-0, libgtk-3-0" ;;
+    esac
+fi
 
 INSTALLED_SIZE="$(du -sk --exclude=DEBIAN "$STAGE" | cut -f1)"
 cat > "$STAGE/DEBIAN/control" <<EOF

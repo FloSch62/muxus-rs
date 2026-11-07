@@ -87,7 +87,7 @@ content (`palette.rs`) and test data.
 | FolderDialog (new, edit with rename/re-parent/merge note, move hosts, style, shared credentials, folder password with master password, inherited login sequence) | `sidebar/FolderDialog.tsx` | done | |
 | LaunchGroupDialog (layout cards, live-session warning, launch toast) | `sidebar/LaunchGroupDialog.tsx` | done | |
 | Saved hosts helpers | `saved-hosts.ts` | done | already in `hosts::saved` (shell) |
-| v0.15 host settings in the drafts and bulk edit: prompt waiting, anti-idle, keys/echo, system OpenSSH, environment discovery, fallback jump routes and gateways | `draft.ts`, `native-draft.ts`, `desktop-draft.ts`, `management-draft.ts`, `host-bulk-edit.ts`, `SshGatewayRouteField.tsx` (`savedGatewayFallbacks`) | partial | Loaded from the host, checked, saved (edit and duplicate keep them). System OpenSSH and fallback routes/gateways have their controls (rows above); prompt waiting, anti-idle, keys/echo and environment discovery have none yet. `web-draft.ts`, `name-range.ts` and `range-save.ts` are not ported |
+| v0.15 host settings in the drafts and bulk edit: prompt waiting, anti-idle, keys/echo, system OpenSSH, environment discovery, fallback jump routes and gateways | `draft.ts`, `native-draft.ts`, `desktop-draft.ts`, `management-draft.ts`, `host-bulk-edit.ts`, `SshGatewayRouteField.tsx` (`savedGatewayFallbacks`) | partial | Loaded from the host, checked, saved (edit and duplicate keep them). System OpenSSH and fallback routes/gateways have their controls (rows above); prompt waiting, anti-idle, keys/echo and environment discovery have none yet. `name-range.ts` and `range-save.ts` are not ported (`web-draft.ts`: see [web-hosts.md](web-hosts.md)) |
 
 ## Tests
 

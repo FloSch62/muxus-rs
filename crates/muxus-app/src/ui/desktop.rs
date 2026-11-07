@@ -6,7 +6,7 @@ use std::time::Instant;
 use muxus_app::features::desktop::events::{DesktopEvent, DesktopEvents};
 use muxus_app::features::desktop::launch::{LaunchHost, PlannedAction, PlannedLaunch, plan_launch};
 use muxus_app::hosts::ManagedHost;
-use muxus_app::state::session_actions::{connect_managed_host, connect_target};
+use muxus_app::state::session_actions::connect_target;
 use muxus_app::state::tabs::TabPatch;
 use muxus_core::api::{CommandLineLaunch, ManagedHostRef};
 use muxus_ui::gpui_kit::{App, AsyncApp, Context};
@@ -42,13 +42,7 @@ impl AppShell {
     ) {
         match launch {
             crate::ui::MainWindowLaunch::Host(host) => {
-                connect_managed_host(
-                    &mut self.tabs,
-                    &mut self.launch_guard,
-                    &host,
-                    None,
-                    Instant::now(),
-                );
+                self.connect_host(&host, None, cx);
                 self.tabs_changed(cx);
             }
             crate::ui::MainWindowLaunch::Session {
@@ -141,7 +135,7 @@ impl AppShell {
             }
             PlannedAction::ConnectHost { host } => match self.launch_host(&host) {
                 Some(host) => {
-                    connect_managed_host(&mut self.tabs, &mut self.launch_guard, &host, None, now);
+                    self.connect_host(&host, None, cx);
                 }
                 None => failed = true,
             },
@@ -151,7 +145,7 @@ impl AppShell {
                     .filter_map(|host| self.launch_host(host))
                     .collect();
                 for host in hosts {
-                    connect_managed_host(&mut self.tabs, &mut self.launch_guard, &host, None, now);
+                    self.connect_host(&host, None, cx);
                 }
             }
             PlannedAction::OpenWorkspace { workspace } => {

@@ -26,12 +26,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config dpkg-dev desktop-file-utils \
             libfontconfig-dev libfreetype-dev libwayland-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev
+            libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev \
+            libwebkit2gtk-4.1-dev
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       # Every platform's crates: the license list reads `cargo metadata --offline`.
       - run: cargo fetch --locked
-      - run: cargo build --release --locked -p muxus-app
+      # Saved web pages open in Muxus windows (WebKitGTK; the package depends on it).
+      - run: cargo build --release --locked -p muxus-app --features webview
       - run: packaging/build-deb.sh
         env:
           MUXUS_PACKAGE_DIR: dist

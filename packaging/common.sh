@@ -63,10 +63,16 @@ install_licenses() {
     for license in "$ROOT"/assets/fonts/*-LICENSE.txt "$ROOT"/assets/icons/LICENSE-*.txt; do
         [ -f "$license" ] && install -m 0644 "$license" "$dir/$(basename "$license")"
     done
-    if [ ! -f "$OUT/THIRD_PARTY_LICENSES.txt" ] || [ "$ROOT/Cargo.lock" -nt "$OUT/THIRD_PARTY_LICENSES.txt" ]; then
-        python3 -I "$PACKAGING/third_party_licenses.py" "$OUT/THIRD_PARTY_LICENSES.txt" --target "$RUST_TARGET"
+    # A binary built with the `webview` feature also links wry, tao and the GTK bindings.
+    local features="" list="$OUT/THIRD_PARTY_LICENSES.txt"
+    if LC_ALL=C readelf -d "$BINARY" 2>/dev/null | grep -q 'libwebkit2gtk-4\.1'; then
+        features="muxus-app/webview"
+        list="$OUT/THIRD_PARTY_LICENSES-webview.txt"
     fi
-    install -m 0644 "$OUT/THIRD_PARTY_LICENSES.txt" "$dir/THIRD_PARTY_LICENSES.txt"
+    if [ ! -f "$list" ] || [ "$ROOT/Cargo.lock" -nt "$list" ]; then
+        python3 -I "$PACKAGING/third_party_licenses.py" "$list" --target "$RUST_TARGET" --features "$features"
+    fi
+    install -m 0644 "$list" "$dir/THIRD_PARTY_LICENSES.txt"
 }
 
 # Base64 SHA-512 and size of a file, as release feeds list them.

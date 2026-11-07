@@ -13,3 +13,4 @@ pub mod management_prefill;
 pub mod native_draft;
 pub mod session_logging;
 pub mod tunnel;
+pub mod web_draft;

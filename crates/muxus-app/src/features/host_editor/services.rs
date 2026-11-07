@@ -260,6 +260,23 @@ pub async fn save_desktop_host(
         .map_err(|e| e.message)
 }
 
+/// `WebHostEditorContent`'s save: the page, then its folder and color.
+pub async fn save_web_host(
+    backend: &Backend,
+    draft: &super::logic::web_draft::WebHostDraft,
+    existing_id: Option<&str>,
+) -> Result<SavedHostProfile, String> {
+    use super::logic::web_draft::{web_draft_metadata_patch, web_draft_to_input};
+    let saved = backend
+        .save_saved_host(web_draft_to_input(draft, existing_id))
+        .await
+        .map_err(|e| e.message)?;
+    backend
+        .patch_saved_host_metadata(&saved.id, web_draft_metadata_patch(draft))
+        .await
+        .map_err(|e| e.message)
+}
+
 pub async fn save_management_host(
     backend: &Backend,
     draft: &ManagementHostDraft,
