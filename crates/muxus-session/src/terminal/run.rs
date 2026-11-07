@@ -8,22 +8,26 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use muxus_core::api::{
     ConfigForward, DEFAULT_SESSION_LOG_FILE_PATTERN, SessionEndStatus, SessionLogFileSettings,
+    TerminalBackspaceKey, TerminalEnterKey,
 };
 use muxus_core::protocol::{
-    ConnectionHealth, DEFAULT_BREAK_DURATION_MS, ExitReason, LocalProfile, SerialProfile,
-    SshProfile, TelnetProfile, TerminalClientMessage, TerminalProfile, TerminalServerMessage,
+    ConnectionHealth, DEFAULT_BREAK_DURATION_MS, ExitReason, LocalProfile, PasteProgressState,
+    SerialProfile, SshProfile, TelnetProfile, TerminalClientMessage, TerminalProfile,
+    TerminalServerMessage,
 };
 use muxus_core::stream::{TerminalSize, TransportChannels, TransportEvent};
 use muxus_ssh::connection::health::TransportHealth;
 use muxus_ssh::connection::{ConnectOptions, ConnectionLeaseOwner, MuxedConnectionLease};
 use muxus_ssh::forwards::{ForwardRequest, ForwardRequestExt};
+use muxus_store::db::HostRef;
 
+use super::anti_idle::{AntiIdleIo, AntiIdleTimer};
 use super::connect_io::SessionConnectIo;
 use super::control::ControlChannel;
 use super::facade::{Facade, Frame};
 use super::link::{TransportLink, break_result};
 use super::paste::{PastePacer, PasteProgress, PasteRequest};
-use super::{SessionHandle, TerminalInputWriter};
+use super::{SessionHandle, TerminalEnterKeyReader, TerminalInputWriter};
 use crate::Backend;
 use crate::adapters::{StoreLoginSequences, StoreVault};
 use crate::backend::{Shared, history_sink};
@@ -61,6 +65,11 @@ struct Io {
     paste_writer: Option<PasteWriter>,
     recorder: Option<SessionRecorder>,
     login_sequence: Option<Arc<LoginSequenceSession>>,
+    /// Paced pastes; a paste waiting for the prompt reads the session's output.
+    pacer: Option<PastePacer>,
+    /// The host's anti-idle text, typed here rather than by the tab so multi-exec never
+    /// mirrors it.
+    anti_idle: Option<AntiIdleTimer>,
 }
 
 struct Session {
@@ -69,6 +78,8 @@ struct Session {
     control: Arc<ControlChannel>,
     terminal_id: String,
     io: Mutex<Io>,
+    /// The host whose Backspace and Enter keys the session uses (`keysHost`).
+    keys_host: Mutex<Option<LoginSequenceHost>>,
 }
 
 /// Start a session for a `connect` or `dial` message.
@@ -88,6 +99,7 @@ pub(crate) fn start(backend: &Backend, first: TerminalClientMessage) -> SessionH
         control: control.clone(),
         terminal_id: terminal_id.clone(),
         io: Mutex::new(Io::default()),
+        keys_host: Mutex::new(None),
     });
     // The facade's listener keeps the session alive until the facade finishes (which drops the
     // listener), the way the socket's listeners kept the TypeScript session's closures alive.
@@ -210,6 +222,7 @@ impl Session {
                     }
                     writer(data);
                 }
+                self.anti_idle_input();
             }
             Frame::Message(message) => self.control.push(message),
         }
@@ -217,6 +230,117 @@ impl Session {
 
     fn writer(&self) -> Option<Writer> {
         lock(&self.io).writer.clone()
+    }
+
+    /// Input reached the session: the anti-idle wait starts over.
+    fn anti_idle_input(&self) {
+        let anti_idle = lock(&self.io).anti_idle.clone();
+        if let Some(anti_idle) = anti_idle {
+            anti_idle.input();
+        }
+    }
+
+    /// What Backspace and Enter send on the session's host (`hostKeys`), read when they are
+    /// needed so a change to the host reaches open sessions.
+    fn host_keys(&self) -> (Option<TerminalBackspaceKey>, Option<TerminalEnterKey>) {
+        let Some(host) = lock(&self.keys_host).clone() else {
+            return (None, None);
+        };
+        let host = match &host {
+            LoginSequenceHost::Alias(alias) => HostRef::Alias(alias),
+            LoginSequenceHost::Profile(id) => HostRef::ProfileId(id),
+        };
+        self.shared
+            .database
+            .host_input_keys(host)
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "could not load the host keys");
+                (None, None)
+            })
+    }
+
+    /// The host's Enter key, read at each use, for the backend's own typing.
+    fn enter_key_reader(self: &Arc<Self>) -> TerminalEnterKeyReader {
+        let session = Arc::downgrade(self);
+        Arc::new(move || {
+            session
+                .upgrade()
+                .and_then(|session| session.host_keys().1)
+                .unwrap_or_default()
+        })
+    }
+
+    /// A host's anti-idle text is typed here rather than by the tab, so multi-exec never
+    /// mirrors it; it is recorded like typed input. SSH, Telnet and serial only. Telnet and
+    /// serial log in inside the session, so there the first wait starts at the first input,
+    /// never at a login prompt nobody has answered.
+    async fn start_anti_idle(
+        self: &Arc<Self>,
+        host: Option<LoginSequenceHost>,
+        recorder: &SessionRecorder,
+        after_first_input: bool,
+    ) {
+        let Some(host) = host else {
+            return;
+        };
+        let setting = self
+            .db(move |db| {
+                db.host_anti_idle(match &host {
+                    LoginSequenceHost::Alias(alias) => HostRef::Alias(alias),
+                    LoginSequenceHost::Profile(id) => HostRef::ProfileId(id),
+                })
+            })
+            .await;
+        let setting = match setting {
+            Ok(Some(setting)) => setting,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(%error, "could not load the anti-idle setting");
+                return;
+            }
+        };
+        if self.facade.is_closed() {
+            return;
+        }
+        let write = {
+            let session = Arc::downgrade(self);
+            let recorder = recorder.clone();
+            Arc::new(move |data: Vec<u8>| {
+                let Some(writer) = session.upgrade().and_then(|session| session.writer()) else {
+                    return;
+                };
+                recorder.input(&data);
+                writer(data);
+            })
+        };
+        let busy = {
+            let session = Arc::downgrade(self);
+            Arc::new(move || {
+                session.upgrade().is_some_and(|session| {
+                    let io = lock(&session.io);
+                    io.pacer.as_ref().is_some_and(PastePacer::running)
+                        || io
+                            .login_sequence
+                            .as_ref()
+                            .is_some_and(|login| login.running())
+                })
+            })
+        };
+        let timer = AntiIdleTimer::new(
+            setting,
+            AntiIdleIo {
+                write,
+                busy,
+                enter_key: self.enter_key_reader(),
+            },
+        );
+        if after_first_input {
+            timer.start_after_first_input();
+        } else {
+            timer.start();
+        }
+        lock(&self.io).anti_idle = Some(timer.clone());
+        self.facade.on_close(move || timer.close());
     }
 
     fn set_link_writers(&self, link: &Arc<TransportLink>, drained_paste: bool) {
@@ -408,16 +532,13 @@ impl Session {
                 match session.writer() {
                     Some(writer) => {
                         writer(data.to_vec());
+                        session.anti_idle_input();
                         true
                     }
                     None => false,
                 }
             })
         };
-        let registration = shared
-            .terminal_inputs
-            .register(&self.terminal_id, inputs_writer);
-        self.facade.on_close(move || drop(registration));
 
         let profile = match profile {
             TerminalProfile::Ssh(ssh) => TerminalProfile::Ssh(
@@ -428,6 +549,31 @@ impl Session {
             ),
             other => other,
         };
+        // The host the window reads the tab's keys from: its saved host, or the host list's
+        // first entry naming the alias it dialed.
+        *lock(&self.keys_host) = match &profile {
+            TerminalProfile::Local(_) => None,
+            TerminalProfile::Serial(serial) => {
+                serial.profile_id.clone().map(LoginSequenceHost::Profile)
+            }
+            TerminalProfile::Telnet(telnet) => {
+                telnet.profile_id.clone().map(LoginSequenceHost::Profile)
+            }
+            TerminalProfile::Ssh(ssh) => match &ssh.profile_id {
+                Some(id) => Some(LoginSequenceHost::Profile(id.clone())),
+                None => shared
+                    .connections
+                    .listed_metadata_alias_for(ssh)
+                    .map(LoginSequenceHost::Alias),
+            },
+        };
+        // Its Enter is the host's.
+        let registration = shared.terminal_inputs.register_with_enter_key(
+            &self.terminal_id,
+            inputs_writer,
+            self.enter_key_reader(),
+        );
+        self.facade.on_close(move || drop(registration));
         let recorder = self.start_recorder(&profile, title).await?;
         lock(&self.io).recorder = Some(recorder.clone());
         {
@@ -466,7 +612,7 @@ impl Session {
         // Pasted input the backend paces; each kind of session sets how it is written.
         let pacer = {
             let session: Weak<Session> = Arc::downgrade(self);
-            let recorder = recorder.clone();
+            let input_recorder = recorder.clone();
             let facade = self.facade.clone();
             PastePacer::new(
                 Arc::new(move |data: Vec<u8>| {
@@ -475,25 +621,38 @@ impl Session {
                         .and_then(|session| lock(&session.io).paste_writer.clone());
                     match writer {
                         Some(writer) => {
-                            recorder.input(&data);
+                            input_recorder.input(&data);
+                            if let Some(session) = session.upgrade() {
+                                session.anti_idle_input();
+                            }
                             writer(data)
                         }
                         None => Box::pin(async { Ok(()) }),
                     }
                 }),
-                Arc::new(move |progress: PasteProgress| {
-                    facade.send_message(TerminalServerMessage::PasteProgress {
-                        state: progress.state,
-                        line: progress.line,
-                        lines: progress.lines,
-                        sent: progress.sent,
-                        total: progress.total,
-                        message: None,
-                        stop_id: None,
-                    });
-                }),
+                {
+                    let recorder = recorder.clone();
+                    Arc::new(move |progress: PasteProgress| {
+                        if progress.state == PasteProgressState::Stopped {
+                            recorder.system(&format!(
+                                "Paste stopped: {}",
+                                progress.message.as_deref().unwrap_or_default()
+                            ));
+                        }
+                        facade.send_message(TerminalServerMessage::PasteProgress {
+                            state: progress.state,
+                            line: progress.line,
+                            lines: progress.lines,
+                            sent: progress.sent,
+                            total: progress.total,
+                            message: progress.message,
+                            stop_id: progress.stop_id,
+                        });
+                    })
+                },
             )
         };
+        lock(&self.io).pacer = Some(pacer.clone());
         // Closing the tab or losing the connection ends the session and the paste.
         {
             let pacer = pacer.clone();
@@ -512,14 +671,16 @@ impl Session {
                         bracketed,
                         line_delay_ms,
                         char_delay_ms,
-                        // Prompt waiting and the host's Enter key are not paced here yet.
-                        ..
+                        prompt,
+                        enter_key,
                     } => {
                         pacer.enqueue(PasteRequest {
                             text: text.clone(),
                             bracketed: *bracketed,
                             line_delay_ms: *line_delay_ms,
                             char_delay_ms: *char_delay_ms,
+                            prompt: prompt.clone(),
+                            enter_key: *enter_key,
                         });
                         return true;
                     }
@@ -586,6 +747,7 @@ impl Session {
             write,
             recorder: Arc::new(recorder.clone()),
             send: Arc::new(move |message| facade.send_message(message)),
+            enter_key: Some(self.enter_key_reader()),
         }));
         {
             let session = session.clone();
@@ -692,17 +854,16 @@ impl Session {
                 .try_send(muxus_core::stream::TransportInput::Close);
             return Ok(());
         }
-        let login = self.prepare_login_sequence(
-            profile.profile_id.clone().map(LoginSequenceHost::Profile),
-            &recorder,
-        );
+        let saved_host = profile.profile_id.clone().map(LoginSequenceHost::Profile);
+        let login = self.prepare_login_sequence(saved_host.clone(), &recorder);
         self.attach_transport(
             channels,
             format!("serial-{}", short_id(10)),
-            recorder,
+            recorder.clone(),
             handle_logging,
             login,
         );
+        self.start_anti_idle(saved_host, &recorder, true).await;
         tracing::info!(path = %profile.path, baud_rate = profile.baud_rate, "serial session established");
         self.record_saved_host(profile.profile_id).await;
         Ok(())
@@ -740,17 +901,16 @@ impl Session {
                 .try_send(muxus_core::stream::TransportInput::Close);
             return Ok(());
         }
-        let login = self.prepare_login_sequence(
-            profile.profile_id.clone().map(LoginSequenceHost::Profile),
-            &recorder,
-        );
+        let saved_host = profile.profile_id.clone().map(LoginSequenceHost::Profile);
+        let login = self.prepare_login_sequence(saved_host.clone(), &recorder);
         self.attach_transport(
             channels,
             format!("telnet-{}", short_id(10)),
-            recorder,
+            recorder.clone(),
             handle_logging,
             login,
         );
+        self.start_anti_idle(saved_host, &recorder, true).await;
         tracing::info!(host = %profile.host, port = profile.port, "telnet session established");
         self.record_saved_host(profile.profile_id).await;
         Ok(())
@@ -820,6 +980,7 @@ impl Session {
         }
         self.answer_breaks(&link);
         let finisher = Finisher::new(self.facade.clone(), recorder.clone(), conn_id.clone());
+        let pacer = lock(&self.io).pacer.clone();
         let pump = {
             let facade = self.facade.clone();
             let login = login.clone();
@@ -830,6 +991,9 @@ impl Session {
                             recorder.output(&data);
                             if let Some(login) = &login {
                                 login.output(&data);
+                            }
+                            if let Some(pacer) = &pacer {
+                                pacer.output(&data);
                             }
                             facade.send_data(data);
                             facade.wait_for_room().await;
@@ -881,9 +1045,11 @@ impl Session {
             control: self.control.clone(),
             recorder: Some(recorder.clone()),
         });
+        // The pty advertises the Backspace the window sends as its erase character.
+        let backspace_key = self.host_keys().0.unwrap_or_default();
         let shell = shared
             .connections
-            .connect_shell(
+            .connect_shell_for_keys(
                 &profile,
                 io,
                 cols,
@@ -891,6 +1057,7 @@ impl Session {
                 muxus_local::DEFAULT_TERM,
                 fresh_transport,
                 cwd.as_deref(),
+                backspace_key,
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -1031,13 +1198,15 @@ impl Session {
                 .metadata_alias_for(&profile)
                 .map(LoginSequenceHost::Alias),
         };
-        let login = self.prepare_login_sequence(login_host, &recorder);
+        let login = self.prepare_login_sequence(login_host.clone(), &recorder);
 
         let finisher = Finisher::new(
             self.facade.clone(),
             recorder.clone(),
             format!("ssh {}", profile.target),
         );
+        let pacer = lock(&self.io).pacer.clone();
+        let anti_idle_recorder = recorder.clone();
         let pump = {
             let facade = self.facade.clone();
             let login = login.clone();
@@ -1049,6 +1218,9 @@ impl Session {
                             recorder.output(&data);
                             if let Some(login) = &login {
                                 login.output(&data);
+                            }
+                            if let Some(pacer) = &pacer {
+                                pacer.output(&data);
                             }
                             facade.send_data(data);
                             facade.wait_for_room().await;
@@ -1100,6 +1272,8 @@ impl Session {
         if let Some(login) = &login {
             login.start();
         }
+        self.start_anti_idle(login_host, &anti_idle_recorder, false)
+            .await;
         summary.forwards = running_forwards;
         self.facade.send_message(TerminalServerMessage::Ready {
             conn_id: conn.id.clone(),

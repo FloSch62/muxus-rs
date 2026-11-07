@@ -518,6 +518,81 @@ fn only_attributes_recent_use_metadata_to_concrete_openssh_aliases() {
     assert_eq!(find_metadata_alias(&doc, "203.0.113.11"), None);
 }
 
+// --- listedMetadataAlias ---
+
+#[test]
+fn finds_the_alias_the_host_list_shows_a_plain_alias_under_as_the_window_does() {
+    let f = Fixture::new();
+    let doc = f.doc(&lines(&[
+        "Host production prod",
+        "  HostName 203.0.113.10",
+        "",
+        "Host prod staging",
+        "  User deploy",
+        "",
+        "Host *.internal",
+        "  User deploy",
+    ]));
+    assert_eq!(
+        listed_metadata_alias(&doc, "production").as_deref(),
+        Some("production")
+    );
+    assert_eq!(
+        listed_metadata_alias(&doc, "prod").as_deref(),
+        Some("production")
+    );
+    assert_eq!(
+        listed_metadata_alias(&doc, "staging").as_deref(),
+        Some("staging")
+    );
+    for target in [
+        "admin@production",
+        "production:2222",
+        "[prod]:22",
+        "web.internal",
+        "unknown",
+    ] {
+        assert_eq!(listed_metadata_alias(&doc, target), None, "{target}");
+    }
+}
+
+#[test]
+fn takes_the_first_host_in_host_list_order_when_host_blocks_repeat_an_alias() {
+    let f = Fixture::new();
+    let repeated = f.doc(&lines(&[
+        "Host db",
+        "  HostName 203.0.113.20",
+        "",
+        "Host app db",
+        "  User deploy",
+    ]));
+    let grouped = f.doc(&lines(&[
+        "Host web",
+        "  HostName 203.0.113.30",
+        "",
+        "Host db",
+        "  HostName 203.0.113.20",
+        "",
+        "Host web db cache",
+        "  User deploy",
+    ]));
+    // The host list sorts by alias, so the later block's entry comes first.
+    assert_eq!(
+        listed_metadata_alias(&repeated, "db").as_deref(),
+        Some("app")
+    );
+    assert_eq!(
+        listed_metadata_alias(&repeated, "app").as_deref(),
+        Some("app")
+    );
+    for target in ["web", "db", "cache"] {
+        assert_eq!(
+            listed_metadata_alias(&grouped, target).as_deref(),
+            Some("cache")
+        );
+    }
+}
+
 // --- muxKey ---
 
 #[test]

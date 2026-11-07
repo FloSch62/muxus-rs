@@ -9,13 +9,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use muxus_core::api::TerminalBackspaceKey;
 use russh::Channel;
 use russh::client::Msg;
 use tokio::sync::watch;
 
 use super::chain::{
-    ChainHop, ChainSources, DialPlanError, build_chain, find_metadata_alias, merge_config_forwards,
-    mux_key,
+    ChainHop, ChainSources, DialPlanError, build_chain, find_metadata_alias, listed_metadata_alias,
+    merge_config_forwards, mux_key,
 };
 use super::health::TransportHealth;
 use super::io::{ConnectIo, PasswordVault};
@@ -26,7 +27,7 @@ use super::leases::{
 use super::profile::SshProfile;
 use super::session::{
     ChannelError, SessionChannel, SessionRequest, SessionSettings, open_session, probe_command,
-    terminal_pty_options, wants_pty,
+    terminal_pty_options_for, wants_pty,
 };
 use super::transport::{
     AgentForwarding, BoxedStream, ConnectError, ConnectErrorKind, DialContext, HandshakeFacts,
@@ -346,8 +347,22 @@ impl ManagedConnection {
         session: &SessionSettings,
         cwd: Option<&str>,
     ) -> Result<SessionChannel, OpenShellError> {
+        self.shell_for_keys(cols, rows, term, session, cwd, TerminalBackspaceKey::Del)
+            .await
+    }
+
+    /// [`Self::shell`] whose pty request advertises the erase character `backspace_key` sends.
+    pub async fn shell_for_keys(
+        &self,
+        cols: u32,
+        rows: u32,
+        term: &str,
+        session: &SessionSettings,
+        cwd: Option<&str>,
+        backspace_key: TerminalBackspaceKey,
+    ) -> Result<SessionChannel, OpenShellError> {
         let pty = wants_pty(session.request_tty, session.remote_command.is_some())
-            .then(|| terminal_pty_options(cols, rows, term));
+            .then(|| terminal_pty_options_for(cols, rows, term, backspace_key));
         let env = if self.console_compatibility {
             None
         } else {
@@ -779,6 +794,17 @@ impl SshConnectionManager {
 
     /// The ssh_config alias whose Muxus metadata a session to this profile uses, as `connect`
     /// finds it.
+    /// The ssh_config alias whose Muxus metadata the window applies to a tab dialing this
+    /// profile (`listedMetadataAliasFor`): the first host of the sorted host list naming the
+    /// target, so a `user@alias` tab, or an alias several Host blocks name, gets the same host
+    /// on both sides.
+    pub fn listed_metadata_alias_for(&self, profile: &SshProfile) -> Option<String> {
+        if !crate::connection::profile::uses_config(profile) || profile.profile_id.is_some() {
+            return None;
+        }
+        listed_metadata_alias(&(self.inner.options.load_config)(), &profile.target)
+    }
+
     pub fn metadata_alias_for(&self, profile: &SshProfile) -> Option<String> {
         if !crate::connection::profile::uses_config(profile) || profile.profile_id.is_some() {
             return None;
@@ -1061,6 +1087,33 @@ impl SshConnectionManager {
         fresh_transport: Option<String>,
         cwd: Option<&str>,
     ) -> Result<TerminalShell, ConnectFailure> {
+        self.connect_shell_for_keys(
+            profile,
+            io,
+            cols,
+            rows,
+            term,
+            fresh_transport,
+            cwd,
+            TerminalBackspaceKey::Del,
+        )
+        .await
+    }
+
+    /// [`Self::connect_shell`] for a host whose Backspace sends `backspace_key`: the pty request
+    /// advertises it as the erase character.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn connect_shell_for_keys(
+        &self,
+        profile: &SshProfile,
+        io: Arc<dyn ConnectIo>,
+        cols: u32,
+        rows: u32,
+        term: &str,
+        fresh_transport: Option<String>,
+        cwd: Option<&str>,
+        backspace_key: TerminalBackspaceKey,
+    ) -> Result<TerminalShell, ConnectFailure> {
         let opts = ConnectOptions {
             fresh_transport,
             ..ConnectOptions::default()
@@ -1072,7 +1125,7 @@ impl SshConnectionManager {
         let shell = lease
             .connection()
             .clone()
-            .shell(cols, rows, term, &settings, cwd)
+            .shell_for_keys(cols, rows, term, &settings, cwd, backspace_key)
             .await;
         match shell {
             Ok(channel) => {
@@ -1094,6 +1147,7 @@ impl SshConnectionManager {
                     &lease,
                     ShellTransport::New,
                     lost,
+                    backspace_key,
                 )
                 .await
             }
@@ -1122,7 +1176,7 @@ impl SshConnectionManager {
                 match dedicated
                     .connection()
                     .clone()
-                    .shell(cols, rows, term, &settings, cwd)
+                    .shell_for_keys(cols, rows, term, &settings, cwd, backspace_key)
                     .await
                 {
                     Ok(channel) => Ok(self
@@ -1139,6 +1193,7 @@ impl SshConnectionManager {
                             &dedicated,
                             ShellTransport::Overflow,
                             lost,
+                            backspace_key,
                         )
                         .await
                     }
@@ -1162,6 +1217,7 @@ impl SshConnectionManager {
         failed: &MuxedConnectionLease,
         transport: ShellTransport,
         error: RemoteShellTransportLost,
+        backspace_key: TerminalBackspaceKey,
     ) -> Result<TerminalShell, ConnectFailure> {
         // A probe-triggered disconnect can happen for config aliases and direct profiles alike.
         // The non-compatibility mux key is therefore the stable runtime identity to remember,
@@ -1188,7 +1244,7 @@ impl SshConnectionManager {
         match compatible
             .connection()
             .clone()
-            .shell(cols, rows, term, &settings, None)
+            .shell_for_keys(cols, rows, term, &settings, None, backspace_key)
             .await
         {
             Ok(channel) => Ok(self.opened(compatible, channel, transport, &*io).await),

@@ -959,6 +959,195 @@ async fn a_dial_announces_readiness_only_after_post_auth_password_saving() {
     sandbox.stop().await;
 }
 
+// --- host keys, anti-idle and prompt waiting (terminal-socket-host-keys, -anti-idle, -paste) ----
+
+#[tokio::test]
+async fn an_ssh_hosts_keys_reach_the_pty_request_the_login_sequence_and_vault_secrets() {
+    let (sandbox, server) = ssh_lab(&["  StrictHostKeyChecking accept-new"]).await;
+    let backend = &sandbox.backend;
+    backend
+        .patch_ssh_host_metadata(
+            "lab",
+            body(json!({
+                "backspaceKey": "ctrl-h", "enterKey": "lf",
+                "loginSequence": { "steps": [
+                    { "id": "w", "kind": "wait", "pattern": "shell ok", "timeoutSeconds": 5 },
+                    { "id": "s", "kind": "send", "text": "terminal length 0", "enter": true },
+                ] },
+            })),
+        )
+        .await
+        .unwrap();
+    backend.create_vault("master-pass-12", None).await.unwrap();
+    let secret = backend
+        .create_vault_secret(body(json!({
+            "name": "Enable", "value": "s3cret", "masterPassword": "master-pass-12",
+        })))
+        .await
+        .unwrap()
+        .secret;
+    let handle = backend.open_session(connect(json!({ "kind": "ssh", "target": "lab" })));
+    sign_in(&handle).await;
+    // The pty advertises the ^H the window sends for Backspace.
+    let (_, _, _, modes) = server.log.lock().unwrap().ptys.last().unwrap().clone();
+    assert!(modes.contains(&(russh::Pty::VERASE, 0x08)));
+    // The login sequence presses the host's Enter: LF.
+    output_until(&handle, "terminal length 0\n").await;
+    backend
+        .send_vault_secret(
+            &secret.id,
+            body(json!({ "terminalIds": [handle.terminal_id()], "enter": true })),
+        )
+        .await
+        .unwrap();
+    output_until(&handle, "s3cret\n").await;
+    handle.close();
+    sandbox.stop().await;
+}
+
+/// A Telnet console that answers each line with the IOS prompt, or rejects a line starting
+/// with "bogus"; it keeps every line it received.
+async fn ios_console() -> (u16, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let lines: Arc<Mutex<Vec<String>>> = Arc::default();
+    let sink = lines.clone();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let sink = sink.clone();
+            tokio::spawn(async move {
+                let _ = socket.write_all(b"R1#").await;
+                let mut buffer = [0u8; 4096];
+                let mut line = Vec::new();
+                while let Ok(read) = socket.read(&mut buffer).await {
+                    if read == 0 {
+                        break;
+                    }
+                    for &byte in &buffer[..read] {
+                        match byte {
+                            b'\r' => {
+                                let text = String::from_utf8_lossy(&line).into_owned();
+                                line.clear();
+                                sink.lock().unwrap().push(text.clone());
+                                let answer = if text.starts_with("bogus") {
+                                    format!(
+                                        "{text}\r\n% Invalid input detected at '^' marker.\r\n\r\nR1#"
+                                    )
+                                } else {
+                                    format!("{text}\r\nR1#")
+                                };
+                                if socket.write_all(answer.as_bytes()).await.is_err() {
+                                    return;
+                                }
+                            }
+                            b'\n' | 0 => {}
+                            // Telnet negotiation and other controls carry no line text.
+                            byte if byte >= 0x20 && byte < 0x7f => line.push(byte),
+                            _ => {}
+                        }
+                    }
+                }
+            });
+        }
+    });
+    (port, lines)
+}
+
+#[tokio::test]
+async fn a_paste_waits_for_the_telnet_prompt_and_stops_at_the_line_the_device_rejects() {
+    let sandbox = start().await;
+    let (port, lines) = ios_console().await;
+    let handle = sandbox.backend.open_session(connect(
+        json!({ "kind": "telnet", "host": "127.0.0.1", "port": port }),
+    ));
+    events_until(&handle, is_ready).await;
+    output_until(&handle, "R1#").await;
+    handle.send(body(json!({
+        "op": "paste", "text": "interface ge-0/0/1\nbogus command\nshutdown\n",
+        "bracketed": false, "lineDelayMs": 0, "charDelayMs": 0,
+        "prompt": {
+            "promptPattern": "[>#$]\\s*$", "timeoutMs": 5000,
+            "errorPattern": "^%\\s*(Invalid|Incomplete|Ambiguous)",
+        },
+    })));
+    let events = events_until(&handle, |event| {
+        matches!(
+            message(event),
+            Some(TerminalServerMessage::PasteProgress {
+                state: PasteProgressState::Stopped,
+                ..
+            })
+        )
+    })
+    .await;
+    match message(events.last().unwrap()) {
+        Some(TerminalServerMessage::PasteProgress {
+            line,
+            message,
+            stop_id,
+            ..
+        }) => {
+            assert_eq!(*line, 2);
+            assert_eq!(*stop_id, Some(1));
+            assert_eq!(
+                message.as_deref(),
+                Some(
+                    "Line 2 of 3 (“bogus command”) was answered with “% Invalid input detected at '^' marker.”"
+                )
+            );
+        }
+        _ => unreachable!(),
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        *lines.lock().unwrap(),
+        vec!["interface ge-0/0/1".to_string(), "bogus command".into()]
+    );
+    handle.close();
+    sandbox.stop().await;
+}
+
+#[tokio::test]
+async fn anti_idle_waits_for_the_first_input_on_a_saved_telnet_host_then_types_its_text() {
+    let sandbox = start().await;
+    let backend = &sandbox.backend;
+    let console = Console::start().await;
+    let saved = backend
+        .save_saved_host(body(json!({
+            "name": "Console",
+            "profile": { "kind": "telnet", "host": "127.0.0.1", "port": console.port },
+        })))
+        .await
+        .unwrap();
+    backend
+        .patch_saved_host_metadata(
+            &saved.id,
+            body(json!({
+                "antiIdle": { "intervalSeconds": 10, "text": "show clock", "enter": true },
+            })),
+        )
+        .await
+        .unwrap();
+    let handle = backend.open_session(connect(json!({
+        "kind": "telnet", "host": "127.0.0.1", "port": console.port, "profileId": saved.id,
+    })));
+    events_until(&handle, is_ready).await;
+    output_until(&handle, "router> ").await;
+    // Left at the login prompt: nothing is typed as a username.
+    tokio::time::sleep(Duration::from_millis(10_500)).await;
+    assert!(
+        !console
+            .received()
+            .windows(b"show clock".len())
+            .any(|window| window == b"show clock")
+    );
+    handle.send_data(b"admin".to_vec());
+    console.wait_for(b"admin").await;
+    console.wait_for(b"adminshow clock\r\n").await;
+    handle.close();
+    sandbox.stop().await;
+}
+
 // --- serial ------------------------------------------------------------------------------------
 
 #[cfg(unix)]

@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use muxus_core::api::{LoginSequenceStep, LoginWaitStep};
+use muxus_core::api::{LoginSequenceStep, LoginWaitStep, TerminalEnterKey};
+use muxus_core::paste_pacing::with_enter_key;
 use muxus_core::protocol::LoginSequenceState;
 use tokio::sync::{Notify, watch};
 
@@ -68,6 +69,10 @@ pub trait LoginSequenceIo: Send + Sync {
     fn write(&self, data: &[u8]) -> bool;
     /// Plain text a send step typed, for input capture. Secrets never pass through here.
     fn typed(&self, data: &[u8]);
+    /// What Enter sends on the session's host, when a send step presses it.
+    fn enter_key(&self) -> TerminalEnterKey {
+        TerminalEnterKey::Cr
+    }
     /// Type a vault secret, asking for the master password when the vault
     /// needs it; `Err` says why it could not.
     async fn type_secret(
@@ -287,7 +292,7 @@ impl LoginSequenceRunner {
             LoginSequenceStep::Send(send) => {
                 let mut data = send.text.clone().into_bytes();
                 if send.enter {
-                    data.push(b'\r');
+                    data.extend_from_slice(with_enter_key("\r", self.io.enter_key()).as_bytes());
                 }
                 if data.is_empty() {
                     return Ok(());
