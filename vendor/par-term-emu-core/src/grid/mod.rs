@@ -443,6 +443,30 @@ impl Grid {
         self.max_scrollback
     }
 
+    /// Muxus patch: change the scrollback capacity of a running grid (a
+    /// preference change, xterm's `options.scrollback`). A smaller capacity
+    /// drops the oldest lines, as a scroll at capacity evicts them: the
+    /// lines count as trimmed (`total_lines_scrolled` is kept) and zones
+    /// below the new floor are evicted. A grid without scrollback (the
+    /// alternate screen) keeps none.
+    pub fn set_max_scrollback(&mut self, max_scrollback: usize) {
+        self.max_scrollback = max_scrollback;
+        if self.scrollback_rows.len() <= max_scrollback {
+            return;
+        }
+        let excess = self.scrollback_rows.len() - max_scrollback;
+        self.scrollback_rows.drain(..excess);
+        self.scrollback_wrapped.drain(..excess);
+        self.scrollback_lines = self.scrollback_rows.len();
+        let floor = self
+            .total_lines_scrolled
+            .saturating_sub(self.scrollback_lines);
+        self.evict_zones(floor);
+        // The buffer's lines moved under every remembered position.
+        self.invalidate_scroll_log();
+        self.mark_rows_content(0, self.rows.saturating_sub(1));
+    }
+
     /// Store the lines entering the scrollback without their trailing
     /// default cells (cells never written, or erased with the default
     /// background). Off by default: a stored line keeps the full width it
