@@ -32,7 +32,7 @@ use muxus_ui::widgets::{IconButton, Tooltip};
 
 use crate::ui::prefs::TabNumberVisibility;
 use crate::ui::shell::{AppShell, ShellMenu};
-use crate::ui::tab_drag::tab_width;
+use crate::ui::tab_drag::{tab_width, viewport_width};
 use crate::ui::top_bar::with_chord;
 use muxus_app::features::notices::tab_strip::{
     TabScrollState, earlier_tabs_button, later_tabs_button, scroll_row_by, scroll_step, wheel_delta,
@@ -519,11 +519,12 @@ impl AppShell {
         let tabs: Vec<TerminalTab> = self.tabs.pane_tabs(pane_id).into_iter().cloned().collect();
         let active_id = self.active_tab_of(pane_id);
         // FLIP: tabs whose place changed slide there from their old slots.
+        let viewport = viewport_width(window);
         let order: Vec<(String, f32)> = tabs
             .iter()
             .map(|tab| {
                 let active = active_id.as_deref() == Some(tab.id.as_str());
-                (tab.id.clone(), tab_width(active))
+                (tab.id.clone(), tab_width(active, viewport))
             })
             .collect();
         if self.update_tab_slides(pane_id, order) {
@@ -644,6 +645,7 @@ impl AppShell {
                     tab,
                     TabLook {
                         active,
+                        width: tab_width(active, viewport),
                         focused,
                         number: numbers.get(&tab.id).copied(),
                         indicator,
@@ -865,6 +867,7 @@ impl AppShell {
     ) -> AnyElement {
         let TabLook {
             active,
+            width,
             focused,
             number,
             indicator,
@@ -887,7 +890,6 @@ impl AppShell {
         } else {
             p.text.secondary
         };
-        let width = tab_width(active);
         let top_border = tab
             .color
             .as_deref()
@@ -1526,6 +1528,8 @@ fn empty_action(
 #[derive(Clone, Copy)]
 struct TabLook {
     active: bool,
+    /// `clamp(168px, 20vw, 210px)` active, `clamp(128px, 15vw, 190px)` otherwise.
+    width: f32,
     /// Its pane has the focus.
     focused: bool,
     /// Its number among the window's tabs (Alt+number).
