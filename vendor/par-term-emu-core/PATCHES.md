@@ -54,6 +54,21 @@ The emulator turns it on and moves its marks with the map
 of scrollback to 150 columns, or back, takes about 1 ms with plain log lines and 7–14 ms with
 long colored lines that wrap (release, `throughput --resize`).
 
+## Cell size
+
+A cell was 40 bytes: 33 bytes of fields padded to the 8-byte alignment its combining-mark
+pointer sets, the width byte alone past the flags. The cached width now rides in the byte
+`CellFlags` already padded to, so a cell is 32 bytes: a fifth less memory for every screen and
+scrollback cell, and less to copy on every write and scroll.
+
+| File | Change |
+|---|---|
+| `src/cell.rs` | `CellFlags` holds the width (1 by default, so the pen's flags and `Cell::default()` are unchanged; skipped by serde, whose `CellSerde` still carries `width`, so the wire format is the same); the `Cell::width` field is gone: `Cell::width()` reads it, `Cell::set_width` and `CellFlags::with_width` set it. `cell_fits_in_32_bytes`. |
+| `src/terminal/write.rs`, `src/grid/mod.rs`, `src/terminal/sequences/csi/window.rs`, `src/grid/scroll.rs` | Cells are built with `flags.with_width(…)`; a spacer copied from a wide cell's flags sets its own width of 1, and DECFRA's fill cell keeps its width when it takes the pen's flags. |
+
+`docs/parity/terminal-perf.md` has the measurements (19–20% less resident memory for a filled
+scrollback, output as fast or faster).
+
 ## Updating
 
 Copy the new release over this folder, keep `LICENSE` and this file, re-apply the throughput

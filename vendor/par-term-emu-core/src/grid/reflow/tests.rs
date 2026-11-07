@@ -37,14 +37,14 @@ fn fill_viewport_rows(buffer: &mut XtermBuffer) {
 /// A one-cell character, whatever its usual width (the tests write '😁' as one cell).
 fn ch(c: char) -> Cell {
     let mut cell = Cell::new(c);
-    cell.width = 1;
+    cell.set_width(1);
     cell.flags.set_wide_char(false);
     cell
 }
 
 fn wide(c: char) -> Cell {
     let mut cell = Cell::new(c);
-    cell.width = 2;
+    cell.set_width(2);
     cell.flags.set_wide_char(true);
     cell
 }
