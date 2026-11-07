@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use gpui_kit::{
-    App, BorderStyle, Bounds, Font, FontFallbacks, FontStyle, FontWeight, Hsla, Pixels,
-    RenderImage, SharedString, StrikethroughStyle, TextAlign, TextRun,
+    App, BorderStyle, Bounds, ContentMask, Font, FontFallbacks, FontStyle, FontWeight, Hsla,
+    PathBuilder, Pixels, RenderImage, SharedString, StrikethroughStyle, TextAlign, TextRun,
     UnderlineStyle as GpuiUnderline, Window, fill, outline, point, size,
 };
 use muxus_term::color::Rgba;
@@ -15,6 +15,8 @@ use muxus_term::terminal::CursorShape;
 // Painting works in layout space (scaled with the interface): `px` here takes laid-out
 // lengths as they are; the CSS constants below are scaled once.
 use muxus_ui::zoom::{css, layout_px as px};
+
+use crate::box_drawing::{Segment, Shape, box_glyph_char, cached_glyph_shapes};
 
 pub(crate) fn hsla(color: Rgba) -> Hsla {
     gpui_kit::Rgba {
@@ -199,6 +201,7 @@ pub(crate) fn paint_frame(
             window,
             cx,
         );
+        paint_box_glyphs(row, origin_x, y, cell, window);
         paint_decorations(row, origin_x, y, cell, window);
     }
 
@@ -393,7 +396,13 @@ fn paint_text(
         while col < trimmed && row[col].width == 1 {
             let piece = &row[col];
             let before = text.len();
-            text.push_str(&piece.text);
+            // Box drawing and blocks are drawn on the grid (`paint_box_glyphs`); the run keeps
+            // a space in their place, with its underline or strikethrough.
+            if box_glyph_char(&piece.text).is_some() {
+                text.push(' ');
+            } else {
+                text.push_str(&piece.text);
+            }
             let len = text.len() - before;
             // Cells that would make equal runs extend the last one; the run (and its font) is
             // only built when the style changes.
@@ -429,6 +438,68 @@ fn paint_text(
             window,
             cx,
         );
+    }
+}
+
+/// Box Drawing and Block Elements, drawn on the cell grid in the cell's color.
+fn paint_box_glyphs(row: &[PaintCell], origin_x: f32, y: f32, cell: CellSize, window: &mut Window) {
+    for (col, current) in row.iter().enumerate() {
+        if current.width != 1 {
+            continue;
+        }
+        let Some(c) = box_glyph_char(&current.text) else {
+            continue;
+        };
+        let x = cell_x(origin_x, col, cell);
+        paint_box_glyph(
+            c,
+            Bounds::new(point(px(x), px(y)), size(px(cell.width), px(cell.height))),
+            current.fg,
+            window,
+        );
+    }
+}
+
+/// One box-drawing or block glyph in `cell`. The cell is taken to whole device pixels, edges
+/// rounded the same way for every cell, so neighbours tile without gaps or overlap.
+fn paint_box_glyph(c: char, cell: Bounds<Pixels>, color: Hsla, window: &mut Window) {
+    let scale = window.scale_factor();
+    let device = |value: Pixels| (f32::from(value) * scale).round();
+    let (left, top) = (device(cell.left()), device(cell.top()));
+    let (width, height) = (device(cell.right()) - left, device(cell.bottom()) - top);
+    let css_pixel = scale * muxus_ui::zoom::zoom();
+    let Some(shapes) = cached_glyph_shapes(c, width, height, css_pixel) else {
+        return;
+    };
+    let at = |x: f32, y: f32| point(px((left + x) / scale), px((top + y) / scale));
+    let whole = Bounds::from_corners(at(0., 0.), at(width, height));
+    for shape in shapes.iter() {
+        match shape {
+            Shape::Rect { x0, y0, x1, y1 } => {
+                window.paint_quad(fill(
+                    Bounds::from_corners(at(*x0, *y0), at(*x1, *y1)),
+                    color,
+                ));
+            }
+            Shape::Shade(share) => window.paint_quad(fill(whole, color.opacity(*share))),
+            Shape::Stroke { segments, width } => {
+                let mut builder = PathBuilder::stroke(px(width / scale));
+                for segment in segments {
+                    match *segment {
+                        Segment::Move(x, y) => builder.move_to(at(x, y)),
+                        Segment::Line(x, y) => builder.line_to(at(x, y)),
+                        Segment::Cubic { c1, c2, to } => {
+                            builder.cubic_bezier_to(at(to.0, to.1), at(c1.0, c1.1), at(c2.0, c2.1))
+                        }
+                    }
+                }
+                if let Ok(path) = builder.build() {
+                    window.with_content_mask(Some(ContentMask { bounds: whole }), |window| {
+                        window.paint_path(path, color)
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -529,7 +600,14 @@ fn paint_cursor(
     match cursor.shape {
         CursorShape::Block => {
             window.paint_quad(fill(cell_bounds, cursor.color));
-            if !cursor.text.trim().is_empty() {
+            if let Some(c) = box_glyph_char(&cursor.text) {
+                paint_box_glyph(
+                    c,
+                    Bounds::new(point(px(x), px(y)), size(px(cell.width), px(cell.height))),
+                    cursor.accent,
+                    window,
+                );
+            } else if !cursor.text.trim().is_empty() {
                 let text: SharedString = cursor.text.clone().into();
                 let run = TextRun {
                     len: text.len(),

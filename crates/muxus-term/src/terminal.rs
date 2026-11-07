@@ -23,6 +23,10 @@ use crate::filter::{
 use crate::mouse::{MouseEncoding, MouseProtocol};
 use crate::osc52::{Osc52Action, handle_osc52};
 use crate::palette::{ResolvedPalette, TerminalTheme};
+use crate::program_status::{
+    PROGRAM_STATUS_OSC, PROGRAM_STATUS_QUERY_REPLY, ProgramStatusReport, ProgramStatusSignal,
+    parse_program_status,
+};
 use crate::shell_integration::{CommandMarkerHost, CommandTracker, CwdTracker};
 use crate::style::{
     CellColor, CellStyle, ColorOverrides, EffectiveColors, StyledCell, UnderlineStyle,
@@ -41,6 +45,9 @@ pub enum EmulatorEvent {
     CwdChanged(String),
     /// A program wrote the clipboard through OSC 52 (only when allowed).
     ClipboardWrite(String),
+    /// A program reported its status (OSC 7501, only while shown), or a prompt or reset ended
+    /// what programs reported.
+    ProgramStatus(ProgramStatusSignal),
 }
 
 /// The cursor shape.
@@ -228,6 +235,8 @@ pub struct Emulator {
     palette: ResolvedPalette,
     theme: TerminalTheme,
     allow_osc52_write: bool,
+    /// Program status (OSC 7501) is shown: reports are passed on and the query is answered.
+    program_status: bool,
     /// Lines the viewport is scrolled up from the bottom.
     display_offset: usize,
     /// Cell size in logical pixels, for the pixel-size reports.
@@ -277,6 +286,7 @@ impl Emulator {
             palette: ResolvedPalette::new(theme),
             theme: theme.clone(),
             allow_osc52_write: true,
+            program_status: true,
             display_offset: 0,
             cell_size: (8.0, 17.0),
             title: String::new(),
@@ -329,6 +339,12 @@ impl Emulator {
     /// Whether programs may write the clipboard through OSC 52 (reads are never allowed).
     pub fn set_allow_osc52_write(&mut self, allow: bool) {
         self.allow_osc52_write = allow;
+    }
+
+    /// Whether OSC 7501 reports are passed on and its support query answered. Off, the
+    /// terminal does not claim the protocol at all.
+    pub fn set_program_status(&mut self, enabled: bool) {
+        self.program_status = enabled;
     }
 
     /// The cell size in logical pixels, for CSI 14/16 t reports and images.
@@ -411,6 +427,9 @@ impl Emulator {
                 Segment::EraseDisplay => self.erase_display(),
                 Segment::Reset { hard } => {
                     if hard {
+                        // RIS clears what programs reported.
+                        self.events
+                            .push(EmulatorEvent::ProgramStatus(ProgramStatusSignal::Reset));
                         self.mouse_protocol = MouseProtocol::None;
                         self.mouse_encoding = MouseEncoding::Default;
                         self.cursor_shape = None;
@@ -467,6 +486,12 @@ impl Emulator {
     }
 
     fn reply(&mut self, data: impl Into<Vec<u8>>) {
+        // Answers the engine queued for earlier sequences go first, so a program that fences
+        // a query with DA1 reads the replies in the order it asked.
+        let earlier = self.core.drain_responses();
+        if !earlier.is_empty() {
+            self.events.push(EmulatorEvent::Reply(earlier));
+        }
         self.events.push(EmulatorEvent::Reply(data.into()));
     }
 
@@ -486,6 +511,12 @@ impl Emulator {
                 Osc52Action::Ignore => {}
             },
             133 | 633 => {
+                // A new prompt means the foreground program ended; shell integration still
+                // sees the same sequence.
+                if data == "A" || data.starts_with("A;") {
+                    self.events
+                        .push(EmulatorEvent::ProgramStatus(ProgramStatusSignal::Prompt));
+                }
                 let line = self.absolute_cursor_line();
                 let first = self.lines_trimmed();
                 let mut marks = Marks {
@@ -503,6 +534,16 @@ impl Emulator {
                 }
             }
             10..=12 => self.dynamic_colors(code, data),
+            PROGRAM_STATUS_OSC if self.program_status => match parse_program_status(data) {
+                Some(ProgramStatusReport::Query) => self.reply(PROGRAM_STATUS_QUERY_REPLY),
+                Some(report) => {
+                    self.events
+                        .push(EmulatorEvent::ProgramStatus(ProgramStatusSignal::Report(
+                            report,
+                        )))
+                }
+                None => {}
+            },
             _ => {}
         }
     }
@@ -1223,5 +1264,79 @@ mod tests {
         term.write(b"one\r\n\r\ntwo\r\n$ ");
         assert_eq!(term.buffer_text(), "one\n\ntwo\n$ \n");
         assert_eq!(term.recent_lines(2), ["two", "$ "]);
+    }
+
+    fn program_status(term: &mut Emulator) -> Vec<ProgramStatusSignal> {
+        term.take_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                EmulatorEvent::ProgramStatus(signal) => Some(signal),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn replies(term: &mut Emulator) -> String {
+        let bytes: Vec<u8> = term
+            .take_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                EmulatorEvent::Reply(reply) => Some(reply),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn passes_program_status_reports_on_and_answers_the_query_on_the_session() {
+        use crate::program_status::{ProgramState, ProgramStatusRecord};
+        let mut term = emulator(20, 3);
+        term.write(b"\x1b]7501;state=working:app=make\x1b\\");
+        assert_eq!(
+            program_status(&mut term),
+            [ProgramStatusSignal::Report(ProgramStatusReport::Report(
+                ProgramStatusRecord {
+                    app: Some("make".into()),
+                    ..ProgramStatusRecord::new("", ProgramState::Working)
+                }
+            ))]
+        );
+        // The support query is answered in order with the engine's own replies (DA1 here).
+        term.write(b"\x1b]7501;?\x07\x1b[c");
+        let answer = replies(&mut term);
+        assert!(answer.starts_with(PROGRAM_STATUS_QUERY_REPLY), "{answer:?}");
+        assert!(
+            answer.len() > PROGRAM_STATUS_QUERY_REPLY.len(),
+            "DA1 answered too"
+        );
+        // Garbage is dropped; nothing reaches the screen.
+        term.write(b"\x1b]7501;state=sleeping\x07");
+        assert_eq!(program_status(&mut term), []);
+        assert_eq!(screen(&term), ["", "", ""]);
+    }
+
+    #[test]
+    fn ignores_program_status_and_stays_silent_when_turned_off() {
+        let mut term = emulator(20, 3);
+        term.set_program_status(false);
+        term.write(b"\x1b]7501;?\x07\x1b]7501;state=working\x07");
+        assert_eq!(term.take_events(), []);
+    }
+
+    #[test]
+    fn reports_a_new_prompt_and_a_reset_without_hiding_them_from_shell_integration() {
+        let mut term = emulator(20, 3);
+        term.write(b"\x1b]133;C\x07");
+        assert_eq!(program_status(&mut term), []);
+        term.write(b"\x1b]133;A\x07$ \x1b]633;A;x\x07");
+        assert_eq!(
+            program_status(&mut term),
+            [ProgramStatusSignal::Prompt, ProgramStatusSignal::Prompt]
+        );
+        assert_eq!(screen(&term)[0], "$ ");
+        term.write(b"\x1bc");
+        assert_eq!(program_status(&mut term), [ProgramStatusSignal::Reset]);
     }
 }

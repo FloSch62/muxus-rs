@@ -146,6 +146,8 @@ pub struct AppShell {
     pub overlays: Vec<crate::ui::overlays::Overlay>,
     /// This shell's window, for routing app-wide requests to it.
     pub window_handle: Option<AnyWindowHandle>,
+    /// What programs reported with OSC 7501, per tab (`ui::program_status`).
+    pub program_status: muxus_app::state::program_status::ProgramStatusStore,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -253,6 +255,7 @@ impl AppShell {
             multi_exec: cx.new(|_| muxus_app::features::command_buttons::MultiExec::new()),
             prompt_seq: 0,
             window_handle: Some(window.window_handle()),
+            program_status: Default::default(),
             _subscriptions: subscriptions,
         };
         shell.apply_theme(window, cx);
@@ -567,6 +570,7 @@ impl Render for AppShell {
         self.sync_session_views(window, cx);
         self.sync_sftp(window, cx);
         self.sync_prompt_dialog(window, cx);
+        self.sync_program_status();
         let theme = *cx.theme();
         let p = theme.palette;
         let show_sidebar = self.show_sidebar();

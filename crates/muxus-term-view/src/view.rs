@@ -180,6 +180,7 @@ impl TerminalView {
                 &settings.theme,
             );
             emulator.set_allow_osc52_write(settings.allow_osc52_write);
+            emulator.set_program_status(settings.program_status);
             emulator
         };
         let focus = cx.focus_handle();
@@ -291,6 +292,7 @@ impl TerminalView {
         self.emulator.set_theme(&settings.theme);
         self.emulator
             .set_allow_osc52_write(settings.allow_osc52_write);
+        self.emulator.set_program_status(settings.program_status);
         self.settings = settings;
         self.settings_version += 1;
         self.metrics_key = None;
@@ -573,6 +575,9 @@ impl TerminalView {
                 EmulatorEvent::CwdChanged(cwd) => cx.emit(TerminalViewEvent::CwdChanged(cwd)),
                 EmulatorEvent::ClipboardWrite(text) => {
                     cx.write_to_clipboard(ClipboardItem::new_string(text))
+                }
+                EmulatorEvent::ProgramStatus(signal) => {
+                    cx.emit(TerminalViewEvent::ProgramStatus(signal))
                 }
             }
         }

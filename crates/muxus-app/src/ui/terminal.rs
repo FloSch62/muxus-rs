@@ -21,9 +21,9 @@ use muxus_app::session::diagnostics::{
 };
 use muxus_app::session::recovery::{
     AUTO_RECONNECT_STABLE_MS, AutoReconnectInput, CONNECTION_INTERRUPTION_GRACE_MS,
-    ChannelClose as CloseInfo, TerminalExit as ExitInfo, auto_reconnect_delay_ms,
-    auto_reconnect_notice, can_diagnose_connection, connection_failure_reason, is_diagnose_input,
-    reattach_command_for, reconnect_prompt, should_delay_connection_lost,
+    ChannelClose as CloseInfo, CloseOnExitInput, TerminalExit as ExitInfo, auto_reconnect_delay_ms,
+    auto_reconnect_notice, can_diagnose_connection, closes_tab_on_exit, connection_failure_reason,
+    is_diagnose_input, reattach_command_for, reconnect_prompt, should_delay_connection_lost,
     should_wait_for_terminal_output, terminal_notice,
 };
 use muxus_app::session::{LinkEvent, LinkInput, LinkWriter};
@@ -308,6 +308,7 @@ impl AppShell {
                 _ => false,
             },
             allow_osc52_write: prefs.allow_osc52_clipboard_write,
+            program_status: prefs.show_program_status,
             paste_warn_multiline: prefs.paste_warn_multiline,
             keyword_rules: resolve_keyword_highlights(
                 &prefs.keyword_highlights,
@@ -761,6 +762,7 @@ impl AppShell {
                 connect
             }
         };
+        let fresh_session = matches!(connect, TerminalClientMessage::Connect { .. });
         let link = self.data.open_terminal(connect);
         let generation = terminal.generation;
         let gate = Arc::new(Mutex::new(InputGate::default()));
@@ -915,6 +917,10 @@ impl AppShell {
                 ..Default::default()
             },
         );
+        // A new shell: what programs reported in the old one no longer applies.
+        if fresh_session {
+            self.program_status.reset(tab_id);
+        }
     }
 
     /// Send a message to a tab's live session.
@@ -1289,6 +1295,10 @@ impl AppShell {
                         reason,
                     });
                 }
+                // The programs reporting work in the session are gone.
+                if self.program_status.drop_transient(tab_id) {
+                    cx.notify();
+                }
                 false
             }
             TerminalServerMessage::PasteProgress { state, .. } => {
@@ -1583,6 +1593,10 @@ impl AppShell {
             }
         }
         let view = terminal.view.clone();
+        let exit = terminal
+            .session
+            .as_ref()
+            .and_then(|session| session.exit.clone());
         view.update(cx, |view, cx| view.write_output(text.as_bytes(), cx));
         self.tabs.update(
             tab_id,
@@ -1597,6 +1611,24 @@ impl AppShell {
                 ..Default::default()
             },
         );
+        // Unsaved remote files still ask first; kept, the tab stays as ended above.
+        if closes_tab_on_exit(CloseOnExitInput {
+            enabled: self.prefs.close_tab_on_clean_exit,
+            profile_kind: kind,
+            pinned: self.tabs.tab(tab_id).is_some_and(|tab| tab.pinned),
+            exit: exit.as_ref(),
+        }) && let Some(handle) = self.window_handle
+        {
+            let shell = cx.entity();
+            let tab = tab_id.to_string();
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, |_, window, cx| {
+                    shell.update(cx, |shell, cx| {
+                        shell.request_close_tabs(vec![tab], window, cx)
+                    });
+                });
+            });
+        }
     }
 
     /// `reconnectFromTerminalInput`: redial an ended session.
@@ -1747,6 +1779,10 @@ impl AppShell {
                         },
                     );
                 }
+            }
+            TerminalViewEvent::ProgramStatus(signal) => {
+                let signal = signal.clone();
+                self.on_program_status(tab_id, &signal, cx);
             }
             // Typing and pastes reach the other terminals of a multi-execution group.
             TerminalViewEvent::Input(data) => {

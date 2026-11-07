@@ -1,5 +1,5 @@
 //! A streaming pre-parser in front of the emulator. It finds the few sequences Muxus handles itself
-//! — OSC 7, 10, 11, 12, 52, 133 and 633, the mouse modes, erase-in-display and resets — and
+//! — OSC 7, 10, 11, 12, 52, 133, 633 and 7501, the mouse modes, erase-in-display and resets — and
 //! rewrites the two SGR colors the emulator cannot tell apart from the default colors (ANSI white
 //! foreground and ANSI black background). Everything else passes through unchanged, split at the
 //! points where a handled sequence sits so the terminal state is right when it is handled.
@@ -54,7 +54,7 @@ enum State {
     StringEscape,
 }
 
-const HANDLED_OSC: [u32; 7] = [7, 10, 11, 12, 52, 133, 633];
+const HANDLED_OSC: [u32; 8] = [7, 10, 11, 12, 52, 133, 633, 7501];
 /// The private modes the emulator follows besides the engine: the mouse protocols and encodings,
 /// and the alternate screens (which bring the viewport back to the bottom). Full-screen programs
 /// toggle others (the cursor, 25) on every redraw; those stay in the byte stream.

@@ -538,6 +538,9 @@ impl AppShell {
                     true
                 }
             }
+            // Ctrl+A / Ctrl+E, as Command+Left/Right send in VS Code and Ghostty.
+            "terminal.line-start" => self.type_keystroke(b"\x01", cx),
+            "terminal.line-end" => self.type_keystroke(b"\x05", cx),
             "terminal.command-menu" => self.open_command_menu(window, cx),
             "terminal.send-secret" => view.is_some() && self.open_send_secret_menu(window, cx),
             "terminal.multi-exec" => {
@@ -557,6 +560,22 @@ impl AppShell {
 }
 
 impl AppShell {
+    /// `typeKeystroke`: bytes sent as a key typed in the active terminal, mirrored like one
+    /// under multi-execution. `false` without a live session there, so the key goes on.
+    pub fn type_keystroke(&mut self, data: &[u8], cx: &mut Context<Self>) -> bool {
+        let Some(id) = self.tabs.active_id.clone() else {
+            return false;
+        };
+        let Some(view) = self.terminal_of(&id) else {
+            return false;
+        };
+        if !view.update(cx, |view, _| view.send_input(data.to_vec())) {
+            return false;
+        }
+        self.mirror_input(&id, data, cx);
+        true
+    }
+
     /// `requestForceReconnectAll`: replace every remote connection, after asking.
     pub fn request_force_reconnect_all(
         &mut self,

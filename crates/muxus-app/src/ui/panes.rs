@@ -14,6 +14,7 @@ use muxus_app::state::workspace_layout::{
     FlatDivider, LayoutRect, PaneDirection, SplitDirection, flatten_pane_layout,
 };
 use muxus_ui::color::{alpha, over, try_hex};
+use muxus_ui::gpui_kit::prelude::FluentBuilder;
 use muxus_ui::gpui_kit::{
     AnyElement, App, AppContext, Bounds, BoxShadow, ClickEvent, Context, CursorStyle, Div,
     ElementId, FontWeight, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
@@ -910,6 +911,9 @@ impl AppShell {
         if tab.pinned {
             el = el.child(svg_pin(13., p.text.secondary));
         }
+        if let Some(badge) = self.program_status_badge(&tab.id, theme) {
+            el = el.child(badge);
+        }
         let close = IconButton::new(
             ElementId::Name(format!("close-tab-{}", tab.id).into()),
             "Close",
@@ -1138,6 +1142,14 @@ impl AppShell {
         {
             let id = tab.id.clone();
             let is_active = active.as_deref() == Some(tab.id.as_str());
+            let badge = self
+                .program_status_badge(&tab.id, &theme)
+                .map(|badge| div().ml(px(8.)).child(badge));
+            let check = is_active.then(|| {
+                div()
+                    .when(badge.is_some(), |check| check.ml(px(4.)))
+                    .child(icon("Check", 18., theme.palette.action.active))
+            });
             paper = paper.child(
                 MenuItem::new(
                     ElementId::Name(format!("all-tabs-{}", tab.id).into()),
@@ -1145,11 +1157,14 @@ impl AppShell {
                 )
                 .icon(tab_icon(&tab))
                 .selected(is_active)
-                .trailing(if is_active {
-                    icon("Check", 18., theme.palette.action.active).into_any_element()
-                } else {
-                    div().into_any_element()
-                })
+                .trailing(
+                    div()
+                        .flex()
+                        .items_center()
+                        .children(badge)
+                        .children(check)
+                        .into_any_element(),
+                )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.tabs.activate(&id);
                     this.menu = None;
