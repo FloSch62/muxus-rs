@@ -1,14 +1,22 @@
 //! Serial port enumeration for the saved-host editor (`server/src/routes/serial.ts`).
 //!
-//! On Linux the list comes from `udevadm info -e`, read the way
-//! node-serialport's `linux-list.js` reads it, so the metadata is the same
-//! (MIT, Copyright 2010 Christopher Williams). Elsewhere the `serialport`
-//! crate's enumeration supplies it.
+//! The metadata is node-serialport's (@serialport/bindings-cpp, MIT, Copyright 2010
+//! Christopher Williams), read the same way on each system:
+//!
+//! - Linux: `udevadm info -e`, parsed as `linux-list.js` parses it.
+//! - Windows: the Ports device class through SetupAPI, as `serialport_win.cpp` lists it
+//!   (`pnpId` is the device instance ID, `locationId` its location information, the serial
+//!   number from the USB container or else the instance ID as `win32-sn-parser.js` reads it).
+//! - macOS: the `serialport` crate's IOKit enumeration, keeping only the dial-in devices
+//!   (`/dev/tty.*`) `darwin_list.cpp` reports, with the USB `locationID` as eight hex digits.
 
 use std::cmp::Ordering;
 use std::io;
 
 use muxus_core::api::{SerialPortInfo, SerialPortsResponse};
+
+#[cfg(windows)]
+mod windows;
 
 /// The ports, naturally sorted by path (COM2 before COM10).
 pub fn serial_ports_response(mut ports: Vec<SerialPortInfo>) -> SerialPortsResponse {
@@ -193,23 +201,35 @@ pub fn parse_udevadm_ports(output: &str) -> Vec<SerialPortInfo> {
 /// The serial devices this computer has, for the saved-host editor. Blocking:
 /// [`list_ports`] runs it off the async executor.
 pub fn list_ports_blocking() -> io::Result<Vec<SerialPortInfo>> {
-    #[cfg(target_os = "linux")]
+    #[cfg(windows)]
     {
-        let output = std::process::Command::new("udevadm")
-            .args(["info", "-e"])
-            .output();
-        if let Ok(output) = output
-            && output.status.success()
-        {
-            return Ok(parse_udevadm_ports(&String::from_utf8_lossy(
-                &output.stdout,
-            )));
-        }
+        windows::list_ports()
     }
-    let ports = serialport::available_ports().map_err(io::Error::from)?;
-    Ok(ports.into_iter().map(port_info).collect())
+    #[cfg(not(windows))]
+    {
+        #[cfg(target_os = "linux")]
+        {
+            let output = std::process::Command::new("udevadm")
+                .args(["info", "-e"])
+                .output();
+            if let Ok(output) = output
+                && output.status.success()
+            {
+                return Ok(parse_udevadm_ports(&String::from_utf8_lossy(
+                    &output.stdout,
+                )));
+            }
+        }
+        let ports = serialport::available_ports().map_err(io::Error::from)?;
+        Ok(ports
+            .into_iter()
+            .filter(|port| !cfg!(target_os = "macos") || !is_callout_device(&port.port_name))
+            .map(port_info)
+            .collect())
+    }
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 fn port_info(port: serialport::SerialPortInfo) -> SerialPortInfo {
     let mut info = empty_port(port.port_name);
     if let serialport::SerialPortType::UsbPort(usb) = port.port_type {
@@ -217,8 +237,125 @@ fn port_info(port: serialport::SerialPortInfo) -> SerialPortInfo {
         info.serial_number = usb.serial_number;
         info.vendor_id = Some(format!("{:04x}", usb.vid));
         info.product_id = Some(format!("{:04x}", usb.pid));
+        // Only darwin_list.cpp reports one; the Linux fallback has none, as linux-list.js.
+        if cfg!(target_os = "macos") {
+            info.location_id = usb
+                .location
+                .and_then(|location| mac_location_id(location.bus_id(), location.port_chain()));
+        }
     }
     info
+}
+
+/// macOS lists each port twice, as a callout (`/dev/cu.*`) and a dial-in (`/dev/tty.*`)
+/// device; node-serialport reports the dial-in one (`kIODialinDeviceKey`).
+pub fn is_callout_device(path: &str) -> bool {
+    path.starts_with("/dev/cu.")
+}
+
+/// The USB `locationID` (`0xBBPPPPPP`: bus, then one port per nibble) the `serialport` crate
+/// split into a bus and its port chain, as `darwin_list.cpp` prints it (`%08x`).
+pub fn mac_location_id(bus_id: &str, port_chain: &[u8]) -> Option<String> {
+    let bus: u8 = bus_id.parse().ok()?;
+    if port_chain.len() > 6 || port_chain.iter().any(|&port| port > 0xf) {
+        return None;
+    }
+    let ports = port_chain
+        .iter()
+        .chain(std::iter::repeat(&0))
+        .take(6)
+        .fold(0u32, |id, &port| (id << 4) | u32::from(port));
+    Some(format!("{:08x}", (u32::from(bus) << 24) | ports))
+}
+
+/// Up to four characters after `marker` (`VID_`, `PID_`) in a Windows device instance ID,
+/// as `serialport_win.cpp` cuts the USB ids out of it.
+pub fn instance_id_field(pnp_id: &str, marker: &str) -> Option<String> {
+    let start = pnp_id.find(marker)? + marker.len();
+    Some(pnp_id[start..].chars().take(4).collect())
+}
+
+/// A serial number in a Windows device instance ID (`win32-sn-parser.js`): what follows the
+/// last backslash of a `USB\` ID, or the FTDI serial of an `FTDIBUS\` ID without its interface
+/// letter (`/USB\\(?:.+)\\(.+)/`, `/FTDIBUS\\(?:.+)\+(.+?)A?\\.+/`).
+pub fn win32_serial_number(pnp_id: &str) -> Option<String> {
+    let chars: Vec<char> = pnp_id.chars().collect();
+    usb_instance_serial(&chars).or_else(|| ftdi_instance_serial(&chars))
+}
+
+/// Where `prefix` starts in `chars`, leftmost first, as a regular expression scans.
+fn match_starts<'a>(chars: &'a [char], prefix: &'a str) -> impl Iterator<Item = usize> + 'a {
+    let prefix: Vec<char> = prefix.chars().collect();
+    (0..chars.len()).filter(move |&start| chars[start..].starts_with(&prefix))
+}
+
+/// `/USB\\(?:.+)\\(.+)/`: the greedy `.+` puts the capture after the last backslash that
+/// still has a character after it.
+fn usb_instance_serial(chars: &[char]) -> Option<String> {
+    match_starts(chars, "USB\\").find_map(|start| {
+        let rest = &chars[start + 4..];
+        (1..rest.len().saturating_sub(1))
+            .rev()
+            .find(|&split| rest[split] == '\\')
+            .map(|split| rest[split + 1..].iter().collect())
+    })
+}
+
+/// `/FTDIBUS\\(?:.+)\+(.+?)A?\\.+/`: the last `+` that lets the rest match, then the
+/// shortest serial followed by an optional `A`, a backslash and at least one character.
+fn ftdi_instance_serial(chars: &[char]) -> Option<String> {
+    // `\\.+`: a backslash with at least one character after it.
+    let backslash_and_more = |tail: &[char]| tail.first() == Some(&'\\') && tail.len() > 1;
+    match_starts(chars, "FTDIBUS\\").find_map(|start| {
+        let rest = &chars[start + 8..];
+        (1..rest.len())
+            .rev()
+            .filter(|&plus| rest[plus] == '+')
+            .find_map(|plus| {
+                let after = &rest[plus + 1..];
+                (1..after.len()).find_map(|length| {
+                    let tail = &after[length..];
+                    let matched = backslash_and_more(tail)
+                        || (tail.first() == Some(&'A') && backslash_and_more(&tail[1..]));
+                    matched.then(|| after[..length].iter().collect())
+                })
+            })
+    })
+}
+
+/// One port of the Ports device class as `serialport_win.cpp` and `win32.js` report it:
+/// only devices whose `PortName` names a COM port, empty values left out, the USB ids cut
+/// from the instance ID, and the serial number from the USB container or else from the
+/// instance ID.
+pub fn windows_port(
+    pnp_id: &str,
+    port_name: Option<String>,
+    manufacturer: Option<String>,
+    location: Option<String>,
+    container_serial_number: Option<String>,
+) -> Option<SerialPortInfo> {
+    let path = port_name.filter(|name| name.contains("COM"))?;
+    let non_empty = |value: Option<String>| value.filter(|value| !value.is_empty());
+    let pnp_id = non_empty(Some(pnp_id.to_string()));
+    let serial_number = non_empty(container_serial_number)
+        .or_else(|| pnp_id.as_deref().and_then(win32_serial_number));
+    Some(SerialPortInfo {
+        path,
+        manufacturer: non_empty(manufacturer),
+        serial_number,
+        vendor_id: non_empty(
+            pnp_id
+                .as_deref()
+                .and_then(|id| instance_id_field(id, "VID_")),
+        ),
+        product_id: non_empty(
+            pnp_id
+                .as_deref()
+                .and_then(|id| instance_id_field(id, "PID_")),
+        ),
+        pnp_id,
+        location_id: non_empty(location),
+    })
 }
 
 /// Enumerate the OS serial devices, naturally sorted by path.
