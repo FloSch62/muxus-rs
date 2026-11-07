@@ -542,6 +542,9 @@ impl AppShell {
                     self.open_launch_group(label, hosts, window, cx)
                 }
             }
+            SidebarAction::RunScript { hosts, what } => {
+                self.open_scripts_for(&hosts, &what, window, cx)
+            }
             SidebarAction::SortHosts(hosts) => {
                 if self.sidebar.read(cx).reorder_enabled() && hosts.len() > 1 {
                     let keys = alphabetize_managed_hosts(&hosts)

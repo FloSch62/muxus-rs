@@ -805,6 +805,7 @@ fn result_icon(result: &LauncherResult, theme: &Theme) -> (&'static str, Ink) {
                 LauncherAction::Workspaces => "WorkspacesOutlined",
                 LauncherAction::History => "HistoryOutlined",
                 LauncherAction::Commands => "BoltOutlined",
+                LauncherAction::Scripts => "TerminalOutlined",
                 LauncherAction::Tunnels => "SwapHorizOutlined",
                 LauncherAction::Environments => "ViewInArOutlined",
                 LauncherAction::Sftp => "FolderOutlined",

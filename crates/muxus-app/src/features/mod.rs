@@ -13,6 +13,7 @@ pub mod logs;
 pub mod management;
 pub mod notices;
 pub mod remote_desktop;
+pub mod scripts;
 pub mod settings;
 pub mod sftp;
 pub mod vault;

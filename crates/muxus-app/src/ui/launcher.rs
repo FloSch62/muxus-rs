@@ -121,6 +121,7 @@ impl AppShell {
             LauncherAction::Workspaces => self.open_workspaces(window, cx),
             LauncherAction::History => self.open_history("", None, window, cx),
             LauncherAction::Commands => self.open_command_buttons(window, cx),
+            LauncherAction::Scripts => self.open_scripts(None, window, cx),
             LauncherAction::Tunnels => self.set_forwarding_open(true, cx),
             LauncherAction::Environments => {
                 if let Some(hub) = self.environments_hub(cx) {

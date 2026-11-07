@@ -42,6 +42,7 @@ pub enum LauncherAction {
     Workspaces,
     History,
     Commands,
+    Scripts,
     Tunnels,
     Environments,
     Sftp,
@@ -57,6 +58,7 @@ impl LauncherAction {
             LauncherAction::Workspaces => "workspaces",
             LauncherAction::History => "history",
             LauncherAction::Commands => "commands",
+            LauncherAction::Scripts => "scripts",
             LauncherAction::Tunnels => "tunnels",
             LauncherAction::Environments => "environments",
             LauncherAction::Sftp => "sftp",
@@ -743,6 +745,12 @@ pub fn build_action_results(
             "Manage saved commands",
             "Create and edit command buttons",
             &["buttons", "snippets"],
+        ),
+        action_result(
+            LauncherAction::Scripts,
+            "Run a script on hosts",
+            "All at once, in batches or one by one, with each host's output",
+            &["script", "batch", "bulk", "many hosts"],
         ),
         action_result(
             LauncherAction::Tunnels,
