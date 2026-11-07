@@ -7,7 +7,9 @@
 //! row pitch stand in for the rest (`tree_window`), so a catalog of
 //! thousands of hosts renders like a screenful.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use muxus_app::hosts::tree::{BuildOptions, build_host_tree, flatten_visible_tree};
 use muxus_app::hosts::{
@@ -26,35 +28,37 @@ use muxus_app::sidebar::row_clicks::{
 use muxus_app::sidebar::row_style::{
     TREE_ROW_GAP, TREE_ROW_HEIGHT, TREE_ROW_PITCH, indent_guides, indent_px,
 };
-use muxus_app::sidebar::tree_navigation::{
-    TreeNavAction, TreeNavKey, focus_after_change, tree_nav_action,
-};
+use muxus_app::sidebar::tree_navigation::focus_after_change;
 use muxus_app::sidebar::tree_selection::{
-    Selection, TreeSelectionAnchor, range_selection, toggle_selection, visible_host_keys,
+    Selection, TreeSelectionAnchor, range_selection, toggle_selection,
 };
 use muxus_app::sidebar::tree_window::{
     RowSegment, RowWindow, TREE_OVERSCAN, next_row_window, rendered_row_indices, row_segments,
     visible_row_span,
 };
 use muxus_app::state::session_actions::is_quick_connect_target;
+use muxus_store::prefs::state::LocalShellProfileConfig;
 use muxus_ui::color::try_hex;
 use muxus_ui::gpui_kit::base::input::{InputEvent, InputState};
 use muxus_ui::gpui_kit::prelude::FluentBuilder;
 use muxus_ui::gpui_kit::{
-    AnyElement, App, AppContext, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
-    Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    ParentElement, Pixels, Point, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
-    Styled, Subscription, Transformation, Window, div, px, radians,
+    AnyElement, App, AppContext, Context, CursorStyle, ElementId, Entity, EventEmitter,
+    FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, ParentElement, Pixels, Point, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Transformation, Window, canvas, div, px,
+    radians,
 };
 use muxus_ui::icon::icon;
 use muxus_ui::label::{Label, label, paragraph};
 use muxus_ui::text::TextStyleExt;
 use muxus_ui::theme::{ActiveTheme, Theme};
 use muxus_ui::widgets::{
-    AnchorBounds, Button, IconButton, Placement, TextField, Tooltip, bounds_probe, scrollbar,
+    Alert, AnchorBounds, Button, IconButton, Placement, TextField, Tooltip, bounds_probe, scrollbar,
 };
 
+use crate::ui::sidebar_keys::TypeAhead;
 use crate::ui::sidebar_menus::SidebarMenu;
+use crate::ui::sidebar_shells::LocalShells;
 
 /// A right-click handler on a fixed row.
 type ContextHandler = Box<dyn Fn(&MouseDownEvent, &mut Window, &mut App) + 'static>;
@@ -71,6 +75,8 @@ pub enum SidebarEvent {
         anchor: Option<Point<Pixels>>,
     },
     OpenLocalTerminal,
+    /// A saved local shell profile or a listed WSL distribution.
+    OpenLocalShell(LocalShellProfileConfig),
     QuickConnect(String),
     AddHost {
         prefill: Option<String>,
@@ -123,7 +129,12 @@ pub enum SidebarAction {
         path: String,
         label: String,
     },
-    LocalShellSettings,
+    /// Settings → Local shells, on the profile the menu was opened for.
+    LocalShellSettings {
+        item: Option<String>,
+    },
+    /// "Save as profile" on a listed WSL distribution.
+    SaveWslProfile(LocalShellProfileConfig),
     /// The containers and VMs panel: a row's mark or "Containers & VMs".
     Environments(crate::ui::environments::EnvironmentsRequest),
 }
@@ -137,15 +148,18 @@ pub struct SessionSidebar {
     search_collapsed: BTreeSet<String>,
     /// Hosts picked for a bulk action. Kept while searching, so a selection can span queries.
     pub(crate) selection: Selection,
-    anchor: Option<TreeSelectionAnchor>,
-    focused_key: Option<String>,
+    pub(crate) anchor: Option<TreeSelectionAnchor>,
+    pub(crate) focused_key: Option<String>,
     last_index: usize,
     live: BTreeMap<String, LiveCounts>,
     /// What each host runs, for the mark at the end of its row.
     pub(crate) environment_marks: crate::ui::environments::SidebarMarks,
-    scroll: ScrollHandle,
+    pub(crate) scroll: ScrollHandle,
+    /// Where the tree starts in the scrolled content, as last painted (the rows above
+    /// it, the shells and an ssh_config alert, vary).
+    tree_top: Rc<Cell<Option<f32>>>,
     row_window: RowWindow,
-    open_gesture: SidebarOpenGesture,
+    pub(crate) open_gesture: SidebarOpenGesture,
     pub(crate) on_right: bool,
     tree_focus: FocusHandle,
     pub(crate) menu: Option<SidebarMenu>,
@@ -156,6 +170,15 @@ pub struct SessionSidebar {
     pub(crate) drag: crate::ui::sidebar_dnd::TreeDrag,
     pub(crate) rows: Vec<VisibleNode>,
     match_key: Option<String>,
+    /// What has been typed at the tree (`useTreeKeyboard`).
+    pub(crate) type_ahead: TypeAhead,
+    /// The local shell profiles and WSL distributions under "Local terminal".
+    pub(crate) local_shells: LocalShells,
+    /// Order and folder writes on their way to the store (`reorder.isPending`,
+    /// `applyFolderMoves.isPending`).
+    writes: usize,
+    /// The host whose open-sessions menu the window shows (`sessionsMenuKey`).
+    sessions_menu_key: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -183,6 +206,7 @@ impl SessionSidebar {
             live: BTreeMap::new(),
             environment_marks: Default::default(),
             scroll: ScrollHandle::new(),
+            tree_top: Rc::default(),
             // Enough rows for a tall window before the viewport has been measured.
             row_window: RowWindow {
                 start: 0,
@@ -197,6 +221,10 @@ impl SessionSidebar {
             click_position: None,
             rows: Vec::new(),
             match_key: None,
+            type_ahead: TypeAhead::default(),
+            local_shells: LocalShells::default(),
+            writes: 0,
+            sessions_menu_key: None,
             _subscriptions: vec![subscription],
         };
         sidebar.rebuild();
@@ -272,7 +300,7 @@ impl SessionSidebar {
         self.on_right = on_right;
     }
 
-    fn normalized_filter(&self) -> String {
+    pub(crate) fn normalized_filter(&self) -> String {
         self.filter.trim().to_lowercase()
     }
 
@@ -281,9 +309,28 @@ impl SessionSidebar {
     }
 
     /// Reordering writes the order to the store: only against the full,
-    /// unfiltered list (`reorderEnabled`).
+    /// unfiltered list, and not while an order or folder write is still on its way
+    /// (`reorderEnabled`). Folder edits follow the same rule (`folderEditsEnabled`).
     pub(crate) fn reorder_enabled(&self) -> bool {
-        !self.filtering()
+        !self.filtering() && self.writes == 0
+    }
+
+    /// The host whose open-sessions menu the window shows, if any.
+    pub fn set_sessions_menu_key(&mut self, key: Option<String>, cx: &mut Context<Self>) {
+        if self.sessions_menu_key != key {
+            self.sessions_menu_key = key;
+            cx.notify();
+        }
+    }
+
+    /// An order or folder write started (`true`) or ended.
+    pub fn set_writing(&mut self, writing: bool, cx: &mut Context<Self>) {
+        self.writes = if writing {
+            self.writes + 1
+        } else {
+            self.writes.saturating_sub(1)
+        };
+        cx.notify();
     }
 
     /// Collapse or expand without rebuilding (callers rebuild once after a batch).
@@ -299,7 +346,7 @@ impl SessionSidebar {
         }
     }
 
-    fn is_expanded(&self, key: &str) -> bool {
+    pub(crate) fn is_expanded(&self, key: &str) -> bool {
         if self.filtering() {
             !self.search_collapsed.contains(key)
         } else {
@@ -330,12 +377,15 @@ impl SessionSidebar {
         );
         let filtering = !needle.is_empty();
         let search_collapsed = &self.search_collapsed;
+        // Folders a drag opened to look inside count as open on top of the rest.
+        let drag_expanded = &self.drag.expanded;
         let expanded = |key: &str| {
-            if filtering {
-                !search_collapsed.contains(key)
-            } else {
-                folders.is_expanded(key)
-            }
+            drag_expanded.contains(key)
+                || if filtering {
+                    !search_collapsed.contains(key)
+                } else {
+                    folders.is_expanded(key)
+                }
         };
         let color = |key: &str| folders.folder_color(key);
         self.rows = flatten_visible_tree(&self.tree, &expanded, &color);
@@ -417,7 +467,7 @@ impl SessionSidebar {
         self.filtering() && self.match_key.is_none() && is_quick_connect_target(&self.filter)
     }
 
-    fn set_expanded(&mut self, key: &str, expanded: bool, cx: &mut Context<Self>) {
+    pub(crate) fn set_expanded(&mut self, key: &str, expanded: bool, cx: &mut Context<Self>) {
         if self.filtering() {
             if expanded {
                 self.search_collapsed.remove(key);
@@ -441,8 +491,7 @@ impl SessionSidebar {
 
     /// Scroll just enough to show a row, mounted or not.
     fn scroll_to_index(&self, index: usize) {
-        let fixed = self.fixed_row_count() as f32 * TREE_ROW_PITCH;
-        let top = fixed + index as f32 * TREE_ROW_PITCH + TREE_ROW_GAP;
+        let top = self.tree_top() + index as f32 * TREE_ROW_PITCH;
         let offset = -muxus_ui::zoom::unzoom(self.scroll.offset().y);
         let viewport = muxus_ui::zoom::unzoom(self.scroll.bounds().size.height);
         if viewport <= 0. {
@@ -459,14 +508,19 @@ impl SessionSidebar {
         }
     }
 
-    fn fixed_row_count(&self) -> usize {
-        1 + usize::from(self.quick_connectable())
+    /// Where the tree starts in the scrolled content: as last painted, or, before the
+    /// first paint, below the fixed rows.
+    fn tree_top(&self) -> f32 {
+        self.tree_top.get().unwrap_or_else(|| {
+            let fixed =
+                1 + self.visible_local_shells().len() + usize::from(self.quick_connectable());
+            fixed as f32 * TREE_ROW_PITCH + TREE_ROW_GAP
+        })
     }
 
     /// Re-measure which rows the viewport shows; a no-op while the window still covers them.
     fn sync_window(&mut self) -> bool {
-        let fixed = self.fixed_row_count() as f32 * TREE_ROW_PITCH;
-        let scrolled_past = -muxus_ui::zoom::unzoom(self.scroll.offset().y) - fixed;
+        let scrolled_past = -muxus_ui::zoom::unzoom(self.scroll.offset().y) - self.tree_top();
         let viewport = muxus_ui::zoom::unzoom(self.scroll.bounds().size.height);
         if viewport <= 0. {
             return false;
@@ -485,7 +539,7 @@ impl SessionSidebar {
 
     /// Selection gestures never connect: Ctrl-click toggles a host, and
     /// Shift-click selects the range from the last host clicked.
-    fn activate_host(
+    pub(crate) fn activate_host(
         &mut self,
         host: ManagedHost,
         gesture: HostActivation,
@@ -516,6 +570,7 @@ impl SessionSidebar {
                 self.selection = Selection::from([key]);
             }
             HostClickOutcome::Open => {
+                // Mouse clicks only: middle-click and Enter leave the anchor be.
                 if self.open_gesture == SidebarOpenGesture::Click && gesture.clicks.unwrap_or(0) > 0
                 {
                     self.anchor = Some(TreeSelectionAnchor {
@@ -526,7 +581,9 @@ impl SessionSidebar {
                 cx.emit(SidebarEvent::OpenHost {
                     host,
                     new_session: gesture.new_session,
-                    repeat: gesture.repeat,
+                    // Where a double-click opens hosts, its second click is the first
+                    // activation, so a host with open tabs still lists them.
+                    repeat: gesture.repeat && self.open_gesture == SidebarOpenGesture::Click,
                     anchor: self.click_position.take(),
                 });
             }
@@ -538,7 +595,12 @@ impl SessionSidebar {
         cx.notify();
     }
 
-    fn focus_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn focus_index(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(row) = self.rows.get(index) {
             self.focused_key = Some(row.key.clone());
             self.last_index = index;
@@ -548,105 +610,19 @@ impl SessionSidebar {
         }
     }
 
-    fn on_tree_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let keystroke = &event.keystroke;
-        let modifiers = keystroke.modifiers;
-        let index = self
-            .focused_key
-            .as_ref()
-            .and_then(|key| self.rows.iter().position(|row| &row.key == key))
-            .unwrap_or(0);
-        if (modifiers.control || modifiers.platform)
-            && !modifiers.alt
-            && !modifiers.shift
-            && keystroke.key == "a"
-        {
-            self.anchor = None;
-            self.selection = visible_host_keys(&self.rows);
-            cx.stop_propagation();
+    /// The search box's focus, where Escape in the tree goes.
+    pub(crate) fn search_focus(&self, cx: &App) -> FocusHandle {
+        self.search.read(cx).focus_handle(cx)
+    }
+
+    /// A row pressed with the pointer becomes the tree's focused row, as a clicked
+    /// row button takes the focus in the client, so the keyboard carries on from it.
+    fn focus_row(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.rows.iter().position(|row| row.key == key) {
+            self.focused_key = Some(key.to_string());
+            self.last_index = index;
+            window.focus(&self.tree_focus, cx);
             cx.notify();
-            return;
-        }
-        let nav = match keystroke.key.as_str() {
-            "up" => Some(TreeNavKey::ArrowUp),
-            "down" => Some(TreeNavKey::ArrowDown),
-            "left" => Some(TreeNavKey::ArrowLeft),
-            "right" => Some(TreeNavKey::ArrowRight),
-            "home" => Some(TreeNavKey::Home),
-            "end" => Some(TreeNavKey::End),
-            _ => None,
-        };
-        if let Some(nav) = nav {
-            cx.stop_propagation();
-            if modifiers.shift && matches!(nav, TreeNavKey::ArrowUp | TreeNavKey::ArrowDown) {
-                // Shift+Arrow moves like an arrow and drags the range along with it.
-                let to = if nav == TreeNavKey::ArrowUp {
-                    index.checked_sub(1)
-                } else {
-                    Some(index + 1)
-                };
-                if let (Some(from), Some(to)) =
-                    (self.rows.get(index), to.and_then(|to| self.rows.get(to)))
-                {
-                    let anchor = self
-                        .anchor
-                        .get_or_insert_with(|| TreeSelectionAnchor {
-                            key: from.key.clone(),
-                            base: self.selection.clone(),
-                        })
-                        .clone();
-                    let to_key = to.key.clone();
-                    self.selection = range_selection(&self.rows, &anchor, &to_key);
-                    let to_index = self
-                        .rows
-                        .iter()
-                        .position(|row| row.key == to_key)
-                        .unwrap_or(index);
-                    self.focus_index(to_index, window, cx);
-                }
-                return;
-            }
-            match tree_nav_action(&self.rows, index, nav) {
-                TreeNavAction::Focus { index } => self.focus_index(index, window, cx),
-                TreeNavAction::Expand { key } => self.set_expanded(&key, true, cx),
-                TreeNavAction::Collapse { key } => self.set_expanded(&key, false, cx),
-                TreeNavAction::None => {}
-            }
-            return;
-        }
-        match keystroke.key.as_str() {
-            "enter" => {
-                cx.stop_propagation();
-                if let Some(row) = self.rows.get(index).cloned() {
-                    match &row.node {
-                        RowNode::Host { host, .. } => self.activate_host(
-                            host.clone(),
-                            HostActivation {
-                                new_session: false,
-                                repeat: false,
-                                ..Default::default()
-                            },
-                            cx,
-                        ),
-                        _ => {
-                            let expanded = self.is_expanded(&row.key);
-                            self.set_expanded(&row.key, !expanded, cx);
-                        }
-                    }
-                }
-            }
-            "escape" => {
-                cx.stop_propagation();
-                if !self.selection.is_empty() {
-                    self.selection.clear();
-                    self.anchor = None;
-                    cx.notify();
-                } else {
-                    let handle = self.search.read(cx).focus_handle(cx);
-                    window.focus(&handle, cx);
-                }
-            }
-            _ => {}
         }
     }
 
@@ -735,6 +711,8 @@ impl Render for SessionSidebar {
                 |this, event: &MouseDownEvent, _, cx| {
                     this.menu = Some(SidebarMenu::LocalShell {
                         position: event.position,
+                        profile: None,
+                        wsl: false,
                     });
                     cx.stop_propagation();
                     cx.notify();
@@ -743,6 +721,10 @@ impl Render for SessionSidebar {
             local_mark,
             &theme,
         ));
+        // Saved local shells, then the installed WSL distributions, launched the same way.
+        for entry in self.visible_local_shells() {
+            list = list.child(self.local_shell_row(entry, &theme, cx));
+        }
         if self.quick_connectable() {
             let target = self.filter.trim().to_string();
             list = list.child(self.fixed_row(
@@ -763,6 +745,26 @@ impl Render for SessionSidebar {
                 &theme,
             ));
         }
+        let mut scroll_content = div().flex().flex_col().pb(px(8.)).child(list);
+
+        // The first problem reading ~/.ssh/config; the hosts may be partial.
+        let config_error = self.catalog.ssh.error.clone();
+        // Its margin and the first row's collapse into one, as CSS margins do.
+        let tree_gap = if config_error.is_some() {
+            0.
+        } else {
+            TREE_ROW_GAP
+        };
+        if let Some(error) = config_error {
+            scroll_content = scroll_content.child(
+                div().mx(px(8.)).my(px(4.)).child(
+                    Alert::new(muxus_ui::theme::Status::Warning, "")
+                        .compact()
+                        // `fontSize: 12` on body2's 1.43 line height.
+                        .content(paragraph(error).size(12.).line_height(12. * 1.43)),
+                ),
+            );
+        }
 
         let focused_index = self
             .focused_key
@@ -773,13 +775,37 @@ impl Render for SessionSidebar {
             &rendered_row_indices(self.row_window, self.rows.len(), pinned),
             self.rows.len(),
         );
+        // Where the tree starts in the scrolled content, measured as it is painted.
+        let tree_top = {
+            let slot = self.tree_top.clone();
+            let scroll = self.scroll.clone();
+            canvas(
+                move |bounds, _, _| {
+                    let viewport = scroll.bounds();
+                    let offset = scroll.offset();
+                    slot.set(Some(muxus_ui::zoom::unzoom(
+                        bounds.origin.y - viewport.origin.y - offset.y,
+                    )));
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+        };
         let mut tree = div()
             .id("host-tree")
+            .relative()
+            .mt(px(tree_gap))
             .track_focus(&self.tree_focus)
             .on_key_down(cx.listener(Self::on_tree_key))
             .flex()
             .flex_col()
-            .gap(px(TREE_ROW_GAP));
+            .gap(px(TREE_ROW_GAP))
+            .debug_selector(|| "host-tree".into())
+            .child(tree_top);
+        tree = self.tree_drop_zone(tree, cx);
         for segment in segments {
             tree = match segment {
                 RowSegment::Row { index } => tree.child(self.render_row(index, &theme, window, cx)),
@@ -791,7 +817,8 @@ impl Render for SessionSidebar {
                 ),
             };
         }
-        let mut scroll_content = div().flex().flex_col().pb(px(8.)).child(list.child(tree));
+        let tree = tree.children(self.root_drop_row(&theme));
+        scroll_content = scroll_content.child(tree);
 
         let empty = self.catalog.ssh.hosts.is_empty() && self.catalog.profiles.is_empty();
         if empty {
@@ -815,6 +842,7 @@ impl Render for SessionSidebar {
                             .outlined()
                             .start_icon("Add")
                             .on_click(cx.listener(|_, _, _, cx| {
+                                cx.stop_propagation();
                                 cx.emit(SidebarEvent::AddHost { prefill: None })
                             })),
                     ),
@@ -842,6 +870,7 @@ impl Render for SessionSidebar {
                             .outlined()
                             .start_icon("Add")
                             .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.stop_propagation();
                                 cx.emit(SidebarEvent::AddHost {
                                     prefill: Some(typed.clone()),
                                 })
@@ -861,6 +890,8 @@ impl Render for SessionSidebar {
                     cx.notify();
                 }
             }))
+            // Rows stop this from reaching the panel, so anything that gets here is
+            // empty space: the one place a root-level folder can be asked for.
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseDownEvent, _, cx| {
@@ -870,6 +901,13 @@ impl Render for SessionSidebar {
                     cx.notify();
                 }),
             )
+            // Where a plain click selects a host, a click beside the rows lets go of
+            // it, as in a file manager (rows and buttons keep their clicks).
+            .on_click(cx.listener(|this, _, _, cx| {
+                if this.open_gesture == SidebarOpenGesture::DoubleClick {
+                    this.clear_selection(cx);
+                }
+            }))
             .child(scroll_content);
 
         let mut root = div()
@@ -888,7 +926,8 @@ impl Render for SessionSidebar {
                     .min_h_0()
                     .child(scroller)
                     .child(scrollbar::vertical(&self.scroll, &theme)),
-            );
+            )
+            .children(self.selection_bar(&theme, cx));
         let _ = search_focus;
         if let Some(menu) = self.menu.clone() {
             root = root.child(self.render_menu(menu, &theme, cx));
@@ -921,7 +960,10 @@ impl SessionSidebar {
                 450.,
             )))
             .children(trailing)
-            .on_click(on_click);
+            .on_click(move |event, window, cx| {
+                cx.stop_propagation();
+                on_click(event, window, cx)
+            });
         if let Some(handler) = on_context {
             row = row.on_mouse_down(MouseButton::Right, move |event, window, cx| {
                 handler(event, window, cx)
@@ -939,13 +981,20 @@ impl SessionSidebar {
     ) -> AnyElement {
         let row = &self.rows[index];
         let p = theme.palette;
+        // MUI rings a row only for keyboard focus (`.Mui-focusVisible`).
         let focused = self.focused_key.as_deref() == Some(row.key.as_str())
-            && self.tree_focus.is_focused(window);
+            && self.tree_focus.is_focused(window)
+            && window.last_input_was_keyboard();
+        let pressed_key = row.key.clone();
         let mut shell = row_shell(
             ElementId::Name(row.key.clone().into()),
             row.depth,
             row.rail_color.as_deref(),
             theme,
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, window, cx| this.focus_row(&pressed_key, window, cx)),
         );
         shell = self.with_drag(shell, index, theme, cx);
         if focused {
@@ -1010,12 +1059,19 @@ impl SessionSidebar {
                 let host_for_middle = host.clone();
                 let host_for_menu = host.clone();
                 let host_for_button = host.clone();
+                // The row whose open-sessions menu shows is marked like the match.
+                let sessions_open = self.sessions_menu_key.as_deref() == Some(key.as_str());
                 let mut el = shell
                     .group(group_name.clone())
                     .gap(px(6.))
-                    .cursor_pointer()
+                    // A host that can be dragged says so (`cursor: grab`).
+                    .cursor(if self.reorder_enabled() {
+                        CursorStyle::OpenHand
+                    } else {
+                        CursorStyle::PointingHand
+                    })
                     .when_bg(selected, p.action.selected)
-                    .when_bg(is_match, p.action.selected)
+                    .when_bg(is_match || sessions_open, p.action.selected)
                     .child(icon_box)
                     .child(div().flex_1().min_w_0().child(label_row))
                     .children(self.environment_mark(&key, window, cx));
@@ -1037,7 +1093,8 @@ impl SessionSidebar {
                 };
                 let row_anchor = AnchorBounds::default();
                 let on_right = self.on_right;
-                let menu_closed = self.menu.is_none();
+                // The sessions menu opens on the same side and the card would cover it.
+                let menu_closed = self.menu.is_none() && !sessions_open;
                 el.child(
                     // Until the row is hovered the options button takes no width (nor the
                     // row's gap), which goes to the name.
@@ -1083,6 +1140,7 @@ impl SessionSidebar {
                 })
                 .on_click(cx.listener(
                     move |this, event: &muxus_ui::gpui_kit::ClickEvent, _, cx| {
+                        cx.stop_propagation();
                         let modifiers = event.modifiers();
                         let clicks = event.click_count() as u32;
                         // The sessions menu opens beside the row, toward the panes
@@ -1149,6 +1207,13 @@ impl SessionSidebar {
                 let is_folder = matches!(row.node, RowNode::Folder { .. });
                 let key = row.key.clone();
                 let expanded = row.expanded.unwrap_or(false);
+                // An ssh_config file group names its file on hover.
+                let file_tooltip = match &row.node {
+                    RowNode::File { tooltip, .. } => tooltip.clone(),
+                    _ => None,
+                };
+                // A folder being dropped into shows its chevron open.
+                let chevron_open = expanded || self.drag.drop_into_key() == Some(key.as_str());
                 let color = if is_folder {
                     self.folders.folder_color(&key).as_deref().and_then(try_hex)
                 } else {
@@ -1162,7 +1227,7 @@ impl SessionSidebar {
                 let count = *descendant_host_count;
                 let group_name: SharedString = format!("folder-row-{key}").into();
                 let chevron = icon("ChevronRight", 16., p.text.disabled).with_transformation(
-                    Transformation::rotate(radians(if expanded {
+                    Transformation::rotate(radians(if chevron_open {
                         std::f32::consts::FRAC_PI_2
                     } else {
                         0.
@@ -1259,6 +1324,7 @@ impl SessionSidebar {
                 );
                 let mut el = el.on_click(cx.listener(
                     move |this, event: &muxus_ui::gpui_kit::ClickEvent, _, cx| {
+                        cx.stop_propagation();
                         // Where a double-click opens hosts it is a habit, and must not
                         // toggle a folder open and straight back shut.
                         if this.open_gesture == SidebarOpenGesture::DoubleClick
@@ -1283,6 +1349,18 @@ impl SessionSidebar {
                         }),
                     );
                 }
+                if let Some(tooltip) = file_tooltip {
+                    let anchor = AnchorBounds::default();
+                    let placement = if self.on_right {
+                        Placement::Left
+                    } else {
+                        Placement::Right
+                    };
+                    el = el
+                        .child(bounds_probe(&anchor))
+                        .tooltip(Tooltip::anchored(tooltip, anchor, placement))
+                        .tooltip_show_delay(std::time::Duration::from_millis(600));
+                }
                 el.into_any_element()
             }
         }
@@ -1291,7 +1369,7 @@ impl SessionSidebar {
 
 /// `treeRowSx`: the shared geometry of every tree row (26px, 1px gaps, 6px
 /// corners, 8px + 14px-per-level indent, indent guides).
-fn row_shell(
+pub(crate) fn row_shell(
     id: ElementId,
     depth: usize,
     rail_color: Option<&str>,
@@ -1332,7 +1410,7 @@ fn row_shell(
 }
 
 /// `treeLabelSx`: 13px, weight 450 (folders 550), -0.1px tracking, sidebar ink, one line.
-fn label_text(text: SharedString, ink: Hsla, weight: f32) -> Label {
+pub(crate) fn label_text(text: SharedString, ink: Hsla, weight: f32) -> Label {
     // Electron draws these rows' text one device pixel below the line
     // model's baseline; the nudge follows it.
     label(text)

@@ -260,6 +260,8 @@ impl AppShell {
         };
         shell.apply_theme(window, cx);
         shell.load_catalog(cx);
+        shell.sync_sidebar_shells(cx);
+        shell.load_wsl_distributions(cx);
         if crate::ui::perf::perf().is_some() {
             // The heartbeat: a timer on the UI thread that notes how late it wakes.
             cx.spawn(async move |_, cx| {
@@ -352,6 +354,7 @@ impl AppShell {
             sidebar.rebuild();
             cx.notify();
         });
+        self.sync_sidebar_shells(cx);
         self.apply_theme(window, cx);
         self.refresh_terminal_settings(cx);
         cx.notify();
@@ -430,6 +433,15 @@ impl AppShell {
                 anchor,
             } => self.open_host(host, *new_session || *repeat, *anchor, cx),
             SidebarEvent::OpenLocalTerminal => self.open_local(None, cx),
+            SidebarEvent::OpenLocalShell(profile) => {
+                muxus_app::features::launcher::sessions::open_local_shell_profile(
+                    &mut self.tabs,
+                    &mut self.launch_guard,
+                    profile,
+                    None,
+                    now,
+                );
+            }
             SidebarEvent::QuickConnect(target) => {
                 connect_target(
                     &mut self.tabs,
