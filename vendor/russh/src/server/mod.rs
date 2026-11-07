@@ -1,3 +1,4 @@
+// Modified for Muxus: RFC 4335 `break` channel request (see PATCHES.md at the crate root).
 // Copyright 2016 Pierre-Étienne Meunier
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -762,6 +763,24 @@ pub trait Handler: Sized {
         session: &mut Session,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         async { Ok(()) }
+    }
+
+    /// The client asks for an RFC 4335 `break` of `break_length_ms` milliseconds.
+    ///
+    /// **Note:** Success or failure should be communicated to the client by calling
+    /// [`Session::channel_success`] or [`Session::channel_failure`] respectively. The
+    /// default refuses it, the answer every unknown channel request gets.
+    ///
+    /// Muxus patch, see `PATCHES.md`.
+    #[allow(unused_variables)]
+    fn break_request(
+        &mut self,
+        channel: ChannelId,
+        break_length_ms: u32,
+        session: &mut Session,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        let refused = session.channel_failure(channel).map_err(Self::Error::from);
+        async { refused }
     }
 
     /// Used for reverse-forwarding ports, see

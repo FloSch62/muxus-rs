@@ -1,3 +1,4 @@
+// Modified for Muxus: RFC 4335 `break` channel request (see PATCHES.md at the crate root).
 // Copyright 2016 Pierre-Étienne Meunier
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -1678,6 +1679,23 @@ impl Session {
                         }
                         debug!("handler.signal {channel_num:?} {signal:?}");
                         handler.signal(channel_num, signal, self).await
+                    }
+                    // Muxus patch, see `PATCHES.md`.
+                    "break" => {
+                        let break_length_ms = map_err!(u32::decode(r))?;
+                        map_err!(ensure_end(r))?;
+                        if let Some(chan) = self.channels.get(&channel_num) {
+                            let _ = chan
+                                .send(ChannelMsg::Break {
+                                    want_reply: wants_reply != 0,
+                                    break_length_ms,
+                                })
+                                .await;
+                        }
+                        debug!("handler.break_request {channel_num:?} {break_length_ms}");
+                        handler
+                            .break_request(channel_num, break_length_ms, self)
+                            .await
                     }
                     x => {
                         warn!("unknown channel request {x}");

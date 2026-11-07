@@ -1,3 +1,4 @@
+// Modified for Muxus: RFC 4335 `break` channel request (see PATCHES.md at the crate root).
 // Copyright 2016 Pierre-Étienne Meunier
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -1725,6 +1726,14 @@ impl Session {
             Msg::Channel(id, ChannelMsg::AgentForward { want_reply }) => {
                 self.agent_forward(id, want_reply)?
             }
+            // Muxus patch, see `PATCHES.md`.
+            Msg::Channel(
+                id,
+                ChannelMsg::Break {
+                    want_reply,
+                    break_length_ms,
+                },
+            ) => self.request_break(id, want_reply, break_length_ms)?,
             Msg::Channel(id, ChannelMsg::Close) => self.close(id)?,
             Msg::Rekey => self.initiate_rekey()?,
             Msg::AwaitExtensionInfo {

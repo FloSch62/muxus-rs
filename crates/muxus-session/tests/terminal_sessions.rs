@@ -13,7 +13,7 @@ use muxus_core::protocol::{
     TerminalServerMessage,
 };
 use muxus_session::{SessionEvent, SessionHandle};
-use muxus_ssh::testing::server::{ServerSpec, TestServer, start as start_sshd};
+use muxus_ssh::testing::server::{BreakAnswer, ServerSpec, TestServer, start as start_sshd};
 use muxus_store::history::SessionHistoryQuery;
 use serde_json::json;
 use support::{Sandbox, body, events_until, next_event, output_until, start};
@@ -131,12 +131,12 @@ impl Console {
 
 /// An SSH server that takes the password `pw`, and a sandbox whose ssh_config names it `lab`.
 async fn ssh_lab(extra: &[&str]) -> (Sandbox, TestServer) {
-    let server = start_sshd(
-        ServerSpec::new()
-            .password("pw")
-            .methods(&[russh::MethodKind::Password]),
-    )
-    .await;
+    ssh_lab_with(ServerSpec::new(), extra).await
+}
+
+/// [`ssh_lab`] on a server that otherwise behaves as `spec` says.
+async fn ssh_lab_with(spec: ServerSpec, extra: &[&str]) -> (Sandbox, TestServer) {
+    let server = start_sshd(spec.password("pw").methods(&[russh::MethodKind::Password])).await;
     let sandbox = start().await;
     let port = format!("  Port {}", server.port());
     let mut lines = vec![
@@ -546,7 +546,14 @@ async fn a_closed_session_ends_at_once() {
 
 #[tokio::test]
 async fn an_ssh_session_signs_in_exchanges_bytes_and_reports_its_exit() {
-    let (sandbox, server) = ssh_lab(&[]).await;
+    let (sandbox, server) = ssh_lab_with(
+        ServerSpec {
+            break_answers: vec![BreakAnswer::Accept, BreakAnswer::Refuse],
+            ..ServerSpec::new()
+        },
+        &[],
+    )
+    .await;
     let handle = sandbox
         .backend
         .open_session(connect(json!({ "kind": "ssh", "target": "lab" })));
@@ -613,23 +620,33 @@ async fn an_ssh_session_signs_in_exchanges_bytes_and_reports_its_exit() {
         404
     );
 
-    handle.send(TerminalClientMessage::SendBreak);
-    let answer = events_until(&handle, |event| {
-        matches!(
-            message(event),
-            Some(TerminalServerMessage::BreakResult { .. })
-        )
-    })
-    .await;
-    assert_eq!(
-        message(answer.last().unwrap()),
-        Some(&TerminalServerMessage::BreakResult {
-            ok: false,
-            message: Some(
-                "Could not send BREAK: the SSH engine cannot send BREAK requests yet".into()
+    // RFC 4335 break with the server's answer (terminal-socket-break: accepted, then refused).
+    let mut answers = Vec::new();
+    for _ in 0..2 {
+        handle.send(TerminalClientMessage::SendBreak);
+        let answer = events_until(&handle, |event| {
+            matches!(
+                message(event),
+                Some(TerminalServerMessage::BreakResult { .. })
             )
         })
+        .await;
+        answers.push(message(answer.last().unwrap()).cloned().unwrap());
+    }
+    assert_eq!(
+        answers,
+        vec![
+            TerminalServerMessage::BreakResult {
+                ok: true,
+                message: None
+            },
+            TerminalServerMessage::BreakResult {
+                ok: false,
+                message: Some("The SSH server refused the BREAK request".into())
+            },
+        ]
     );
+    assert_eq!(server.breaks(), vec![250, 250]);
 
     handle.send_data(b"exit\r".to_vec());
     let end = events_until(&handle, |event| {

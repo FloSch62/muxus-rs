@@ -1,3 +1,4 @@
+// Modified for Muxus: RFC 4335 `break` channel request (see PATCHES.md at the crate root).
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -85,6 +86,13 @@ pub enum ChannelMsg {
     /// (client only)
     AgentForward {
         want_reply: bool,
+    },
+    /// (client only) RFC 4335 `break`. With `want_reply`, the server answers with
+    /// [`ChannelMsg::Success`] or [`ChannelMsg::Failure`]. Muxus patch, see `PATCHES.md`.
+    Break {
+        want_reply: bool,
+        /// How long the break should last, in milliseconds.
+        break_length_ms: u32,
     },
 
     /// (server only)
@@ -315,6 +323,19 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> ChannelWriteHalf<
     /// Inform the server that we will accept agent forwarding channels
     pub async fn agent_forward(&self, want_reply: bool) -> Result<(), Error> {
         self.send_msg(ChannelMsg::AgentForward { want_reply }).await
+    }
+
+    /// Send an RFC 4335 `break` lasting `break_length_ms` milliseconds.
+    ///
+    /// With `want_reply`, the server's answer arrives on the channel as
+    /// [`ChannelMsg::Success`] (the break was passed on) or [`ChannelMsg::Failure`], in order
+    /// with the replies to the channel's other requests. Muxus patch, see `PATCHES.md`.
+    pub async fn request_break(&self, want_reply: bool, break_length_ms: u32) -> Result<(), Error> {
+        self.send_msg(ChannelMsg::Break {
+            want_reply,
+            break_length_ms,
+        })
+        .await
     }
 
     /// Send data to a channel.
@@ -606,6 +627,14 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
     /// Inform the server that we will accept agent forwarding channels
     pub async fn agent_forward(&self, want_reply: bool) -> Result<(), Error> {
         self.write_half.agent_forward(want_reply).await
+    }
+
+    /// Send an RFC 4335 `break`; see [`ChannelWriteHalf::request_break`]. Muxus patch, see
+    /// `PATCHES.md`.
+    pub async fn request_break(&self, want_reply: bool, break_length_ms: u32) -> Result<(), Error> {
+        self.write_half
+            .request_break(want_reply, break_length_ms)
+            .await
     }
 
     /// Send data to a channel.

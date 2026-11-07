@@ -1,3 +1,4 @@
+// Modified for Muxus: RFC 4335 `break` channel request (see PATCHES.md at the crate root).
 use log::error;
 use ssh_encoding::Encode;
 use tokio::sync::oneshot;
@@ -252,6 +253,27 @@ impl Session {
                 "signal".encode(&mut enc.write)?;
                 0u8.encode(&mut enc.write)?;
                 signal.name().encode(&mut enc.write)?;
+            });
+        }
+        Ok(())
+    }
+
+    /// RFC 4335 `break`: `uint32 break-length` in milliseconds. Muxus patch, see `PATCHES.md`.
+    pub fn request_break(
+        &mut self,
+        channel: ChannelId,
+        want_reply: bool,
+        break_length_ms: u32,
+    ) -> Result<(), crate::Error> {
+        if let Some(ref mut enc) = self.common.encrypted
+            && let Some(channel) = enc.channels.get(&channel)
+        {
+            push_packet!(enc.write, {
+                msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
+                channel.recipient_channel.encode(&mut enc.write)?;
+                "break".encode(&mut enc.write)?;
+                (want_reply as u8).encode(&mut enc.write)?;
+                break_length_ms.encode(&mut enc.write)?;
             });
         }
         Ok(())
