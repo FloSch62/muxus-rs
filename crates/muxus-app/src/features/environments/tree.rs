@@ -5,7 +5,7 @@
 
 use muxus_ui::gpui_kit::prelude::FluentBuilder;
 use muxus_ui::gpui_kit::{
-    AnyElement, ClickEvent, ElementId, InteractiveElement, IntoElement, ParentElement,
+    AnyElement, ClickEvent, ElementId, InteractiveElement, IntoElement, MouseButton, ParentElement,
     SharedString, StatefulInteractiveElement, Styled, div, px,
 };
 use muxus_ui::icon::icon;
@@ -231,6 +231,8 @@ pub fn tree_line(spec: LineSpec, theme: &Theme, on_click: Option<Click>) -> AnyE
                 .items_center()
                 .opacity(0.55)
                 .group_hover(group, |style| style.opacity(1.))
+                // A press on an action is the action's, not the line's (no toggle, no open).
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .children(spec.actions),
         );
     }
