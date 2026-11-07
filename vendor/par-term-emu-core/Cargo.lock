@@ -654,6 +654,7 @@ dependencies = [
  "libc",
  "log",
  "lru",
+ "memchr",
  "parking_lot",
  "percent-encoding",
  "proptest",
