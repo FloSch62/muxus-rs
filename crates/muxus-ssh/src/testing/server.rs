@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use russh::keys::{PrivateKey, PublicKey};
-use russh::server::{Auth, Handler, Msg, Session};
+use russh::server::{Auth, Handler, Msg, PublicKeyOffer, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId, MethodKind, MethodSet, Preferred, Pty};
 
 /// One keyboard-interactive round: prompts and the answers that pass it.
@@ -323,8 +323,9 @@ impl Handler for ServerHandler {
     async fn auth_publickey_offered(
         &mut self,
         _user: &str,
-        key: &PublicKey,
+        offer: PublicKeyOffer<'_>,
     ) -> Result<Auth, Self::Error> {
+        let key = offer.public_key;
         let known = self
             .spec
             .authorized_keys
@@ -333,7 +334,12 @@ impl Handler for ServerHandler {
         Ok(if known { Auth::Accept } else { self.reject() })
     }
 
-    async fn auth_publickey(&mut self, _user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
+    async fn auth_publickey(
+        &mut self,
+        _user: &str,
+        verified: VerifiedPublicKey<'_>,
+    ) -> Result<Auth, Self::Error> {
+        let key = verified.public_key;
         let known = self
             .spec
             .authorized_keys

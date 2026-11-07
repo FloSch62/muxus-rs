@@ -29,7 +29,7 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 regex = "1"
-russh = "0.64"
+russh = "0.65.1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -47,7 +47,7 @@ libc = "0.2"
 
 [dev-dependencies]
 muxus-ssh = { workspace = true, features = ["testing"] }
-russh = "0.64"
+russh = "0.65.1"
 serialport = { version = "4.7", default-features = false }
 # The remote desktop tests run IronRDP's own server in process (same revision as muxus-rdp).
 ironrdp-server = { git = "https://github.com/Devolutions/IronRDP", rev = "d90284f5f28dc24bb39c78883521721de76bf52f", default-features = false }
