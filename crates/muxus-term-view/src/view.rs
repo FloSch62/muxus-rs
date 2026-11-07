@@ -137,6 +137,8 @@ pub struct TerminalView {
     focus: FocusHandle,
     input: async_channel::Sender<TransportInput>,
     closed: bool,
+    /// Pastes the view starts itself go to the app ([`TerminalView::set_app_pastes`]).
+    app_pastes: bool,
     zoom: f32,
     layout: Rc<Cell<Layout>>,
     cell: CellSize,
@@ -264,6 +266,7 @@ impl TerminalView {
             focus,
             input: input_tx,
             closed: false,
+            app_pastes: false,
             zoom: 0.0,
             layout: Rc::default(),
             cell: CellSize {
@@ -1017,7 +1020,19 @@ impl TerminalView {
         true
     }
 
+    /// Hand the pastes the view starts itself (a right click that pastes, its paste action) to
+    /// the app ([`TerminalViewEvent::PasteRequested`]), which pastes the clipboard the way its
+    /// own paste command does: previewed, then paced by the host's settings. Off, the view
+    /// pastes them itself, unpaced, as xterm does.
+    pub fn set_app_pastes(&mut self, on: bool) {
+        self.app_pastes = on;
+    }
+
     fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
+        if self.app_pastes {
+            cx.emit(TerminalViewEvent::PasteRequested);
+            return;
+        }
         match cx.read_from_clipboard() {
             Some(item) => match item.text() {
                 Some(text) => self.paste(&text, cx),
@@ -2722,6 +2737,39 @@ mod tests {
         place(&view, cx, 40, 5);
         right_click(&view, cx, 1);
         assert_eq!(menus.borrow().last().unwrap(), "");
+    }
+
+    #[gpui::test]
+    fn a_right_click_paste_goes_to_the_app_when_it_paces_pastes(cx: &mut TestAppContext) {
+        let settings = TerminalSettings {
+            right_click: RightClickAction::Paste,
+            ..TerminalSettings::default()
+        };
+        let (view, ends, cx) = terminal(cx, settings, 40, 5);
+        let requests = Rc::new(Cell::new(0));
+        let seen = requests.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&view, move |_, event: &TerminalViewEvent, _| {
+                if matches!(event, TerminalViewEvent::PasteRequested) {
+                    seen.set(seen.get() + 1);
+                }
+            })
+        });
+        cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("ls".into())));
+        let right_click = |view: &Entity<TerminalView>, cx: &mut VisualTestContext| {
+            let at = cell(view, cx, 1, 0);
+            press(view, cx, down(at, MouseButton::Right, Modifiers::default()));
+            cx.run_until_parked();
+        };
+        // On its own the view pastes, unpaced, as xterm does.
+        right_click(&view, cx);
+        assert_eq!(sent(&ends, cx), "ls");
+        assert_eq!(requests.get(), 0);
+        // In the app the paste goes through the app's paste command instead.
+        view.update(cx, |view, _| view.set_app_pastes(true));
+        right_click(&view, cx);
+        assert_eq!(sent(&ends, cx), "");
+        assert_eq!(requests.get(), 1);
     }
 
     #[gpui::test]

@@ -1,5 +1,6 @@
 //! Window state: the tabs store and the pane tree behind it.
 
+pub mod paste_progress;
 pub mod program_status;
 pub mod session_actions;
 pub mod tabs;

@@ -27,6 +27,7 @@ use muxus_app::session::recovery::{
     should_wait_for_terminal_output, terminal_notice,
 };
 use muxus_app::session::{LinkEvent, LinkInput, LinkWriter};
+use muxus_app::state::paste_progress::PasteProgress;
 use muxus_app::state::tabs::{DisconnectReason, TabPatch, TabStatus, TerminalTab};
 use muxus_core::input_modes::host_terminal_input_modes;
 use muxus_core::paste_pacing::{MAX_PACED_PASTE_LENGTH, PastePacing, paste_pacing_for};
@@ -106,8 +107,8 @@ struct LiveSession {
     ended: bool,
     /// A paced paste went out and the backend has not reported it finished.
     paced_paste_pending: bool,
-    /// The backend reports a paced paste running.
-    paste_running: bool,
+    /// The paced paste the backend reports running, and how far it got.
+    paste_progress: Option<PasteProgress>,
     _tasks: Vec<Task<()>>,
 }
 
@@ -475,6 +476,7 @@ impl AppShell {
         let settings = self.terminal_settings(&info.id, &info.profile, dark);
         let (channels, ends) = TransportChannels::pair(256);
         let view = new_terminal_view(channels, settings, window, cx);
+        view.update(cx, |view, _| view.set_app_pastes(true));
         let replayed = carry.is_some();
         if let Some((buffer, zoom_steps)) = carry {
             view.update(cx, |view, cx| {
@@ -943,7 +945,7 @@ impl AppShell {
             pending_reattach: None,
             ended: false,
             paced_paste_pending: false,
-            paste_running: false,
+            paste_progress: None,
             _tasks: vec![events, inputs],
         });
         self.tabs.update(
@@ -1351,11 +1353,15 @@ impl AppShell {
             }
             TerminalServerMessage::PasteProgress {
                 state,
+                line,
+                lines,
+                sent,
+                total,
                 message,
                 stop_id,
-                ..
             } => {
-                self.on_paste_progress(tab_id, state, message, stop_id, cx);
+                let progress = PasteProgress::from_report(state, line, lines, sent, total);
+                self.on_paste_progress(tab_id, state, progress, message, stop_id, cx);
                 false
             }
         }
@@ -1485,6 +1491,9 @@ impl AppShell {
             return;
         };
         session.ended = true;
+        // A window the session returns to is sent the progress again.
+        session.paced_paste_pending = false;
+        session.paste_progress = None;
         let exit = session.exit.clone();
         let ready = session.ready;
         let ready_at = session.ready_at;
@@ -1812,6 +1821,11 @@ impl AppShell {
             }
             TerminalViewEvent::ClipboardWithoutText => {
                 self.paste_clipboard_image(tab_id, cx);
+            }
+            // The view's own paste (a right click) is the app's paste command: previewed, then
+            // paced, as `onContextMenu` pastes through `pasteFromClipboard`.
+            TerminalViewEvent::PasteRequested => {
+                self.paste_clipboard(tab_id, cx);
             }
             TerminalViewEvent::OpenUrl(url) => cx.open_url(url),
             TerminalViewEvent::OpenFile(candidate) => {
