@@ -181,7 +181,7 @@ mod tests {
     use super::super::chords::key_event;
     use super::*;
 
-    fn button(id: &str, label: &str, shortcut: Option<&str>) -> CommandButton {
+    fn saved(id: &str, label: &str, shortcut: Option<&str>) -> CommandButton {
         CommandButton {
             id: id.into(),
             label: label.into(),
@@ -237,9 +237,9 @@ mod tests {
     #[test]
     fn registers_only_the_buttons_that_carry_a_shortcut() {
         let buttons = [
-            button("disk", "Disk usage", Some("Ctrl+Alt+KeyD")),
-            button("plain", "Plain", None),
-            button("shell", "Interrupt", Some("Ctrl+KeyC")),
+            saved("disk", "Disk usage", Some("Ctrl+Alt+KeyD")),
+            saved("plain", "Plain", None),
+            saved("shell", "Interrupt", Some("Ctrl+KeyC")),
         ];
         let commands = command_button_commands(&buttons);
         assert_eq!(commands.len(), 1);
@@ -254,8 +254,8 @@ mod tests {
     #[test]
     fn finds_the_button_a_pressed_chord_runs() {
         let buttons = [
-            button("disk", "Disk usage", Some("Ctrl+Alt+KeyD")),
-            button("shell", "Interrupt", Some("Ctrl+KeyC")),
+            saved("disk", "Disk usage", Some("Ctrl+Alt+KeyD")),
+            saved("shell", "Interrupt", Some("Ctrl+KeyC")),
         ];
         let pressed = key_event("d", "KeyD", true, true, false, false);
         let found = command_buttons_for_event(&pressed, &buttons);
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn accepts_a_free_chord_and_the_chord_the_button_already_has() {
-        let buttons = [button("disk", "Disk usage", Some("Ctrl+Alt+KeyD"))];
+        let buttons = [saved("disk", "Disk usage", Some("Ctrl+Alt+KeyD"))];
         assert_eq!(
             command_button_shortcut_conflict("Ctrl+Alt+KeyU", "disk", &none(), &buttons),
             None
@@ -299,8 +299,8 @@ mod tests {
     #[test]
     fn refuses_a_chord_another_button_holds_and_names_the_button() {
         let buttons = [
-            button("disk", "Disk usage", Some("Ctrl+Alt+KeyD")),
-            button("up", "Uptime", None),
+            saved("disk", "Disk usage", Some("Ctrl+Alt+KeyD")),
+            saved("up", "Uptime", None),
         ];
         assert_eq!(
             command_button_shortcut_conflict("Ctrl+Alt+KeyD", "up", &none(), &buttons).as_deref(),
@@ -323,9 +323,9 @@ mod tests {
     #[test]
     fn marks_buttons_and_commands_that_share_a_chord() {
         let buttons = [
-            button("one", "One", Some("Ctrl+Alt+KeyO")),
-            button("two", "Two", Some("Ctrl+Alt+KeyO")),
-            button("three", "Three", Some("Ctrl+Alt+KeyT")),
+            saved("one", "One", Some("Ctrl+Alt+KeyO")),
+            saved("two", "Two", Some("Ctrl+Alt+KeyO")),
+            saved("three", "Three", Some("Ctrl+Alt+KeyT")),
         ];
         let conflicts = conflicting_ids_with_buttons(&none(), &buttons);
         assert!(conflicts.contains("command-button:one"));
@@ -337,12 +337,12 @@ mod tests {
     fn keeps_a_shortcut_only_while_it_is_a_bindable_chord_the_shell_does_not_own_and_no_earlier_button_holds()
      {
         let mut buttons = vec![
-            button("a", "A", Some("Ctrl+Alt+KeyS")),
-            button("b", "B", Some("Alt+Ctrl+S")),
-            button("c", "C", Some("Shift+KeyR")),
-            button("typo", "Typo", Some("Hyper+KeyR")),
-            button("interrupt", "Interrupt", Some("Ctrl+KeyC")),
-            button("f5", "F5", Some("F5")),
+            saved("a", "A", Some("Ctrl+Alt+KeyS")),
+            saved("b", "B", Some("Alt+Ctrl+S")),
+            saved("c", "C", Some("Shift+KeyR")),
+            saved("typo", "Typo", Some("Hyper+KeyR")),
+            saved("interrupt", "Interrupt", Some("Ctrl+KeyC")),
+            saved("f5", "F5", Some("F5")),
         ];
         keep_bindable_shortcuts(&mut buttons);
         let shortcuts: Vec<Option<&str>> = buttons
