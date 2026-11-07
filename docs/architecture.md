@@ -9,8 +9,9 @@ TypeScript disagree, the TypeScript wins.
 
 - **UI:** [GPUI](https://www.gpui.rs) through `gpui-component` (pinned: `gpui-component = "=0.7.3"`,
   which pins `gpui = { package = "gpui-pre", version = "=0.3.9" }`). No webview in the app's
-  windows. Saved web pages open in browser windows of their own: `muxus --web-window` processes
-  running wry (WebKitGTK 4.1 on Linux) behind the `webview` feature (`muxus-webview`).
+  windows. Saved web pages, and lab topologies in the containerlab viewer, open in windows of
+  their own: `muxus --web-window` processes running wry (WebKitGTK 4.1 on Linux) behind the
+  `webview` feature (`muxus-webview`).
 - **Async backend:** tokio, owned by `muxus-session`. The UI never blocks on I/O. It talks to the
   backend through executor-agnostic channels (`async-channel`), so GPUI's executor and tokio never need
   to share a runtime.
@@ -98,7 +99,7 @@ cargo xtask ci                  # fmt, clippy, tests, layering, style
 ```
 
 The Linux packages build with `--features webview`; without it saved web pages open in the system
-browser, and nothing needs WebKitGTK.
+browser, lab topologies are drawn natively, and nothing needs WebKitGTK.
 
 ## Checking Windows and macOS code from Linux
 

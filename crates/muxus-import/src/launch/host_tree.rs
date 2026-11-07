@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use muxus_core::api::{ManagedHostRef, SavedHostProfile, SshHostEntry};
 use muxus_core::js;
 
-use crate::collation::locale_compare;
+use muxus_core::collate::locale_compare;
 
 /// One sidebar host, from either host source.
 #[derive(Debug, Clone, Copy, PartialEq)]

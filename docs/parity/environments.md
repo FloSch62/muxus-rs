@@ -10,8 +10,9 @@ them, add them to the sidebar) and `693ee67` (one logo mark in the sidebar). Use
   `environment_libvirt_addresses`, `environment_libvirt_display`,
   `environment_proxmox_addresses`, `environment_action`, `environment_port`,
   `kubus_available`).
-- App: `crates/muxus-app/src/features/environments/` (logic, hub, panel, topology, logos) and
-  the window wiring in `crates/muxus-app/src/ui/environments.rs`.
+- App: `crates/muxus-app/src/features/environments/` (logic, hub, panel, topology, viewer,
+  logos) and the window wiring in `crates/muxus-app/src/ui/environments.rs`; the topology
+  window in `crates/muxus-webview` (`topology.rs`, `window/topology.rs`, `assets/`).
 - Data (already in `76fd879`): `muxus_core::environments`, `environment` on local and SSH
   profiles, the host field `discover_environments`, prefs `discoverEnvironments`,
   `environmentRefreshSeconds`, `environmentsPanelWidth`.
@@ -23,6 +24,9 @@ cargo test -p muxus-ssh --lib environment             # environment sessions ove
 cargo test -p muxus-local --test pty_manager          # local environment sessions
 cargo test -p muxus-app --lib environments            # client logic (environments, sessions, hosts, launcher)
 cargo test -p muxus-app --test ui_environments        # hub + panel against a live SSH connection
+cargo test -p muxus-webview --features webview topology   # the topology window (protocol, serving, nodes)
+# The topology window alone, the way the app opens it (needs libwebkit2gtk-4.1-dev on Linux):
+cargo run -p muxus-webview --features webview --example topology_window -- lab.clab.yml [light|dark] [seconds]
 ```
 
 ## Backend
@@ -67,7 +71,7 @@ cargo test -p muxus-app --test ui_environments        # hub + panel against a li
 | Kubernetes: contexts, namespaces, pods by workload, shells, logs, previous logs, Kubus | KubernetesSection.tsx | done | namespace picker is a menu instead of a select |
 | Proxmox: guests, pct enter / qm terminal, SSH via guest agent, web UI, power, Add to hosts | EnvironmentSections.tsx | done | |
 | libvirt: domains, serial console, VNC through the hypervisor, SSH, power, Add to hosts | EnvironmentSections.tsx | done | |
-| Lab topology | ClabTopologyDialog.tsx | partial | drawn natively from the `.clab.yml` (nodes, links) and saved annotation positions; the TS frames the containerlab web viewer, which needs a web view |
+| Lab topology | ClabTopologyDialog.tsx | done | With the `webview` feature (the Linux packages): the containerlab viewer, as the TS frames it. The dialog reads the topology file (spinner, error), then hands it to a window of its own (`features/environments/viewer.rs`, `muxus_webview::topology`; one per lab, focused when opened again) and closes. The window serves the viewer build the client ships (`@containerlab/clab-viewer` 0.2.0, `crates/muxus-webview/assets/clab-viewer`) on a scheme of its own and frames it in a page drawing the dialog's header and node bar in the app's colors; the frame speaks the same `clab-viewer:ready/render/select/error/theme` messages with the same options (controls, dots, link labels on select, link hover, fit padding 0.6, appearance). "SSH as admin" / "Open shell" (off as in the TS, with the system OpenSSH tooltip) opens the node in the app window that asked and closes the window; viewer links open in the browser. The window follows the theme (the canvas colors too; the TS sends only the mode) and closes with the app; one that fails once started (no display) says why in a toast. Checked on WSLg with the example: the viewer draws a lab, selecting a node shows the bar, its button reaches the app and closes the window, a theme switch recolors it. Without the feature, or when the window process cannot be started: drawn natively from the `.clab.yml` (nodes, links) and saved annotation positions |
 | Logos in the tools' own colors (dark containerlab variant) | environment-icons.tsx, logos/*.svg | done | `assets/icons/env-*.svg`, copied by `hack/extract_icons.mjs`, rasterized per size and scale |
 | Sidebar mark (overlapped logos, counts in tooltip, toggles the panel) on hosts and the local terminal row | EnvironmentBadges.tsx, HostRow.tsx, SessionSidebar.tsx | done | |
 | Options button takes no width until the row is hovered | HostRow.tsx (`693ee67`) | done | |

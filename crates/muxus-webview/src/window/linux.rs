@@ -1,5 +1,6 @@
-//! What the window does with WebKitGTK directly: its keyboard shortcuts, the question about an
-//! untrusted certificate (`handleWebCertificateError`), and the windows pages open.
+//! What the window does with WebKitGTK directly: its keyboard shortcuts, its right-click menu,
+//! the question about an untrusted certificate (`handleWebCertificateError`), and the windows
+//! pages open.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -7,11 +8,14 @@ use std::collections::{HashMap, HashSet};
 use gtk::gdk::ModifierType;
 use gtk::gdk::keys::constants as key;
 use gtk::gio::prelude::TlsCertificateExt;
-use gtk::gio::{TlsCertificate, TlsCertificateFlags};
+use gtk::gio::{SimpleAction, TlsCertificate, TlsCertificateFlags};
 use gtk::glib::{self, Propagation};
 use gtk::prelude::*;
 use sha2::{Digest, Sha256};
-use webkit2gtk::{WebContextExt, WebView, WebViewExt};
+use webkit2gtk::{
+    ContextMenu, ContextMenuExt, ContextMenuItem, HitTestResult, HitTestResultExt, WebContextExt,
+    WebView, WebViewExt,
+};
 use wry::{WebViewBuilder, WebViewBuilderExtUnix, WebViewExtUnix};
 
 thread_local! {
@@ -22,7 +26,8 @@ thread_local! {
     static ASKING: RefCell<HashSet<String>> = RefCell::default();
 }
 
-/// The shortcuts and the certificate question, for a page view of this window.
+/// The shortcuts, the right-click menu and the certificate question, for a page view of this
+/// window.
 pub(super) fn attach(webview: &WebView) {
     webview.connect_key_press_event(|webview, event| {
         if shortcut(webview, event) {
@@ -31,10 +36,91 @@ pub(super) fn attach(webview: &WebView) {
             Propagation::Proceed
         }
     });
+    webview.connect_context_menu(|webview, menu, _, hit| {
+        context_menu(webview, menu, hit);
+        // Show the menu, with our items in place of WebKit's.
+        false
+    });
     webview.connect_load_failed_with_tls_errors(|webview, uri, certificate, errors| {
         ask_about_certificate(webview, uri, certificate, errors);
         true
     });
+}
+
+/// No right-click menu at all: the topology window is the app's dialog, and the app shows
+/// none there.
+pub(super) fn without_context_menu(webview: &WebView) {
+    webview.connect_context_menu(|_, _, _, _| true);
+}
+
+/// What the page's edit state allows, as Chromium's `editFlags` put it: cut a selection in a
+/// field, copy any selection, paste into a field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EditFlags {
+    can_cut: bool,
+    can_copy: bool,
+    can_paste: bool,
+}
+
+impl EditFlags {
+    fn new(editable: bool, selection: bool) -> Self {
+        Self {
+            can_cut: editable && selection,
+            can_copy: selection,
+            can_paste: editable,
+        }
+    }
+}
+
+/// One item of the menu: its label, whether it is enabled, and what it does.
+type MenuEntry = (&'static str, bool, fn(&WebView));
+
+/// The six items of the window's menu (`context-menu` in `web-windows.ts`), `None` for the
+/// separator: Back and Forward while there is history that way, Reload, then Cut, Copy and
+/// Paste as the page's edit state allows.
+fn menu_entries(back: bool, forward: bool, edit: EditFlags) -> [Option<MenuEntry>; 7] {
+    [
+        Some(("Back", back, |view| view.go_back())),
+        Some(("Forward", forward, |view| view.go_forward())),
+        Some(("Reload", true, |view| view.reload())),
+        None,
+        Some(("Cut", edit.can_cut, |view| {
+            view.execute_editing_command("Cut")
+        })),
+        Some(("Copy", edit.can_copy, |view| {
+            view.execute_editing_command("Copy")
+        })),
+        Some(("Paste", edit.can_paste, |view| {
+            view.execute_editing_command("Paste")
+        })),
+    ]
+}
+
+/// Replace WebKit's own menu (with its link, image and input method items) by the six items
+/// the Electron window shows.
+fn context_menu(webview: &WebView, menu: &ContextMenu, hit: &HitTestResult) {
+    let edit = EditFlags::new(hit.context_is_editable(), hit.context_is_selection());
+    menu.remove_all();
+    for (index, entry) in menu_entries(webview.can_go_back(), webview.can_go_forward(), edit)
+        .into_iter()
+        .enumerate()
+    {
+        let Some((label, enabled, run)) = entry else {
+            menu.append(&ContextMenuItem::new_separator());
+            continue;
+        };
+        // WebKit puts the menu's actions in a group of their own, so the names only need to
+        // differ within this menu.
+        let action = SimpleAction::new(&format!("muxus-menu-{index}"), None);
+        action.set_enabled(enabled);
+        let view = webview.downgrade();
+        action.connect_activate(move |_, _| {
+            if let Some(view) = view.upgrade() {
+                run(&view);
+            }
+        });
+        menu.append(&ContextMenuItem::from_gaction(&action, label, None));
+    }
 }
 
 /// Alt+Left / Ctrl+[ back, Alt+Right / Ctrl+] forward, F5 / Ctrl+R reload.
@@ -264,5 +350,54 @@ mod tests {
     #[test]
     fn escapes_the_host_on_the_refusal_page() {
         assert!(refused_page("<x>").contains("&lt;x&gt;"));
+    }
+
+    #[test]
+    fn the_menu_has_the_six_items_of_the_electron_window() {
+        let shown = |back, forward, edit| -> Vec<Option<(&str, bool)>> {
+            menu_entries(back, forward, edit)
+                .iter()
+                .map(|entry| entry.map(|(label, enabled, _)| (label, enabled)))
+                .collect()
+        };
+        // A page with history behind it, right-clicked on its text.
+        assert_eq!(
+            shown(true, false, EditFlags::new(false, false)),
+            [
+                Some(("Back", true)),
+                Some(("Forward", false)),
+                Some(("Reload", true)),
+                None,
+                Some(("Cut", false)),
+                Some(("Copy", false)),
+                Some(("Paste", false)),
+            ]
+        );
+        // Selected text in a field: everything to edit with.
+        assert_eq!(
+            EditFlags::new(true, true),
+            EditFlags {
+                can_cut: true,
+                can_copy: true,
+                can_paste: true
+            }
+        );
+        // Selected page text copies; an empty field pastes.
+        assert_eq!(
+            EditFlags::new(false, true),
+            EditFlags {
+                can_cut: false,
+                can_copy: true,
+                can_paste: false
+            }
+        );
+        assert_eq!(
+            EditFlags::new(true, false),
+            EditFlags {
+                can_cut: false,
+                can_copy: false,
+                can_paste: true
+            }
+        );
     }
 }

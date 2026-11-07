@@ -9,24 +9,29 @@
 //! (name lookups included) through the host's SOCKS5 proxy, which stops when the window
 //! closes.
 //!
+//! The same window process also shows a running lab's topology with the containerlab viewer
+//! ([`topology`]).
+//!
 //! The window itself needs the `webview` feature. Without it [`AVAILABLE`] is false and the
-//! app opens pages the way the browser build of Muxus does.
+//! app opens pages the way the browser build of Muxus does (and draws topologies itself).
 
 mod manager;
 pub mod protocol;
 pub mod request;
+pub mod topology;
 #[cfg(feature = "webview")]
 mod window;
 
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Write};
 
-pub use manager::{ClosedWebWindow, WebWindows};
+pub use manager::{ClosedWebWindow, OpenedNode, WebWindows};
 pub use protocol::{WEB_WINDOW_ARG, WebWindowCommand, WebWindowEvent, WebWindowLaunch};
 pub use request::{
     WebWindowRequest, WebWindowResult, is_window_url, parse_web_window_request, proxy_port,
     proxy_url, refused_forward_id,
 };
+pub use topology::{TopologyNode, TopologyTheme, TopologyWindowRequest};
 
 /// Whether this build shows pages in windows of its own.
 pub const AVAILABLE: bool = cfg!(feature = "webview");

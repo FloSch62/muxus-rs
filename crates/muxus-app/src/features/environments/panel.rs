@@ -35,6 +35,7 @@ use muxus_ui::widgets::menu::{self, MenuItem, menu_divider};
 use muxus_ui::widgets::progress::CircularProgress;
 use muxus_ui::widgets::search_field::search_field;
 use muxus_ui::widgets::{Button, ButtonColor, IconButton, Switch};
+use muxus_webview::{TopologyWindowRequest, WebWindowResult};
 
 use super::hosts::{
     HostDirectory, JumpHostOptions, enter_host_draft, jump_host_draft, local_enter_profile,
@@ -46,10 +47,12 @@ use super::model::{
     LOCAL_ENVIRONMENT_KEY, age,
 };
 use super::sessions::{
-    environment_entry, forwarded_port_url, local_port_url, ssh_to_address_entry, vnc_entry,
+    containerlab_node_entry, environment_entry, forwarded_port_url, local_port_url,
+    ssh_to_address_entry, vnc_entry,
 };
 use super::topology::{TopologyDialog, TopologyEvent};
 use super::tree::{LineSpec, note_line, tree_line};
+use super::viewer;
 use crate::features::host_editor::logic::draft::HostDraft;
 use crate::features::launcher::kit::{show_error_toast, show_toast};
 use crate::features::settings::SettingsPrefs;
@@ -804,9 +807,42 @@ impl EnvironmentsPanel {
                     this.topology = None;
                     this.run(PanelAction::Open((**entry).clone()), window, cx);
                 }
+                TopologyEvent::Window(request) => this.show_topology_window(request, cx),
             },
         );
         self.topology = Some((dialog, subscription));
+    }
+
+    /// The topology in the containerlab viewer's window: the dialog closes once the window
+    /// is up (or was already, for this lab); should it not start, the dialog stays with the
+    /// topology drawn natively.
+    fn show_topology_window(&mut self, request: &TopologyWindowRequest, cx: &mut Context<Self>) {
+        let Some((dialog, _)) = &self.topology else {
+            return;
+        };
+        let (host, lab) = {
+            let dialog = dialog.read(cx);
+            (dialog.host().clone(), dialog.lab().clone())
+        };
+        let panel = cx.entity().downgrade();
+        // "SSH as admin" or "Open shell" in the window (openContainerlabNode).
+        let open_node = move |name: String, cx: &mut App| {
+            let Some(node) = lab.nodes.iter().find(|node| node.name == name) else {
+                return;
+            };
+            let entry = containerlab_node_entry(&host, &lab, node);
+            let _ = panel.update(cx, |_, cx| {
+                cx.emit(EnvironmentsPanelEvent::Open(Box::new(entry)));
+            });
+        };
+        match viewer::open(request, open_node, cx) {
+            Some(Ok(WebWindowResult::Opened | WebWindowResult::Focused)) => {
+                self.topology = None;
+                cx.notify();
+            }
+            Some(Err(error)) => show_toast(Status::Error, error, cx),
+            Some(Ok(WebWindowResult::Invalid)) | None => {}
+        }
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {

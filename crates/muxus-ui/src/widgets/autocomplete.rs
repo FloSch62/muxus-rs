@@ -22,6 +22,12 @@
 //! 6px × 16px, at most 40% of the window tall; "Loading…" or "No options"
 //! stand in for an empty list (a `freeSolo` field shows no list then).
 //!
+//! [`Autocomplete::multiple`] holds several values, as chips inside the field before the
+//! input (MUI's `multiple` with small chips): each chip's delete icon removes its value,
+//! Backspace in an empty input removes the last one, a pick empties the input, and the
+//! clear button (shown while there are chips) removes them all. The owner lists only the
+//! options not picked yet (`filterSelectedOptions`).
+//!
 //! A search field over options its owner already ranked (Settings search) sets
 //! [`Autocomplete::unfiltered`] (`filterOptions={(options) => options}`),
 //! [`Autocomplete::auto_highlight`], [`Autocomplete::hide_popup_indicator`]
@@ -45,6 +51,7 @@ use unicode_normalization::UnicodeNormalization;
 use crate::icon::icon;
 use crate::theme::{ActiveTheme, Theme};
 use crate::widgets::button::IconButton;
+use crate::widgets::display::Chip;
 use crate::widgets::form_field::FormField;
 use crate::widgets::listbox::list_subheader;
 use crate::widgets::menu::{self, MenuItem};
@@ -296,6 +303,14 @@ pub type PickHandler = Rc<dyn Fn(&AutocompleteOption, &mut Window, &mut App)>;
 type IndexHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 /// Called when the clear button empties the field.
 pub type ClearHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+/// Called with the index of the value a [`Autocomplete::multiple`] field removes.
+pub type RemoveHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+
+/// What Backspace does in a [`Autocomplete::multiple`] field (`handleKeyDown`): with nothing
+/// typed it removes the last value, if there is one.
+pub fn backspace_removes(input: &str, values: usize) -> Option<usize> {
+    (input.is_empty() && values > 0).then(|| values - 1)
+}
 
 /// The keyed state an autocomplete keeps between frames.
 struct AutocompleteState {
@@ -330,6 +345,8 @@ pub struct Autocomplete {
     open_when: bool,
     on_pick: Option<PickHandler>,
     on_clear: Option<ClearHandler>,
+    /// `multiple`: the picked values' labels, shown as chips, and how one goes.
+    multiple: Option<(Vec<SharedString>, RemoveHandler)>,
 }
 
 impl Autocomplete {
@@ -358,7 +375,22 @@ impl Autocomplete {
             open_when: true,
             on_pick: None,
             on_clear: None,
+            multiple: None,
         }
+    }
+
+    /// `multiple`: `values` are the picked values' labels, shown as small chips inside the
+    /// field; `on_remove` hears which one a chip's delete icon or Backspace removes. A pick
+    /// empties the input; the clear button ([`Autocomplete::on_clear`]) is for removing
+    /// them all.
+    pub fn multiple(
+        mut self,
+        values: Vec<SharedString>,
+        on_remove: impl Fn(usize, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.multiple = Some((values, Rc::new(on_remove)));
+        self.clear_on_pick = true;
+        self
     }
 
     /// `filterOptions={(options) => options}`: the options are shown as given,
@@ -522,12 +554,36 @@ impl RenderOnce for Autocomplete {
         });
         let shown = Rc::new(shown);
 
-        let has_clear = !self.disable_clearable && !value.is_empty();
+        // `dirty`: a value picked (some chips, for `multiple`), or text in a `freeSolo` field.
+        let has_clear = !self.disable_clearable
+            && match &self.multiple {
+                Some((values, _)) => !values.is_empty() || (self.free_solo && !value.is_empty()),
+                None => !value.is_empty(),
+            };
         let has_popup = !self.free_solo && self.popup_indicator;
         let group: SharedString = format!("autocomplete-{:?}", self.id).into();
 
         // The end adornment: clear button and popup indicator.
         let mut field = self.field.anchor(&anchor);
+        let multiple = self.multiple.clone();
+        if let Some((values, on_remove)) = &multiple {
+            let tags = values
+                .iter()
+                .enumerate()
+                .map(|(index, label)| {
+                    let on_remove = on_remove.clone();
+                    Chip::new(label.clone())
+                        .on_delete(
+                            ("autocomplete-tag", index),
+                            "Cancel",
+                            None,
+                            move |_, window, cx| on_remove(index, window, cx),
+                        )
+                        .into_any_element()
+                })
+                .collect();
+            field = field.tags(tags);
+        }
         if has_clear || has_popup {
             let mut end = div().flex().flex_none().items_center().mr(px(7.));
             let mut width = 0.;
@@ -646,6 +702,14 @@ impl RenderOnce for Autocomplete {
                 }
                 let text = key_input.read(cx).value().to_string();
                 let key = event.keystroke.key.clone();
+                if key == "backspace"
+                    && let Some((values, on_remove)) = &multiple
+                    && let Some(index) = backspace_removes(&text, values.len())
+                {
+                    cx.stop_propagation();
+                    on_remove(index, window, cx);
+                    return;
+                }
                 let list_open = key_state.read(cx).model.open;
                 if clear_on_escape && key == "escape" && !list_open && !text.is_empty() {
                     cx.stop_propagation();
@@ -973,6 +1037,15 @@ mod tests {
         assert!(model.open);
         model.toggle();
         assert!(!model.open);
+    }
+
+    #[test]
+    fn backspace_in_an_empty_input_removes_the_last_value() {
+        assert_eq!(backspace_removes("", 3), Some(2));
+        assert_eq!(backspace_removes("", 1), Some(0));
+        // Text to delete first, or nothing to remove.
+        assert_eq!(backspace_removes("we", 3), None);
+        assert_eq!(backspace_removes("", 0), None);
     }
 
     #[test]

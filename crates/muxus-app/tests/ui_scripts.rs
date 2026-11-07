@@ -83,6 +83,25 @@ fn runs_a_script_on_the_picked_host_and_keeps_it(cx: &mut TestAppContext) {
         dialog.read_with(cx, |dialog, _| dialog.chosen().to_vec()),
         ["ssh:box"]
     );
+    // The picked host is a chip in the search field: Backspace in the empty field removes it.
+    window
+        .update(cx, |dialog, window, cx| {
+            dialog.focus_host_picker(window, cx)
+        })
+        .unwrap();
+    draw(cx);
+    cx.simulate_keystrokes(window.into(), "backspace");
+    draw(cx);
+    assert!(dialog.read_with(cx, |dialog, _| dialog.chosen().is_empty()));
+    // Typing lists the matching hosts; the arrow and Enter pick one, a chip again.
+    cx.simulate_input(window.into(), "box");
+    draw(cx);
+    cx.simulate_keystrokes(window.into(), "down enter");
+    draw(cx);
+    assert_eq!(
+        dialog.read_with(cx, |dialog, _| dialog.chosen().to_vec()),
+        ["ssh:box"]
+    );
 
     window
         .update(cx, |dialog, window, cx| {

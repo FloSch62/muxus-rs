@@ -3,13 +3,14 @@
 
 #[cfg(target_os = "linux")]
 mod linux;
+mod topology;
 
 use std::io::BufRead;
 use std::rc::Rc;
 
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::window::{Window, WindowBuilder};
 use wry::{
     NewWindowFeatures, NewWindowResponse, PermissionResponse, ProxyConfig, ProxyEndpoint,
@@ -92,18 +93,9 @@ window.addEventListener('keydown', (event) => {
 }, true);
 "#;
 
-/// Show the page and run until the window closes, the app says so, or the app goes away.
-pub(crate) fn run(launch: WebWindowLaunch, mut commands: impl BufRead + Send + 'static) -> i32 {
-    let Some(request) = parse_web_window_request(&launch.request) else {
-        return fail("The page cannot be shown: it is not an http:// or https:// address.");
-    };
-    #[cfg(target_os = "linux")]
-    if let Err(error) = gtk::init() {
-        return fail(format!("Cannot open a window for the page: {error}"));
-    }
-    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
-    let proxy = event_loop.create_proxy();
-    // The app's commands; its stdin ending (the app quit or crashed) closes the window too.
+/// The app's commands, read from stdin on a thread of their own; its stdin ending (the app
+/// quit or crashed) closes the window too.
+fn read_commands(mut commands: impl BufRead + Send + 'static, proxy: EventLoopProxy<UserEvent>) {
     std::thread::spawn(move || {
         let mut text = String::new();
         loop {
@@ -119,6 +111,24 @@ pub(crate) fn run(launch: WebWindowLaunch, mut commands: impl BufRead + Send + '
         }
         let _ = proxy.send_event(UserEvent::Command(WebWindowCommand::Close));
     });
+}
+
+/// Show the page (or the lab's topology) and run until the window closes, the app says so,
+/// or the app goes away.
+pub(crate) fn run(launch: WebWindowLaunch, commands: impl BufRead + Send + 'static) -> i32 {
+    if let Some(topology) = launch.topology {
+        return topology::run(topology, commands);
+    }
+    let Some(request) = parse_web_window_request(&launch.request) else {
+        return fail("The page cannot be shown: it is not an http:// or https:// address.");
+    };
+    #[cfg(target_os = "linux")]
+    if let Err(error) = gtk::init() {
+        return fail(format!("Cannot open a window for the page: {error}"));
+    }
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    let proxy = event_loop.create_proxy();
+    read_commands(commands, proxy);
 
     let window = match WindowBuilder::new()
         .with_title(&request.title)

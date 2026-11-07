@@ -5,7 +5,9 @@ use gpui_kit::base::input::InputState;
 use gpui_kit::*;
 use muxus_ui::label::{label, paragraph};
 use muxus_ui::theme::{ActiveTheme, Mode, Status};
+use muxus_ui::widgets::autocomplete::{Autocomplete, AutocompleteOption};
 use muxus_ui::widgets::display::{badge, divider, linear_progress};
+use muxus_ui::widgets::form_field::FormField;
 use muxus_ui::widgets::menu::{self, MenuItem, chord_hint, menu_divider};
 use muxus_ui::widgets::tabs::tabs_row;
 use muxus_ui::widgets::{
@@ -15,6 +17,8 @@ use muxus_ui::widgets::{
 struct Gallery {
     search: Entity<InputState>,
     name: Entity<InputState>,
+    hosts: Entity<InputState>,
+    picked: Vec<SharedString>,
 }
 
 impl Render for Gallery {
@@ -73,6 +77,44 @@ impl Render for Gallery {
                     .child(TextField::new("search", &self.search).start_icon("Search").full_width())
                     .child(div().mt(px(12.)).child(TextField::new("name", &self.name).full_width()))
                     .child(div().mt(px(12.)).child(Select::new("scale", "100% (default)").full_width()))
+                    .child(div().mt(px(12.)).child({
+                        // `Autocomplete multiple`: picked hosts as chips in the field.
+                        let options = ["web-01", "web-02", "db-01", "edge-router", "lab-host"]
+                            .into_iter()
+                            .filter(|name| !self.picked.iter().any(|picked| picked == name))
+                            .map(AutocompleteOption::new)
+                            .collect();
+                        let remove = cx.entity().downgrade();
+                        let pick = cx.entity().downgrade();
+                        let clear = cx.entity().downgrade();
+                        Autocomplete::new(
+                            "hosts",
+                            &self.hosts,
+                            FormField::input("hosts-field", &self.hosts)
+                                .label(format!("Run on ({} of 5 SSH hosts)", self.picked.len()))
+                                .placeholder("Pick hosts"),
+                            options,
+                        )
+                        .multiple(self.picked.clone(), move |index, _, cx| {
+                            let _ = remove.update(cx, |this, cx| {
+                                this.picked.remove(index);
+                                cx.notify();
+                            });
+                        })
+                        .on_pick(move |option, _, cx| {
+                            let label = option.label.clone();
+                            let _ = pick.update(cx, |this, cx| {
+                                this.picked.push(label);
+                                cx.notify();
+                            });
+                        })
+                        .on_clear(move |_, cx| {
+                            let _ = clear.update(cx, |this, cx| {
+                                this.picked.clear();
+                                cx.notify();
+                            });
+                        })
+                    }))
                     .child(section("SELECTION"))
                     .child(
                         row()
@@ -151,7 +193,17 @@ fn main() {
                     cx.new(|cx| InputState::new(window, cx).placeholder("Search or user@host ⏎"));
                 let name =
                     cx.new(|cx| InputState::new(window, cx).default_value("web-01.prod.internal"));
-                cx.new(|_| Gallery { search, name })
+                let hosts = cx.new(|cx| InputState::new(window, cx));
+                let picked = ["web-01", "db-01", "edge-router", "lab-host"]
+                    .into_iter()
+                    .map(SharedString::from)
+                    .collect();
+                cx.new(|_| Gallery {
+                    search,
+                    name,
+                    hosts,
+                    picked,
+                })
             })
             .expect("open window");
         });

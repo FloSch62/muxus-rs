@@ -64,7 +64,7 @@ opens the window. `MUXUS_SETTINGS_SECTION`, `MUXUS_SETTINGS_SCROLL`, `MUXUS_SETT
 | macOS app menu: About Muxus opens Settings → About | electron/src/main.ts `buildMenu` (v0.15 7a4be79) | done (not run) | `features::desktop::app_menu`: About, Services, Hide, Hide Others, Show All, Quit (⌘H, ⌥⌘H, ⌘Q), set with `cx.set_menus` on macOS only. Compiled and its structure tested on Linux; never run on a Mac. Electron's other stock menus (File, Edit, View, Window) have no Rust counterpart. |
 | Toasts, confirmations | ToastHost.tsx, DialogHost.tsx | done | per window, like the client |
 | Vault startup coordination | password-vault-startup.ts | done | `vault_startup.rs` (test ported) |
-| Vault secret helpers | vault-secrets.ts | partial | find/missing/buttons using/filter/`secretTerminalIds`/`quotedList` + tests; sending a secret belongs to the command buttons feature |
+| Vault secret helpers | vault-secrets.ts | done | find/missing/buttons using/filter/`secretTerminalIds`/`quotedList` + tests (`settings/vault_secrets.rs`); sending a secret (`typeSecretIntoTab`, `runCommandButton`, `sendSecretToTab`) is the command buttons' `send_secret` hook: `command_buttons::run::{run_command_button, send_secret_to_terminals}` and `features/vault/send.rs`, to the tab's terminal and the panes mirroring it (`AppShell::secret_terminal_ids`) |
 | Keyboard focus order (Tab between controls) | MUI | done | Tab and Shift+Tab walk inputs, buttons, switches, checkboxes, sliders, toggle groups and selects in paint order (the window's component root); keyboard focus shows MUI's focus ripple (a 2px primary outline on selects); Enter or Space presses the focused control; the window's dialogs trap the focus |
 
 ## Screenshots

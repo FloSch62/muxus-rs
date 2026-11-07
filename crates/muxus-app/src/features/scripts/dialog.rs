@@ -258,6 +258,12 @@ impl ScriptsDialog {
         &self.chosen
     }
 
+    /// Put the keyboard in the host picker's search field.
+    pub fn focus_host_picker(&self, window: &mut Window, cx: &mut App) {
+        let focus = self.host_search.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    }
+
     /// Results are on screen (after Run, or while a job runs).
     pub fn showing_results(&self) -> bool {
         self.view == View::Results
@@ -637,27 +643,31 @@ impl ScriptsDialog {
     fn host_picker(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let p = theme.palette;
         let chosen = self.chosen_targets();
+        // `filterSelectedOptions`: picked hosts leave the list.
         let options: Vec<AutocompleteOption> = self
             .targets
             .iter()
             .filter(|target| !self.chosen.contains(&target.key))
             .map(|target| AutocompleteOption::new(target.label.clone()).value(target.key.clone()))
             .collect();
-        let mut chips = div().flex().flex_wrap().gap(px(4.));
-        for (index, target) in chosen.iter().enumerate() {
-            let key = target.key.clone();
-            chips = chips.child(Chip::new(target.label.clone()).on_delete(
-                ("scripts-host-chip", index),
-                "Cancel",
-                None,
-                cx.listener(move |this, _, _, cx| {
-                    this.chosen.retain(|chosen| chosen != &key);
-                    cx.notify();
-                }),
-            ));
-        }
+        // The picked hosts as chips in the field, in the order they were picked.
+        let picked: Vec<(String, SharedString)> = self
+            .chosen
+            .iter()
+            .map(|key| {
+                let label = self
+                    .targets
+                    .iter()
+                    .find(|target| &target.key == key)
+                    .map_or_else(|| key.clone(), |target| target.label.clone());
+                (key.clone(), label.into())
+            })
+            .collect();
+        let labels = picked.iter().map(|(_, label)| label.clone()).collect();
+        let keys: Vec<String> = picked.into_iter().map(|(key, _)| key).collect();
         let entity = cx.entity().downgrade();
-        let search = self.host_search.clone();
+        let remove = entity.clone();
+        let clear = entity.clone();
         let picker = Autocomplete::new(
             "scripts-hosts",
             &self.host_search,
@@ -670,10 +680,23 @@ impl ScriptsDialog {
                 .placeholder("Pick hosts"),
             options,
         )
-        .disable_clearable()
-        .on_pick(move |option, window, cx| {
+        .multiple(labels, move |index, _, cx| {
+            let Some(key) = keys.get(index).cloned() else {
+                return;
+            };
+            let _ = remove.update(cx, |this, cx| {
+                this.chosen.retain(|chosen| chosen != &key);
+                cx.notify();
+            });
+        })
+        .on_clear(move |_, cx| {
+            let _ = clear.update(cx, |this, cx| {
+                this.chosen.clear();
+                cx.notify();
+            });
+        })
+        .on_pick(move |option, _, cx| {
             let key = option.value.clone();
-            search.update(cx, |state, cx| state.set_value("", window, cx));
             let _ = entity.update(cx, |this, cx| {
                 if !this.chosen.contains(&key) {
                     this.chosen.push(key);
@@ -681,10 +704,7 @@ impl ScriptsDialog {
                 cx.notify();
             });
         });
-        let mut column = div().flex().flex_col().gap(Theme::spacing(1.));
-        if !chosen.is_empty() {
-            column = column.child(chips);
-        }
+        let column = div().flex().flex_col().gap(Theme::spacing(1.));
         column
             .child(picker)
             .child(

@@ -1,99 +1,95 @@
-//! String ordering that stands in for JavaScript's `String.prototype.localeCompare`.
+//! String ordering for JavaScript's `String.prototype.localeCompare`.
 //!
-//! Shared by every crate that sorts the way the TypeScript did (originally written for the app's
-//! sidebar). The TypeScript sorts host names, folder labels and paths with
-//! `localeCompare`, which in Node and Chromium is ICU collation for the default
-//! locale (the CLDR root order for English). This is an approximation of that
-//! order which agrees with ICU on everything the sidebar sorts in practice:
+//! Shared by every crate that sorts the way the TypeScript did. The TypeScript sorts host
+//! names, folder labels and paths with `localeCompare`, which in Node and Chromium is ICU
+//! collation for the default locale: for English, the CLDR root order (English has no
+//! tailoring) at tertiary strength, punctuation not ignored, no numeric ordering. This is
+//! that collation, from ICU4X (`icu_collator`), so it agrees with the renderer beyond ASCII
+//! too:
 //!
-//! - Comparison is first case-insensitive (ICU's primary strength), so `alpha`,
-//!   `Bravo` and `charlie` sort as words, not as ASCII.
-//! - Characters are classed as ICU's default ("non-ignorable") ordering does:
-//!   whitespace, then punctuation and symbols (in DUCET order for ASCII), then
-//!   digits, then letters. `web-01` therefore sorts before `web01` and `web 1`
-//!   before both.
-//! - Digits compare one by one, as ICU does without numeric collation:
-//!   `host10` sorts before `host9`.
-//! - On a tie, lowercase sorts before uppercase at the first difference
-//!   (ICU's tertiary strength), so `prod` comes before `Prod`.
+//! - Letters compare without regard to case and accents first, so `alpha`, `Bravo` and
+//!   `charlie` sort as words, and `é` sorts with `e`.
+//! - Whitespace, then punctuation and symbols, then digits, then letters: `web 1` before
+//!   `web-01` before `web01`.
+//! - Digits compare one by one: `host10` sorts before `host9`.
+//! - Accents break a tie next (`e` < `é`), case last, lowercase first (`prod` < `Prod`).
+//! - `ß` sorts as `ss`, just after it; other scripts follow Latin in the root order (Greek,
+//!   Cyrillic, …), each in its alphabet's order.
 //!
-//! Accents are folded only for the Latin-1 letters (é sorts with e); other
-//! scripts sort after Latin by code point. ICU's secondary (accent) level and
-//! contractions are not modelled.
+//! Strings the collation finds equal (only ignorable characters differ) compare equal, as
+//! `localeCompare` returns 0 for them.
+//!
+//! Only the root collation's data is built in. ICU4X's compiled data carries every locale's
+//! tailoring (about 1 MB in the binary); Muxus only ever sorts in the root order, so the
+//! tailorings are left out (about 0.3 MB with the collator itself).
 
 use std::cmp::Ordering;
 
+use icu_collator::options::CollatorOptions;
+use icu_collator::provider::{
+    CollationDiacriticsV1, CollationJamoV1, CollationMetadataV1, CollationReorderingV1,
+    CollationRootV1, CollationSpecialPrimariesV1, CollationTailoringV1,
+};
+use icu_collator::{Collator, CollatorPreferences};
+use icu_normalizer::provider::{NormalizerNfdDataV1, NormalizerNfdTablesV1};
+use icu_provider::prelude::*;
+
+/// The root collation's data from the compiled data, and no tailorings. Only what this
+/// provider hands out stays in the binary: the linker drops the tailorings' tables, since
+/// nothing refers to them.
+struct RootCollation;
+
+macro_rules! compiled {
+    ($($marker:ty => $baked:path),* $(,)?) => {$(
+        impl DataProvider<$marker> for RootCollation {
+            fn load(&self, request: DataRequest) -> Result<DataResponse<$marker>, DataError> {
+                DataProvider::<$marker>::load(&$baked, request)
+            }
+        }
+    )*};
+}
+
+compiled!(
+    CollationRootV1 => icu_collator::provider::Baked,
+    CollationSpecialPrimariesV1 => icu_collator::provider::Baked,
+    CollationDiacriticsV1 => icu_collator::provider::Baked,
+    CollationJamoV1 => icu_collator::provider::Baked,
+    CollationMetadataV1 => icu_collator::provider::Baked,
+    CollationReorderingV1 => icu_collator::provider::Baked,
+    NormalizerNfdDataV1 => icu_normalizer::provider::Baked,
+    NormalizerNfdTablesV1 => icu_normalizer::provider::Baked,
+);
+
+/// The root locale has no tailoring; the collator only asks for one when a locale's
+/// metadata says it has one.
+impl DataProvider<CollationTailoringV1> for RootCollation {
+    fn load(&self, request: DataRequest) -> Result<DataResponse<CollationTailoringV1>, DataError> {
+        Err(DataErrorKind::IdentifierNotFound.with_req(CollationTailoringV1::INFO, request))
+    }
+}
+
+/// The root collation with `Intl.Collator`'s defaults (tertiary strength, punctuation
+/// counts, no numeric ordering), or `None` should the built-in data not load.
+fn root_collator() -> Option<Collator> {
+    Collator::try_new_unstable(
+        &RootCollation,
+        CollatorPreferences::default(),
+        CollatorOptions::default(),
+    )
+    .ok()
+}
+
+thread_local! {
+    // A collator over static data is cheap to make, but not `Sync`: one per thread.
+    static COLLATOR: Option<Collator> = root_collator();
+}
+
 /// Compare two strings the way `a.localeCompare(b)` orders them (see the module docs).
 pub fn locale_compare(a: &str, b: &str) -> Ordering {
-    let primary = a
-        .chars()
-        .map(primary_weight)
-        .cmp(b.chars().map(primary_weight));
-    if primary != Ordering::Equal {
-        return primary;
-    }
-    // Tertiary: at the first character that differs only in case, lowercase wins.
-    for (left, right) in a.chars().zip(b.chars()) {
-        if left == right {
-            continue;
-        }
-        let (left_upper, right_upper) = (left.is_uppercase(), right.is_uppercase());
-        if left_upper != right_upper {
-            return if left_upper {
-                Ordering::Greater
-            } else {
-                Ordering::Less
-            };
-        }
-    }
-    // Same letters and case: only accents (or nothing) differ.
-    a.cmp(b)
-}
-
-/// ASCII punctuation and symbols in the order the CLDR root collation puts them.
-const PUNCTUATION_ORDER: &str = "_-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$";
-
-/// `(class, weight)`: whitespace < punctuation/symbols < digits < letters.
-fn primary_weight(c: char) -> (u8, u32) {
-    if c.is_whitespace() {
-        return (0, c as u32);
-    }
-    if let Some(index) = PUNCTUATION_ORDER.find(c) {
-        return (1, index as u32);
-    }
-    if c.is_ascii_digit() {
-        return (3, c as u32 - '0' as u32);
-    }
-    if c.is_alphabetic() {
-        let base = fold_latin1(c);
-        let lower = base.to_lowercase().next().unwrap_or(base);
-        // ASCII letters first, every other script after them by code point.
-        return if lower.is_ascii_lowercase() {
-            (4, lower as u32 - 'a' as u32)
-        } else {
-            (5, lower as u32)
-        };
-    }
-    if let Some(digit) = c.to_digit(10) {
-        return (3, digit);
-    }
-    // Any other symbol sorts with punctuation, after the ASCII ones.
-    (2, c as u32)
-}
-
-/// Strip the accent from Latin-1 letters so `é` sorts with `e`, as ICU does at primary strength.
-fn fold_latin1(c: char) -> char {
-    match c {
-        'À'..='Å' | 'à'..='å' => 'a',
-        'Ç' | 'ç' => 'c',
-        'È'..='Ë' | 'è'..='ë' => 'e',
-        'Ì'..='Ï' | 'ì'..='ï' => 'i',
-        'Ñ' | 'ñ' => 'n',
-        'Ò'..='Ö' | 'Ø' | 'ò'..='ö' | 'ø' => 'o',
-        'Ù'..='Ü' | 'ù'..='ü' => 'u',
-        'Ý' | 'ý' | 'ÿ' => 'y',
-        _ => c,
-    }
+    COLLATOR.with(|collator| match collator {
+        Some(collator) => collator.as_borrowed().compare(a, b),
+        None => a.cmp(b),
+    })
 }
 
 #[cfg(test)]
@@ -107,12 +103,19 @@ mod tests {
     }
 
     #[test]
+    fn the_root_collation_loads() {
+        assert!(root_collator().is_some());
+    }
+
+    #[test]
     fn ignores_case_at_first() {
         assert_eq!(
             sorted(&["charlie", "Bravo", "alpha"]),
             ["alpha", "Bravo", "charlie"]
         );
         assert_eq!(sorted(&["Zed", "Alpha", "mid"]), ["Alpha", "mid", "Zed"]);
+        assert_eq!(sorted(&["b", "A", "a", "B"]), ["a", "A", "b", "B"]);
+        assert_eq!(sorted(&["ab", "Aa"]), ["Aa", "ab"]);
     }
 
     #[test]
@@ -129,11 +132,17 @@ mod tests {
             ["web 1", "web-01", "web01"]
         );
         assert_eq!(sorted(&["a", "1", "-"]), ["-", "1", "a"]);
+        assert_eq!(
+            sorted(&["a", "1", "_", " ", "-"]),
+            [" ", "_", "-", "1", "a"]
+        );
+        assert_eq!(sorted(&["a-b", "a b", "ab"]), ["a b", "a-b", "ab"]);
     }
 
     #[test]
     fn compares_digits_one_at_a_time() {
         assert_eq!(sorted(&["host9", "host10"]), ["host10", "host9"]);
+        assert_eq!(sorted(&["10", "9", "1"]), ["1", "10", "9"]);
     }
 
     #[test]
@@ -146,13 +155,62 @@ mod tests {
     }
 
     #[test]
-    fn folds_latin1_accents() {
+    fn accents_come_after_the_letters_and_before_case() {
         assert_eq!(sorted(&["f", "é", "d"]), ["d", "é", "f"]);
+        assert_eq!(sorted(&["e", "é", "f", "E"]), ["e", "E", "é", "f"]);
+        // Beyond Latin-1: the accent is secondary wherever it sits.
+        assert_eq!(
+            sorted(&["Łódź", "Lodz", "lodz", "Lodzia"]),
+            ["lodz", "Lodz", "Łódź", "Lodzia"]
+        );
+        assert_eq!(
+            sorted(&["Zürich", "Zug", "Zurich"]),
+            ["Zug", "Zurich", "Zürich"]
+        );
+        // The first accent difference decides (no French backwards accents in the root).
+        assert_eq!(sorted(&["côte", "coté", "cote"]), ["cote", "coté", "côte"]);
+        // Precomposed and decomposed forms are the same string to the collation.
+        assert_eq!(locale_compare("e\u{301}", "\u{e9}"), Ordering::Equal);
     }
 
     #[test]
-    fn is_equal_only_for_equal_strings() {
+    fn sharp_s_sorts_as_ss() {
+        assert_eq!(sorted(&["st", "ß", "ss", "sr"]), ["sr", "ss", "ß", "st"]);
+        assert_eq!(
+            sorted(&["Straße", "Strasse", "Strase"]),
+            ["Strase", "Strasse", "Straße"]
+        );
+        assert_eq!(sorted(&["æ", "ae", "af"]), ["ae", "æ", "af"]);
+    }
+
+    #[test]
+    fn other_scripts_follow_latin_in_their_own_order() {
+        assert_eq!(
+            sorted(&["яблоко", "Ωmega", "zulu", "Альфа", "beta", "αλφα"]),
+            ["beta", "zulu", "αλφα", "Ωmega", "Альфа", "яблоко"]
+        );
+        // Cyrillic ё sorts with е, as an accented е.
+        assert_eq!(sorted(&["ж", "ё", "е", "д"]), ["д", "е", "ё", "ж"]);
+        // Japanese kana in gojūon order, after every alphabet.
+        assert_eq!(sorted(&["か", "あ", "z", "さ"]), ["z", "あ", "か", "さ"]);
+        // Digits of other scripts are digits.
+        assert_eq!(sorted(&["a", "٣", "2"]), ["2", "٣", "a"]);
+    }
+
+    #[test]
+    fn is_equal_for_equal_strings_and_ignorables_only() {
         assert_eq!(locale_compare("same", "same"), Ordering::Equal);
         assert_ne!(locale_compare("é", "e"), Ordering::Equal);
+        // A soft hyphen or zero-width space is ignorable, as in `localeCompare`.
+        assert_eq!(locale_compare("ab", "a\u{ad}b"), Ordering::Equal);
+        assert_eq!(locale_compare("ab", "a\u{200b}b"), Ordering::Equal);
+    }
+
+    #[test]
+    fn works_on_every_thread() {
+        let sorted = std::thread::spawn(|| sorted(&["b", "A", "a"]))
+            .join()
+            .unwrap();
+        assert_eq!(sorted, ["a", "A", "b"]);
     }
 }
