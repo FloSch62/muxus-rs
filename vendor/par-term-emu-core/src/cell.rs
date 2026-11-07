@@ -67,17 +67,6 @@ pub struct CellFlags {
     /// Niche-optimized via `NonZeroU32` so `None` (the common case — no link)
     /// costs zero extra bytes in `CellFlags` (ARC-010). IDs are always >= 1.
     pub hyperlink_id: Option<NonZeroU32>,
-    /// Muxus patch: the cell's cached display width ([`Cell::width`]), kept
-    /// in the byte the struct pads to anyway, which takes a [`Cell`] from 40
-    /// bytes to 32. The pen's flags keep 1; a written cell sets its own. Not
-    /// part of the wire format ([`CellSerde`] carries the width).
-    #[cfg_attr(feature = "serde", serde(skip, default = "narrow"))]
-    width: u8,
-}
-
-#[cfg(feature = "serde")]
-fn narrow() -> u8 {
-    1
 }
 
 impl Default for CellFlags {
@@ -86,20 +75,11 @@ impl Default for CellFlags {
             bits: CellBitflags::empty(),
             underline_style: UnderlineStyle::None,
             hyperlink_id: None,
-            width: 1,
         }
     }
 }
 
 impl CellFlags {
-    /// Muxus patch: these flags for a cell `width` columns wide (the cached
-    /// display width rides in the flags; see [`Cell::width`]).
-    #[inline]
-    pub(crate) fn with_width(mut self, width: u8) -> Self {
-        self.width = width;
-        self
-    }
-
     // Getter methods for each flag
     /// Whether the bold attribute is set.
     #[inline]
@@ -258,12 +238,11 @@ impl CellFlags {
 
 /// A single cell in the terminal grid
 ///
-/// Cell is 32 bytes (down from 56): colors are packed into `u32` words
+/// Cell is 40 bytes (down from 56): colors are packed into `u32` words
 /// (the crate-private `PackedColor`) and combining marks spill to the heap via a
 /// null-optimized `Option<Arc<[char]>>` instead of an inline
 /// `SmallVec<[char; 4]>`. Only cells that actually carry combining marks
-/// allocate. (Muxus patch: the width moved into [`CellFlags`]' padding byte,
-/// 40 → 32.)
+/// allocate.
 ///
 /// Note: Cell is Clone but not Copy because `combining` holds a heap
 /// `Box`. Use `.clone()` explicitly when you need to copy a cell.
@@ -289,10 +268,12 @@ pub struct Cell {
     /// Underline color (SGR 58/59); `None` when the top bit is clear (use
     /// foreground color), else the low 31 bits are a [`PackedColor`].
     pub(crate) underline_color: PackedOptionColor,
-    /// Text attributes/flags, and the cached display width of the character
-    /// (1 or 2, typically; [`Cell::width`]).
+    /// Text attributes/flags
     #[doc(hidden)]
     pub flags: CellFlags,
+    /// Cached display width of the character (1 or 2, typically)
+    #[doc(hidden)]
+    pub width: u8,
 }
 
 /// Wire-format mirror of [`Cell`] for serde. Field names and value shapes
@@ -321,7 +302,7 @@ impl From<Cell> for CellSerde {
             bg: cell.bg.unpack(),
             underline_color: cell.underline_color.unpack(),
             flags: cell.flags,
-            width: cell.flags.width,
+            width: cell.width,
         }
     }
 }
@@ -339,10 +320,8 @@ impl From<CellSerde> for Cell {
             fg: PackedColor::pack(s.fg),
             bg: PackedColor::pack(s.bg),
             underline_color: PackedOptionColor::pack(s.underline_color),
-            flags: CellFlags {
-                width: s.width,
-                ..s.flags
-            },
+            flags: s.flags,
+            width: s.width,
         }
     }
 }
@@ -433,8 +412,8 @@ impl Default for Cell {
             fg: PackedColor::pack(Color::Named(crate::color::NamedColor::White)),
             bg: PackedColor::pack(Color::Named(crate::color::NamedColor::Black)),
             underline_color: PackedOptionColor::pack(None),
-            // A space has width 1.
             flags: CellFlags::default(),
+            width: 1, // Space has width 1
         }
     }
 }
@@ -448,7 +427,7 @@ impl Cell {
         Self {
             c,
             combining: None,
-            flags: CellFlags::default().with_width(width),
+            width,
             ..Default::default()
         }
     }
@@ -464,7 +443,8 @@ impl Cell {
             fg: PackedColor::pack(fg),
             bg: PackedColor::pack(bg),
             underline_color: PackedOptionColor::pack(None),
-            flags: CellFlags::default().with_width(width),
+            flags: CellFlags::default(),
+            width,
         }
     }
 
@@ -525,14 +505,7 @@ impl Cell {
 
     /// Get the display width of the character (cached value)
     pub fn width(&self) -> usize {
-        self.flags.width as usize
-    }
-
-    /// Muxus patch: set the cached display width (the field moved into
-    /// [`CellFlags`] to keep the cell at 32 bytes).
-    #[inline]
-    pub fn set_width(&mut self, width: u8) {
-        self.flags.width = width;
+        self.width as usize
     }
 
     /// Get the full grapheme cluster as a String
@@ -658,7 +631,7 @@ impl Cell {
         Self {
             c: base_char,
             combining,
-            flags: CellFlags::default().with_width(width),
+            width,
             ..Default::default()
         }
     }
@@ -670,16 +643,14 @@ mod tests {
     use crate::color::NamedColor;
 
     /// Card: slim the Cell struct. 56B -> 40B via packed colors and a
-    /// heap-spilled `Option<Arc<Vec<char>>> combining store; Muxus patch:
-    /// 40B -> 32B with the width in the flags' padding byte.
+    /// heap-spilled `Option<Arc<Vec<char>>> combining store.
     #[test]
-    fn cell_fits_in_32_bytes() {
+    fn cell_fits_in_40_bytes() {
         assert!(
-            std::mem::size_of::<Cell>() <= 32,
-            "Cell grew to {} bytes; the packed layout contract is 32",
+            std::mem::size_of::<Cell>() <= 40,
+            "Cell grew to {} bytes; the packed layout contract is 40",
             std::mem::size_of::<Cell>()
         );
-        assert_eq!(std::mem::size_of::<CellFlags>(), 8);
     }
 
     /// Named, indexed and RGB colors must round-trip bit-exact through the

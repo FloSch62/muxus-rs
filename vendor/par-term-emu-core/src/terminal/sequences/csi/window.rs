@@ -95,7 +95,7 @@ fn handle_rect_ops(
             let right = pr.saturating_sub(1);
 
             let mut fill_cell = crate::cell::Cell::with_colors(pc, attrs.fg, attrs.bg);
-            fill_cell.flags = attrs.flags.with_width(fill_cell.width() as u8);
+            fill_cell.flags = attrs.flags;
 
             grid.fill_rectangle(fill_cell, top, left, bottom, right);
         }

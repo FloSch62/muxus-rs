@@ -21,8 +21,6 @@ mod detection;
 #[cfg(test)]
 mod editing;
 #[cfg(test)]
-mod fast_paths;
-#[cfg(test)]
 mod grid_integration_tests;
 #[cfg(test)]
 mod keyboard;
@@ -52,8 +50,6 @@ mod tmux;
 mod tui;
 #[cfg(test)]
 mod vt520;
-#[cfg(test)]
-mod xterm_resize;
 
 #[cfg(test)]
 mod metrics;

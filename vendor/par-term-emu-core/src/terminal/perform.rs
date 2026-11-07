@@ -10,14 +10,6 @@ use vte::{Params, Perform};
 
 impl Perform for Terminal {
     fn print(&mut self, c: char) {
-        // Printable ASCII is collected and written as a run (see
-        // `Terminal::flush_print_run`); everything else flushes the run
-        // first, so the grid sees the characters in stream order.
-        if matches!(c, ' '..='~') {
-            self.print_run.push(c as u8);
-            return;
-        }
-        self.flush_print_run();
         debug::log_print(c, self.cursor.col, self.cursor.row);
 
         // Fast path for the Kitty TGP placeholder character (U+10EEEE):
@@ -52,7 +44,6 @@ impl Perform for Terminal {
     }
 
     fn execute(&mut self, byte: u8) {
-        self.flush_print_run();
         debug::log_execute(byte);
         match byte {
             b'\n' => self.write_char('\n'),
@@ -93,32 +84,26 @@ impl Perform for Terminal {
     }
 
     fn hook(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: char) {
-        self.flush_print_run();
         self.dcs_hook(params, intermediates, ignore, action);
     }
 
     fn put(&mut self, byte: u8) {
-        self.flush_print_run();
         self.dcs_put(byte);
     }
 
     fn unhook(&mut self) {
-        self.flush_print_run();
         self.dcs_unhook();
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
-        self.flush_print_run();
         self.osc_dispatch_impl(params, bell_terminated);
     }
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: char) {
-        self.flush_print_run();
         self.csi_dispatch_impl(params, intermediates, ignore, action);
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
-        self.flush_print_run();
         self.esc_dispatch_impl(intermediates, ignore, byte);
     }
 }

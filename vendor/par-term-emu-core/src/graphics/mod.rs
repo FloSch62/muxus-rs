@@ -788,26 +788,6 @@ impl GraphicsStore {
         self.placements.retain(|g| g.id != id);
     }
 
-    /// Muxus patch: remove a graphic by ID from the placements and the
-    /// scrollback (an image storage limit evicting the oldest images).
-    pub fn remove_graphic_everywhere(&mut self, id: u64) {
-        self.placements.retain(|g| g.id != id);
-        self.scrollback.retain(|g| g.id != id);
-    }
-
-    /// Muxus patch: move the on-screen placements with their lines after a resize moved the
-    /// screen's lines (`Grid::resize_xterm`). `top_row` maps a placement's top edge, a screen
-    /// row that is negative while the image's top has scrolled above the screen, to its row
-    /// after the resize.
-    pub fn move_placements(&mut self, mut top_row: impl FnMut(isize) -> isize) {
-        for graphic in &mut self.placements {
-            let top = graphic.position.1 as isize - graphic.scroll_offset_rows as isize;
-            let moved = top_row(top);
-            graphic.position.1 = moved.max(0) as usize;
-            graphic.scroll_offset_rows = (-moved).max(0) as usize;
-        }
-    }
-
     /// Get graphics at a specific row
     pub fn graphics_at_row(&self, row: usize) -> Vec<&TerminalGraphic> {
         self.placements

@@ -257,11 +257,6 @@ pub struct Terminal {
     /// [`Terminal::advance_parser`] so guarded chunks (those containing ESC or
     /// mid-OSC state) do not allocate per call.
     pub(crate) osc_scratch: Vec<u8>,
-    /// Printable ASCII the parser handed to `print` and that is not on the
-    /// grid yet. It is written as one run (see
-    /// [`Terminal::flush_print_run`]) before any other parser callback and
-    /// before a parse pass returns, so no code ever observes it pending.
-    pub(crate) print_run: Vec<u8>,
     /// Long-lived Kitty TGP parser; reset between unrelated transmissions.
     pub(crate) kitty_parser: KittyParser,
     /// DECAWM delayed wrap: set after printing in last column
@@ -392,7 +387,6 @@ impl Terminal {
             parser: vte::Parser::new(),
             apc: ApcPrefilterState::default(),
             osc_scratch: Vec::new(),
-            print_run: Vec::new(),
             kitty_parser: KittyParser::new(),
             pending_wrap: false,
             // Initialize pixel dimensions with reasonable defaults (10x20 per cell)
@@ -495,20 +489,8 @@ impl Terminal {
     /// pushed off the scrollback floor are queued as `ZoneScrolledOut` and
     /// delivered to observers before this returns.
     pub fn resize(&mut self, cols: usize, rows: usize) {
-        self.resize_internal(cols, rows, None);
+        self.resize_internal(cols, rows);
         self.finish_applied_actions();
-    }
-
-    /// Muxus patch: [`Terminal::resize`] for a host whose viewport on the
-    /// primary screen is scrolled to `viewport_top` (a buffer line,
-    /// scrollback first). Returns the viewport's top line after the
-    /// resize: with [`Terminal::set_xterm_resize`] it moves by xterm.js's
-    /// rules (a viewport at the bottom stays there), otherwise it is the
-    /// bottom.
-    pub fn resize_with_viewport(&mut self, cols: usize, rows: usize, viewport_top: usize) -> usize {
-        let top = self.resize_internal(cols, rows, Some(viewport_top));
-        self.finish_applied_actions();
-        top
     }
 
     /// [`Terminal::resize`] without invoking observer callbacks: the
@@ -517,14 +499,14 @@ impl Terminal {
     /// releasing that lock.
     #[doc(hidden)]
     pub fn resize_deferred(&mut self, cols: usize, rows: usize) -> ObserverDispatchBatch {
-        self.resize_internal(cols, rows, None);
+        self.resize_internal(cols, rows);
         self.flush_evicted_zones();
         let batch = self.take_observer_dispatch_batch();
         self.cap_terminal_events();
         batch
     }
 
-    fn resize_internal(&mut self, cols: usize, rows: usize, viewport_top: Option<usize>) -> usize {
+    fn resize_internal(&mut self, cols: usize, rows: usize) {
         crate::debug_log!("TERMINAL_RESIZE", "Requested resize to {}x{}", cols, rows);
 
         // Reflow moves rows across the scrollback boundary; pending trigger
@@ -538,14 +520,9 @@ impl Terminal {
         let old_cols = self.grid.cols().max(1);
         let old_rows = self.grid.rows().max(1);
 
-        let viewport_top = if self.host.xterm_resize {
-            self.resize_screens_xterm(cols, rows, viewport_top)
-        } else {
-            self.grid.resize(cols, rows);
-            // The alt screen never reflows (see Grid::resize_without_reflow).
-            self.alt_grid.resize_without_reflow(cols, rows);
-            self.grid.scrollback_len()
-        };
+        self.grid.resize(cols, rows);
+        // The alt screen never reflows (see Grid::resize_without_reflow).
+        self.alt_grid.resize_without_reflow(cols, rows);
         // Both grids' damage bitsets were resized and fully marked by their
         // resize calls: a resize reflows/redraws the whole screen, and a
         // damage-driven renderer (FFI readback) must repaint all of it.
@@ -619,92 +596,6 @@ impl Terminal {
             .set_dimensions(cols as u16, rows as u16);
 
         self.record_resize(cols, rows);
-        viewport_top
-    }
-
-    /// Muxus patch: resize both screens as xterm.js resizes its normal and
-    /// alternate buffers (`Grid::resize_xterm`), moving each screen's
-    /// cursor, the saved cursor of the active one and the on-screen images
-    /// with their lines. A pending wrap ends, as xterm.js clamps its cursor
-    /// into the last column. Returns the primary viewport's new top line.
-    fn resize_screens_xterm(
-        &mut self,
-        cols: usize,
-        rows: usize,
-        viewport_top: Option<usize>,
-    ) -> usize {
-        use crate::grid::BufferPositions;
-
-        // xterm.js ignores a resize to the size it has (a pending wrap stays pending).
-        if (self.grid.cols(), self.grid.rows()) == (cols, rows) || cols == 0 || rows == 0 {
-            return viewport_top.unwrap_or(self.grid.scrollback_len());
-        }
-        let old_cols = self.grid.cols();
-        let primary_active = !self.alt_screen_active;
-        let saved = self.saved_state.saved_cursor;
-        let positions_of = |cursor: &Cursor, active: bool, pending_wrap: bool| BufferPositions {
-            cursor_col: if active && pending_wrap {
-                old_cols
-            } else {
-                cursor.col
-            },
-            cursor_row: cursor.row,
-            saved_col: saved.filter(|_| active).map_or(0, |saved| saved.col),
-            saved_row: saved.filter(|_| active).map_or(0, |saved| saved.row),
-            viewport_top: 0,
-        };
-        // While the alternate screen is shown the primary cursor waits in `alt_cursor`.
-        let (primary_cursor, alternate_cursor) = if primary_active {
-            (self.cursor, self.alt_cursor)
-        } else {
-            (self.alt_cursor, self.cursor)
-        };
-        let mut primary = positions_of(&primary_cursor, primary_active, self.pending_wrap);
-        let mut alternate = positions_of(&alternate_cursor, !primary_active, self.pending_wrap);
-        let scrollback = self.grid.scrollback_len();
-        primary.viewport_top = viewport_top.unwrap_or(scrollback);
-
-        self.grid.resize_xterm(cols, rows, true, &mut primary);
-        self.alt_grid
-            .resize_xterm(cols, rows, false, &mut alternate);
-        // Nothing follows the alternate screen's lines.
-        let _ = self.alt_grid.take_buffer_reflow();
-
-        // The images on the primary screen keep their lines.
-        if primary_active {
-            if let Some(reflow) = self.grid.buffer_reflow() {
-                let new_base = self.grid.scrollback_len() as isize;
-                let last = reflow.lines.len() as isize - 1;
-                self.graphics.graphics_store.move_placements(|top| {
-                    let old = scrollback as isize + top;
-                    let line = if (0..=last).contains(&old) {
-                        reflow.follow(old as usize).map(|line| line as isize)
-                    } else {
-                        None
-                    };
-                    line.unwrap_or(old - reflow.trimmed as isize) - new_base
-                });
-            }
-        }
-
-        let place = |cursor: &mut Cursor, positions: &BufferPositions| {
-            cursor.col = positions.cursor_col;
-            cursor.row = positions.cursor_row;
-        };
-        if primary_active {
-            place(&mut self.cursor, &primary);
-            place(&mut self.alt_cursor, &alternate);
-        } else {
-            place(&mut self.alt_cursor, &primary);
-            place(&mut self.cursor, &alternate);
-        }
-        let active = if primary_active { &primary } else { &alternate };
-        if let Some(saved) = self.saved_state.saved_cursor.as_mut() {
-            saved.col = active.saved_col;
-            saved.row = active.saved_row;
-        }
-        self.pending_wrap = false;
-        primary.viewport_top
     }
 
     /// Check if synchronized updates mode is enabled
@@ -942,53 +833,20 @@ impl Terminal {
             let mut parser = std::mem::replace(&mut self.parser, vte::Parser::new());
             parser.advance(self, bytes);
             self.parser = parser;
-            self.flush_print_run();
             return;
         }
 
-        // The guard runs over the whole chunk before vte sees any of it.
-        // Outside an OSC every byte but ESC passes the guard untouched, so
-        // those runs are skipped with memchr; the bytes are copied only once
-        // the guard drops one (an over-cap OSC payload), and otherwise vte
-        // reads the chunk in place.
-        let mut kept: Option<Vec<u8>> = None;
-        let mut i = 0;
-        while i < bytes.len() {
-            let state = &self.security_state;
-            if !state.osc_in_osc && !state.osc_seen_esc {
-                let next = memchr_esc(&bytes[i..]).map_or(bytes.len(), |offset| i + offset);
-                if let Some(kept) = kept.as_mut() {
-                    kept.extend_from_slice(&bytes[i..next]);
-                }
-                i = next;
-                if i == bytes.len() {
-                    break;
-                }
+        let mut kept = std::mem::take(&mut self.osc_scratch);
+        kept.clear();
+        for &b in bytes {
+            if self.osc_guard_step(b) {
+                kept.push(b);
             }
-            let b = bytes[i];
-            let keep = self.osc_guard_step(b);
-            match (kept.as_mut(), keep) {
-                (Some(kept), true) => kept.push(b),
-                (None, false) => {
-                    let mut scratch = std::mem::take(&mut self.osc_scratch);
-                    scratch.clear();
-                    scratch.extend_from_slice(&bytes[..i]);
-                    kept = Some(scratch);
-                }
-                _ => {}
-            }
-            i += 1;
         }
         let mut parser = std::mem::replace(&mut self.parser, vte::Parser::new());
-        match kept {
-            Some(kept) => {
-                parser.advance(self, &kept);
-                self.osc_scratch = kept;
-            }
-            None => parser.advance(self, bytes),
-        }
+        parser.advance(self, &kept);
         self.parser = parser;
-        self.flush_print_run();
+        self.osc_scratch = kept;
     }
 
     /// One step of the SEC-003 incremental OSC guard. Updates the tracking
@@ -1320,50 +1178,6 @@ impl Terminal {
         self.conformance_level = self.host.configured_conformance_level;
         self.bell_volumes.warning = self.host.configured_warning_bell_volume;
         self.bell_volumes.margin = self.host.configured_margin_bell_volume;
-        self.grid
-            .set_compact_scrollback(self.host.compact_scrollback);
-        self.alt_grid
-            .set_compact_scrollback(self.host.compact_scrollback);
-    }
-
-    /// Store the lines entering the scrollback without their trailing
-    /// default cells, so a scrolled line costs time and memory in
-    /// proportion to its text instead of the screen width (see
-    /// [`Grid::set_compact_scrollback`]). Off by default; survives RIS.
-    pub fn set_compact_scrollback(&mut self, compact: bool) {
-        self.host.compact_scrollback = compact;
-        self.grid.set_compact_scrollback(compact);
-        self.alt_grid.set_compact_scrollback(compact);
-    }
-
-    /// Whether scrollback lines are stored compactly
-    /// ([`Terminal::set_compact_scrollback`]).
-    pub fn compact_scrollback(&self) -> bool {
-        self.host.compact_scrollback
-    }
-
-    /// Muxus patch: resize the screens the way xterm.js resizes its buffers
-    /// (`Grid::resize_xterm`): the primary screen and its scrollback reflow
-    /// as one buffer, so the cursor follows its line and lines come back
-    /// from the scrollback, and both screens drop the rows below the cursor
-    /// before the rows above it. Off by default; survives RIS.
-    pub fn set_xterm_resize(&mut self, on: bool) {
-        self.host.xterm_resize = on;
-    }
-
-    /// Muxus patch: where the last resize moved the primary screen's lines,
-    /// once ([`Grid::take_buffer_reflow`]; only with
-    /// [`Terminal::set_xterm_resize`]).
-    pub fn take_buffer_reflow(&mut self) -> Option<crate::grid::BufferReflow> {
-        self.grid.take_buffer_reflow()
-    }
-
-    /// Muxus patch: change the scrollback capacity of the primary screen
-    /// while the terminal runs (see [`Grid::set_max_scrollback`]); the
-    /// alternate screen keeps none.
-    pub fn set_max_scrollback(&mut self, max_scrollback: usize) {
-        self.sync_damage_generations();
-        self.grid.set_max_scrollback(max_scrollback);
     }
 
     /// Soft terminal reset (DECSTR, `CSI ! p`) per VT510.
@@ -1420,11 +1234,6 @@ impl Terminal {
 }
 
 mod perform;
-
-/// Offset of the first ESC byte in `bytes`.
-fn memchr_esc(bytes: &[u8]) -> Option<usize> {
-    memchr::memchr(0x1b, bytes)
-}
 
 #[cfg(test)]
 mod tests;
