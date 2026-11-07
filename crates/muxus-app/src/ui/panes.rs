@@ -577,10 +577,10 @@ impl AppShell {
             .items_stretch()
             .overflow_x_scroll()
             .track_scroll(&scroll)
-            .on_scroll_wheel({
+            .on_scroll({
                 let scroll = scroll.clone();
                 cx.listener(
-                    move |_, event: &muxus_ui::gpui_kit::ScrollWheelEvent, window, cx| {
+                    move |_, event: &muxus_ui::gpui_kit::ScrollEvent, window, cx| {
                         let delta = event.delta.pixel_delta(window.line_height());
                         let step = wheel_delta(
                             muxus_ui::zoom::unzoom(delta.x),

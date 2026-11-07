@@ -890,7 +890,7 @@ impl Render for SessionSidebar {
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .on_scroll_wheel(cx.listener(|this, _, _, cx| {
+            .on_scroll(cx.listener(|this, _, _, cx| {
                 if this.sync_window() {
                     cx.notify();
                 }

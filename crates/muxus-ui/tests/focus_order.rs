@@ -63,7 +63,7 @@ impl Render for Scene {
     }
 }
 
-fn press(cx: &mut VisualTestContext, keys: &str) {
+fn press(cx: &mut VisualTestContext, keys: &'static str) {
     for key in keys.split(' ') {
         cx.simulate_keystrokes(key);
         cx.simulate_event(KeyUpEvent {

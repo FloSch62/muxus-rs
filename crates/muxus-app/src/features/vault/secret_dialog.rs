@@ -348,7 +348,6 @@ impl Render for VaultSecretDialog {
                                 },
                             )
                             .medium()
-                            .edge_end()
                             .tooltip(if self.visible {
                                 "Hide secret"
                             } else {
@@ -358,7 +357,9 @@ impl Render for VaultSecretDialog {
                                 let _ =
                                     toggle.update(cx, |this, cx| this.toggle_visible(window, cx));
                             }),
-                        ),
+                        )
+                        // `edge="end"` on a medium button: -12px into the 14px padding.
+                        .end_edge(),
                 );
         }
         if !(self.revealed && editing) {
