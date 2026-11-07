@@ -84,7 +84,7 @@ CARGO_TARGET_DIR=target-core cargo test -p muxus-store --test vault -- --ignored
 | Custom terminal schemes | client/src/terminal/custom-schemes.ts | done | stored shape, files and color arithmetic here; the conversion to a terminal theme is `muxus_term::custom_schemes` (`terminal.md`) |
 | Layout helpers | host-stats.ts, sidebar-width.ts, sftp-panel-width.ts, interface-zoom.ts | done | |
 | Window placement files | electron/src/main.ts, window-placement.ts | done | |
-| HTTP routes | server/src/routes/* | missing | by design: route logic becomes `muxus_session::Backend` methods over this store |
+| HTTP routes | server/src/routes/* | n/a | by design: there is no HTTP server; each route's logic is a `muxus_session::Backend` method over this store (`crates/muxus-session/src/routes/`, see `session.md`) |
 | Plain-text session log files, recorder, normalizer | session-logging/{session-log-file,session-recorder,terminal-text-normalizer}.ts | done | in muxus-session, not the store: `muxus_session::logging::{log_file, recorder, normalizer}` (`session.md`) |
 
 ## Data compatibility evidence
