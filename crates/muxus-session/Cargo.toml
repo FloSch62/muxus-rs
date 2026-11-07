@@ -50,7 +50,7 @@ muxus-ssh = { workspace = true, features = ["testing"] }
 russh = "0.65.1"
 serialport = { version = "4.7", default-features = false }
 # The remote desktop tests run IronRDP's own server in process (same revision as muxus-rdp).
-ironrdp-server = { git = "https://github.com/Devolutions/IronRDP", rev = "d90284f5f28dc24bb39c78883521721de76bf52f", default-features = false }
+ironrdp-server = { git = "https://github.com/Devolutions/IronRDP", rev = "f1e218e58dc60c0579a8aba25e67077bf80be32b", default-features = false }
 bytes = "1"
 futures-lite = "2"
 rusqlite = { version = "0.41", features = ["bundled"] }

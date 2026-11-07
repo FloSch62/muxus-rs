@@ -20,12 +20,19 @@ Tight/ZRLE picture, remote resize 1920×1080 → 1280×720).
 
 ## IronRDP revision
 
-`muxus-rdp` uses IronRDP from git at `d90284f5f28dc24bb39c78883521721de76bf52f` (head of IronRDP
-PR #2080: sspi 0.23, picky rc.26). The TypeScript build compiles `9b151c4c` to WebAssembly; that
-commit pins `picky =7.0.0-rc.25`, whose `curve25519-dalek =5.0.0-rc.1` cannot resolve next to
-russh. `d90284f5` is 50 commits ahead of `9b151c4c` and none behind, so it keeps the decoder
-fixes the TypeScript build pins for (bitmap stride, RDP6 orientation, bulk decompression), which
-the crates.io release 0.17.0 lacks. Do not move back to a revision that pins picky rc.25.
+`muxus-rdp` uses IronRDP from git at `f1e218e58dc60c0579a8aba25e67077bf80be32b` (master of
+2026-11-06: connector 0.12, session 0.13, sspi 0.23.1, picky rc.27). The TypeScript build compiles
+`9b151c4c` to WebAssembly; that commit pins `picky =7.0.0-rc.25`, whose
+`curve25519-dalek =5.0.0-rc.1` cannot resolve next to russh. `f1e218e5` is 269 commits ahead of
+`9b151c4c` and none behind, so it keeps the decoder fixes the TypeScript build pins for (bitmap
+stride, RDP6 orientation, bulk decompression), which the crates.io release 0.17.0 lacks. Do not
+move back to a revision that pins picky rc.25.
+
+Since the move from `d90284f5` (PR #2080) to `f1e218e5`: the client announces the same RDP version
+as before (`RdpVersion::V5_PLUS`) and no new optional Client Core Data; frames go to the session with
+their arrival time, so the session answers the server's bandwidth measurements; a Server
+Redirection (RD Connection Broker), which IronRDP used to reject as an unexpected PDU, is still not
+followed, during connection or later, and ends the connection with an error naming it.
 
 ## Status
 
