@@ -128,7 +128,9 @@ impl HostEditor {
                 None
             },
         );
-        let alias_help = if config_backed {
+        let alias_help = if let Some(helper) = self.range_helper() {
+            helper
+        } else if config_backed {
             match &primary {
                 Some(primary) => format!("Connect with: ssh {primary}"),
                 None => "The name you connect as — also works in any terminal".into(),

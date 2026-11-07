@@ -921,3 +921,76 @@ fn preview_double_quotes_paths_containing_whitespace_or_apostrophes() {
         Some(aliases(&[windows_key, apostrophe_key]))
     );
 }
+
+// --- createHosts ---
+
+fn host(alias: &str) -> HostUpsertRequest {
+    HostUpsertRequest {
+        aliases: vec![alias.into()],
+        options: HostBlockOptions {
+            hostname: Some(format!("{alias}.corp.local")),
+            ..Default::default()
+        },
+        description: None,
+        file: None,
+        previous_alias: None,
+    }
+}
+
+fn backup(root: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.muxus.bak", path_string(root)))
+}
+
+#[test]
+fn create_hosts_appends_every_block_and_writes_the_file_once() {
+    let h = Homes::new();
+    let original = lines(&["Host app1", "  HostName app1.corp.local", ""]);
+    let root = h.seed(&original);
+
+    assert_eq!(
+        create_hosts(&[host("app2"), host("app3"), host("app4")], &root, &h.env).unwrap(),
+        3
+    );
+
+    let written = read(&root);
+    assert!(written.contains("Host app2\n  HostName app2.corp.local"));
+    assert!(written.find("Host app2").unwrap() < written.find("Host app4").unwrap());
+    // The backup predates the whole save.
+    assert_eq!(read(&backup(&root)), original);
+}
+
+#[test]
+fn create_hosts_writes_nothing_when_one_alias_already_exists() {
+    let h = Homes::new();
+    let original = lines(&["Host app3", "  HostName app3.corp.local", ""]);
+    let root = h.seed(&original);
+
+    let err = create_hosts(&[host("app2"), host("app3")], &root, &h.env).unwrap_err();
+    assert!(
+        err.message.contains("app3") && err.message.contains("already exists"),
+        "{}",
+        err.message
+    );
+    assert_eq!(read(&root), original);
+    assert!(!backup(&root).exists());
+}
+
+#[test]
+fn create_hosts_refuses_an_alias_named_twice_and_edits_of_existing_hosts() {
+    let h = Homes::new();
+    let root = h.seed("");
+    let twice = create_hosts(&[host("app2"), host("app2")], &root, &h.env).unwrap_err();
+    assert!(twice.message.contains("twice"), "{}", twice.message);
+    let edit = create_hosts(
+        &[HostUpsertRequest {
+            previous_alias: Some("app1".into()),
+            ..host("app2")
+        }],
+        &root,
+        &h.env,
+    )
+    .unwrap_err();
+    assert!(edit.message.contains("only creates"), "{}", edit.message);
+    let none = create_hosts(&[], &root, &h.env).unwrap_err();
+    assert!(none.message.contains("no hosts"), "{}", none.message);
+}
