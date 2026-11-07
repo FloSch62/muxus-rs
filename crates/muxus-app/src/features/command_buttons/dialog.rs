@@ -283,14 +283,13 @@ impl CommandButtonsDialog {
         input
     }
 
-    /// A multi-line field for `key` that grows from one row to `max_rows` and scrolls after
-    /// (`multiline maxRows`), created with `value` the first time.
+    /// A multi-line field for `key` that grows from one row to three and scrolls after
+    /// (`multiline maxRows={3}`), created with `value` the first time.
     fn textarea(
         &mut self,
         key: String,
         value: &str,
         placeholder: &str,
-        max_rows: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
         apply: impl Fn(&str, &mut App) + 'static,
@@ -302,7 +301,7 @@ impl CommandButtonsDialog {
         let placeholder = placeholder.to_owned();
         let input = cx.new(|cx| {
             let mut state = TextareaState::new(window, cx)
-                .auto_grow(1, max_rows)
+                .auto_grow(1, 3)
                 .placeholder(placeholder);
             state.set_value(value, window, cx);
             state
@@ -932,7 +931,6 @@ impl CommandButtonsDialog {
                 format!("command:{id}"),
                 &button.command,
                 "systemctl status nginx",
-                3,
                 window,
                 cx,
                 move |value, cx| {
