@@ -23,6 +23,7 @@
 //! 5. Windows set the Wayland app id / X11 class to [`APP_ID`], so the desktop file and its
 //!    icon belong to them.
 
+pub mod app_menu;
 pub mod events;
 pub mod launch;
 pub mod links_view;
