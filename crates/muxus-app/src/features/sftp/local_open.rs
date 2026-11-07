@@ -145,6 +145,79 @@ fn private_dir(path: &Path) -> std::io::Result<()> {
 
 /// Create an owner-only folder under `root` and an empty file named after the remote one.
 pub fn create_local_copy(root: &Path, name: &str) -> std::io::Result<LocalCopy> {
+    let directory = private_copy_directory(root)?;
+    let file = directory.join(local_copy_file_name(name));
+    match create_private_file(&file) {
+        Ok(handle) => Ok(LocalCopy {
+            directory,
+            file,
+            handle,
+        }),
+        Err(error) => {
+            let _ = fs::remove_dir_all(&directory);
+            Err(error)
+        }
+    }
+}
+
+/// A local copy still being written: the data goes to a hidden file beside the copy, which
+/// takes the copy's name only once it is complete, so nobody can read half of it.
+pub struct PendingLocalCopy {
+    pub directory: PathBuf,
+    /// Where the copy will be.
+    pub file: PathBuf,
+    part: PathBuf,
+    pub handle: File,
+}
+
+impl PendingLocalCopy {
+    /// The data is all there: the copy appears under its name.
+    pub fn finish(self) -> std::io::Result<PathBuf> {
+        drop(self.handle);
+        fs::rename(&self.part, &self.file)?;
+        Ok(self.file)
+    }
+
+    /// The copy will not be completed: nothing of it stays.
+    pub fn discard(self) {
+        drop(self.handle);
+        let _ = fs::remove_dir_all(&self.directory);
+    }
+}
+
+/// Like [`create_local_copy`], but the copy's name stays free until [`PendingLocalCopy::finish`].
+pub fn create_pending_local_copy(root: &Path, name: &str) -> std::io::Result<PendingLocalCopy> {
+    let directory = private_copy_directory(root)?;
+    let file_name = local_copy_file_name(name);
+    let file = directory.join(&file_name);
+    let part = directory.join(format!(".{file_name}.part"));
+    match create_private_file(&part) {
+        Ok(handle) => Ok(PendingLocalCopy {
+            directory,
+            file,
+            part,
+            handle,
+        }),
+        Err(error) => {
+            let _ = fs::remove_dir_all(&directory);
+            Err(error)
+        }
+    }
+}
+
+fn create_private_file(file: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(file)
+}
+
+/// A new owner-only folder under the owner-only `root`.
+fn private_copy_directory(root: &Path) -> std::io::Result<PathBuf> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
@@ -164,26 +237,7 @@ pub fn create_local_copy(root: &Path, name: &str) -> std::io::Result<LocalCopy> 
     }
     #[cfg(not(unix))]
     fs::create_dir_all(root)?;
-    let directory = make_temp_dir(root)?;
-    let file = directory.join(local_copy_file_name(name));
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    match options.open(&file) {
-        Ok(handle) => Ok(LocalCopy {
-            directory,
-            file,
-            handle,
-        }),
-        Err(error) => {
-            let _ = fs::remove_dir_all(&directory);
-            Err(error)
-        }
-    }
+    make_temp_dir(root)
 }
 
 /// `mkdtemp(root/open-)`.
@@ -762,6 +816,26 @@ mod tests {
             assert_eq!(mode(&first.directory) & 0o777, 0o700);
             assert_eq!(mode(&first.file) & 0o077, 0);
         }
+    }
+
+    #[test]
+    fn names_a_pending_copy_only_once_it_is_complete() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().join("muxus-open");
+        let mut pending = create_pending_local_copy(&root, "report.pdf").unwrap();
+        let file = pending.file.clone();
+        assert_eq!(file.file_name().unwrap(), "report.pdf");
+        pending.handle.write_all(b"half").unwrap();
+        // Offered already, but not there until the data is.
+        assert!(!file.exists());
+        pending.handle.write_all(b" and the rest").unwrap();
+        assert_eq!(pending.finish().unwrap(), file);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "half and the rest");
+        assert_eq!(fs::read_dir(file.parent().unwrap()).unwrap().count(), 1);
+        let abandoned = create_pending_local_copy(&root, "x.bin").unwrap();
+        let directory = abandoned.directory.clone();
+        abandoned.discard();
+        assert!(!directory.exists());
     }
 
     #[cfg(unix)]
