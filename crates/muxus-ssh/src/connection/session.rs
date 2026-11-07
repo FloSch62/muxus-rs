@@ -35,6 +35,26 @@ impl SessionSettings {
     }
 }
 
+/// A session into a container, pod or console runs that command on the host instead of the
+/// login shell (or a configured RemoteCommand), always with a terminal, the way
+/// `ssh -t host docker exec -it …` would (`environmentSession`).
+pub fn environment_session(
+    settings: SessionSettings,
+    profile: &super::profile::SshProfile,
+) -> SessionSettings {
+    let Some(target) = &profile.environment else {
+        return settings;
+    };
+    let Ok(command) = muxus_core::environments::environment_command_line(target) else {
+        return settings;
+    };
+    SessionSettings {
+        remote_command: Some(command),
+        request_tty: Some(RequestTty::Force),
+        ..settings
+    }
+}
+
 /// RequestTTY the way ssh(1) treats it: auto ⇒ a tty only for plain shells.
 pub fn wants_pty(request_tty: Option<RequestTty>, has_command: bool) -> bool {
     match request_tty {

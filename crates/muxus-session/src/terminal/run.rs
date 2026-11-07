@@ -1024,7 +1024,10 @@ impl Session {
             });
         }
         self.answer_breaks(&link);
+        // A host's login sequence answers the host's own prompts; a container or
+        // console session never shows them.
         let login_host = match &profile.profile_id {
+            _ if profile.environment.is_some() => None,
             Some(id) => Some(LoginSequenceHost::Profile(id.clone())),
             None => shared
                 .connections

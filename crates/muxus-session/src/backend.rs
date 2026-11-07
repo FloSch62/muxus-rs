@@ -209,6 +209,8 @@ pub(crate) struct Shared {
     pub terminal_inputs: TerminalInputs,
     pub sessions: SessionRegistry,
     pub host_stats: SharedReadings,
+    /// Container and VM discoveries in progress (`routes/environments.ts`'s `inFlight`).
+    pub environments: crate::environments::InFlight,
     pub diagnostic_probes: Arc<dyn DiagnosticProbes>,
     pub update_check: Mutex<Arc<tokio::sync::OnceCell<muxus_core::api::UpdateCheckResult>>>,
     closed: AtomicBool,
@@ -467,6 +469,7 @@ impl Parts {
             terminal_inputs: TerminalInputs::default(),
             sessions: SessionRegistry::default(),
             host_stats: SharedReadings::new(),
+            environments: Default::default(),
             diagnostic_probes: self.diagnostic_probes,
             update_check: Mutex::new(Arc::new(tokio::sync::OnceCell::new())),
             closed: AtomicBool::new(false),

@@ -816,3 +816,69 @@ async fn runs_a_command_and_collects_its_output_and_exit_status() {
     assert_eq!(out.exit_status, Some(0));
     assert!(!out.timed_out);
 }
+
+/// `environment sessions over SSH` of tests/unit/server/environments.test.ts.
+#[test]
+fn an_environment_session_runs_the_target_instead_of_the_login_shell_with_a_terminal() {
+    use crate::connection::session::{SessionSettings, environment_session};
+    use crate::types::RequestTty;
+    use muxus_core::environments::{ContainerRuntime, ContainerShell, EnvironmentTarget};
+    let profile = SshProfile {
+        environment: Some(EnvironmentTarget::Container {
+            runtime: ContainerRuntime::Docker,
+            container: "web".into(),
+            shell: Some(ContainerShell::Sh),
+        }),
+        ..SshProfile::new("build-01")
+    };
+    let env = std::collections::BTreeMap::from([("LANG".to_string(), "C".to_string())]);
+    let settings = SessionSettings {
+        env: Some(env.clone()),
+        remote_command: Some("tmux".into()),
+        request_tty: Some(RequestTty::Auto),
+        forward_x11: None,
+    };
+    assert_eq!(
+        environment_session(settings.clone(), &profile),
+        SessionSettings {
+            env: Some(env),
+            remote_command: Some("docker exec -it -e TERM=xterm-256color web sh".into()),
+            request_tty: Some(RequestTty::Force),
+            forward_x11: None,
+        }
+    );
+    assert_eq!(
+        environment_session(settings.clone(), &SshProfile::new("build-01")),
+        settings
+    );
+}
+
+/// `takes connection settings from the saved host and the environment from the session`.
+#[test]
+fn a_saved_host_keeps_the_environment_its_session_asked_for() {
+    use muxus_core::environments::EnvironmentTarget;
+    let sandbox = Sandbox::new();
+    let mut options = sandbox.options();
+    options.saved_ssh_profile = Some(std::sync::Arc::new(|id: &str| {
+        (id == "muxus-ssh-pve").then(|| SshProfile {
+            profile_id: Some("muxus-ssh-pve".into()),
+            use_config: Some(false),
+            user: Some("root".into()),
+            ..SshProfile::new("pve.example.test")
+        })
+    }));
+    let manager = SshConnectionManager::new(options);
+    let resolved = manager
+        .resolve_profile(&SshProfile {
+            profile_id: Some("muxus-ssh-pve".into()),
+            environment: Some(EnvironmentTarget::ProxmoxLxc { vmid: 200 }),
+            ..SshProfile::new("stale-target")
+        })
+        .unwrap();
+    assert_eq!(resolved.target, "pve.example.test");
+    assert_eq!(resolved.user.as_deref(), Some("root"));
+    assert_eq!(
+        resolved.environment,
+        Some(EnvironmentTarget::ProxmoxLxc { vmid: 200 })
+    );
+}

@@ -103,6 +103,37 @@ fn plans_the_environment_of_a_local_shell() {
     assert!(plan.env["ZDOTDIR"].ends_with("shell-integration/zsh"));
 }
 
+/// A container, pod or console session runs its tool directly, without shell integration.
+#[test]
+fn enters_a_container_instead_of_starting_a_shell() {
+    use muxus_core::environments::{ContainerRuntime, ContainerShell, EnvironmentTarget};
+    let home = tempfile::tempdir().unwrap();
+    let mut environment = scratch_environment(home.path());
+    environment
+        .vars
+        .insert("ZDOTDIR".into(), "/home/u/.config/zsh".into());
+    let plan = plan_local_pty(
+        &LocalProfile {
+            shell: Some("/bin/zsh".into()),
+            environment: Some(EnvironmentTarget::Container {
+                runtime: ContainerRuntime::Docker,
+                container: "web".into(),
+                shell: Some(ContainerShell::Sh),
+            }),
+            ..LocalProfile::default()
+        },
+        &environment,
+    );
+    assert_eq!(plan.program, "docker");
+    assert_eq!(
+        plan.args,
+        ["exec", "-it", "-e", "TERM=xterm-256color", "web", "sh"]
+    );
+    assert_eq!(plan.env["TERM"], "xterm-256color");
+    assert!(!plan.env.contains_key("MUXUS_USER_ZDOTDIR"));
+    assert_eq!(plan.env["ZDOTDIR"], "/home/u/.config/zsh");
+}
+
 struct Collected {
     output: String,
     exit: Option<TransportEvent>,

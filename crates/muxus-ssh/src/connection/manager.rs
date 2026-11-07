@@ -25,8 +25,8 @@ use super::leases::{
 };
 use super::profile::SshProfile;
 use super::session::{
-    ChannelError, SessionChannel, SessionRequest, SessionSettings, open_session, probe_command,
-    terminal_pty_options, wants_pty,
+    ChannelError, SessionChannel, SessionRequest, SessionSettings, environment_session,
+    open_session, probe_command, terminal_pty_options, wants_pty,
 };
 use super::transport::{
     AgentForwarding, BoxedStream, ConnectError, ConnectErrorKind, DialContext, HandshakeFacts,
@@ -138,6 +138,10 @@ pub struct ManagedConnection {
     config_forwards: Mutex<Vec<ConfigForward>>,
     replacement_token: Mutex<Option<String>>,
     superseded: AtomicBool,
+    /// The server ran the shell probe, so it runs commands at all (`ShellProbeMemo.ranCommand`).
+    /// Automatic commands (container discovery) ask only such hosts: some network devices drop
+    /// the whole connection when a second channel asks to exec.
+    ran_command: AtomicBool,
     health: watch::Receiver<TransportHealth>,
     closed: watch::Receiver<bool>,
     ending: AtomicBool,
@@ -219,6 +223,12 @@ impl ManagedConnection {
     /// Force-close the transport, regardless of active leases.
     pub fn close(&self) {
         LeaseableConnection::close(self);
+    }
+
+    /// Whether the server has run a command on this transport (the shell probe printed its
+    /// marker): hosts that never did, such as router CLIs, are not asked automatically.
+    pub fn ran_command(&self) -> bool {
+        self.ran_command.load(Ordering::SeqCst)
     }
 
     /// Current passive keepalive health of the transport (any hop of its route).
@@ -525,14 +535,22 @@ impl RemoteShellHost for ConnectionShellHost<'_> {
     type Sftp = ConnectionSftp;
 
     async fn probe(&self, command: &str) -> Result<String, String> {
-        probe_command(
+        let output = probe_command(
             &self.conn.transport.handle,
             command,
             PROBE_TIMEOUT,
             MAX_PROBE_OUTPUT,
         )
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        // Any shell printed the marker, even one Muxus does not integrate.
+        if output
+            .split('\n')
+            .any(|line| line.starts_with("__MUXUS_SHELL__="))
+        {
+            self.conn.ran_command.store(true, Ordering::SeqCst);
+        }
+        Ok(output)
     }
 
     async fn sftp(&self) -> Result<ConnectionSftp, String> {
@@ -812,10 +830,12 @@ impl SshConnectionManager {
         // Connection fields come from the database. The keepalive fallback is an application
         // preference supplied by the current UI, so the wire value always wins (including its
         // absence), which must clear anything a client stored. So does a link's host key
-        // fingerprint, which only tightens verification.
+        // fingerprint, which only tightens verification, and the container or console a
+        // session enters, which is the session's own choice rather than a connection setting.
         Ok(SshProfile {
             keepalive_interval_seconds: profile.keepalive_interval_seconds,
             host_key_fingerprint: profile.host_key_fingerprint.clone(),
+            environment: profile.environment.clone(),
             ..saved
         })
     }
@@ -1068,7 +1088,10 @@ impl SshConnectionManager {
         let lease = self
             .connect(profile, io.clone(), ConnectionLeaseOwner::Terminal, opts)
             .await?;
-        let settings = SessionSettings::from_resolved(&lease.target.resolved);
+        let settings = environment_session(
+            SessionSettings::from_resolved(&lease.target.resolved),
+            profile,
+        );
         let shell = lease
             .connection()
             .clone()
@@ -1118,7 +1141,10 @@ impl SshConnectionManager {
                         },
                     )
                     .await?;
-                let settings = SessionSettings::from_resolved(&dedicated.target.resolved);
+                let settings = environment_session(
+                    SessionSettings::from_resolved(&dedicated.target.resolved),
+                    profile,
+                );
                 match dedicated
                     .connection()
                     .clone()
@@ -1184,7 +1210,10 @@ impl SshConnectionManager {
                 },
             )
             .await?;
-        let settings = SessionSettings::from_resolved(&compatible.target.resolved);
+        let settings = environment_session(
+            SessionSettings::from_resolved(&compatible.target.resolved),
+            profile,
+        );
         match compatible
             .connection()
             .clone()
@@ -1527,6 +1556,7 @@ impl SshConnectionManager {
             target,
             replacement_token: Mutex::new(None),
             superseded: AtomicBool::new(false),
+            ran_command: AtomicBool::new(false),
             health: health_rx,
             closed: closed_rx,
             ending: AtomicBool::new(false),
