@@ -264,6 +264,14 @@ impl Render for ActionBar {
                 };
             let tooltip =
                 button_tooltip(&button, secret.map(|secret| secret.name.as_str()), missing);
+            // `withChord`: the shortcut that runs the button, after what it sends.
+            let tooltip = match crate::keymap::command_buttons::command_button_shortcut(&button) {
+                Some(shortcut) => format!(
+                    "{tooltip} · {}",
+                    crate::keymap::chords::format_chord_string(shortcut)
+                ),
+                None => tooltip,
+            };
             let mut element = Button::new(("command-button", index), command_button_label(&button))
                 .outlined()
                 .min_width(0.)

@@ -792,6 +792,7 @@ fn category_key(category: crate::keymap::commands::CommandCategory) -> &'static 
         CommandCategory::Tabs => "tabs",
         CommandCategory::Terminal => "terminal",
         CommandCategory::App => "app",
+        CommandCategory::Buttons => "buttons",
     }
 }
 
