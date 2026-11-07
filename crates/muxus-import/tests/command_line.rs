@@ -377,3 +377,71 @@ fn excludes_sftp_only_and_settings_windows_from_launch_request_delivery() {
         }
     )));
 }
+
+#[test]
+fn takes_a_value_starting_with_two_dashes_only_after_equals_as_generated_ids_may() {
+    assert_eq!(
+        parse_command_line_launch(&["muxus", "--host=--F3kq9Xr2LmT8vB1nZaQ"]),
+        host("--F3kq9Xr2LmT8vB1nZaQ")
+    );
+    assert_eq!(
+        parse_command_line_launch(&["muxus", "--host", "--workspace", "Lab"]),
+        None
+    );
+}
+
+// desktop new window requests
+
+#[test]
+fn takes_new_window_without_a_value() {
+    assert_eq!(
+        parse_command_line_launch(&["muxus", "--new-window"]),
+        Some(CommandLineLaunch::NewWindow)
+    );
+    assert_eq!(
+        parse_command_line_launch(&[
+            "electron",
+            "/src/muxus/electron",
+            "--no-sandbox",
+            "--new-window"
+        ]),
+        Some(CommandLineLaunch::NewWindow)
+    );
+}
+
+#[test]
+fn new_window_counts_as_the_one_launch_target() {
+    assert_eq!(
+        parse_command_line_launch(&["muxus", "--new-window", "--host", "edge"]),
+        None
+    );
+    assert_eq!(
+        parse_command_line_launch(&["muxus", "ssh://edge", "--new-window"]),
+        None
+    );
+    assert_eq!(
+        parse_command_line_launch(&["muxus", "--host", "--new-window"]),
+        None
+    );
+    assert_eq!(
+        parse_command_line_launch(&["muxus", "--new-window", "--port", "22"]),
+        None
+    );
+}
+
+#[test]
+fn revalidates_a_forwarded_new_window_request() {
+    assert_eq!(
+        parse_command_line_launch_data(&json!({ "kind": "new-window" })),
+        Some(CommandLineLaunch::NewWindow)
+    );
+    assert_eq!(
+        parse_command_line_launch_data(&json!({ "kind": "new-window", "name": "--host=edge" })),
+        Some(CommandLineLaunch::NewWindow)
+    );
+    // The request travels as `{ "kind": "new-window" }`, as the TypeScript one does.
+    assert_eq!(
+        serde_json::to_value(CommandLineLaunch::NewWindow).unwrap(),
+        json!({ "kind": "new-window" })
+    );
+}

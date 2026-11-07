@@ -65,6 +65,46 @@ pub fn traffic_light_inset(window: &Window) -> Option<f32> {
     (cfg!(target_os = "macos") && !window.is_fullscreen()).then_some(80.)
 }
 
+/// Left inset of the macOS traffic lights.
+const TRAFFIC_LIGHT_X: f32 = 16.;
+/// Height of the native button frame the macOS traffic lights are drawn in.
+const TRAFFIC_LIGHT_HEIGHT: f32 = 16.;
+
+/// macOS traffic lights, vertically centered in a title bar of this on-screen height
+/// (`trafficLightPosition` in `electron/src/window-placement.ts`).
+pub fn traffic_light_position(title_bar_height: f32) -> (f32, f32) {
+    (
+        TRAFFIC_LIGHT_X,
+        ((title_bar_height - TRAFFIC_LIGHT_HEIGHT) / 2.).round(),
+    )
+}
+
+/// Keep the macOS traffic lights centered in a title bar `height` CSS pixels tall at the
+/// current interface scale: the focus-mode bar is shorter, and without this the buttons reach
+/// its bottom border. Only a change goes to the window. Elsewhere this does nothing.
+pub fn place_traffic_lights(window: &mut Window, height: f32) {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    thread_local! {
+        static PLACED: std::cell::RefCell<HashMap<WindowId, (f32, f32)>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+    let position = traffic_light_position(crate::zoom::css(height).round());
+    let id = window.window_handle().window_id();
+    let changed = PLACED.with(|placed| placed.borrow_mut().insert(id, position) != Some(position));
+    // GPUI only has the call on macOS.
+    #[cfg(target_os = "macos")]
+    if changed {
+        window.set_traffic_light_position(point(
+            crate::zoom::window_px(position.0),
+            crate::zoom::window_px(position.1),
+        ));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = changed;
+}
+
 use crate::color::alpha;
 use crate::icon::icon;
 use crate::theme::ActiveTheme;
@@ -85,6 +125,22 @@ const FRAME_RADIUS: f32 = 8.;
 mod tests {
     use super::*;
     use gpui_kit::{Bounds, size};
+
+    #[test]
+    fn centers_the_traffic_lights_in_the_regular_title_bar() {
+        assert_eq!(traffic_light_position(52.), (16., 18.));
+    }
+
+    #[test]
+    fn keeps_the_traffic_lights_clear_of_the_border_in_the_compact_focus_mode_title_bar() {
+        assert_eq!(traffic_light_position(32.), (16., 8.));
+    }
+
+    #[test]
+    fn the_traffic_lights_follow_a_title_bar_scaled_by_the_interface_zoom() {
+        assert_eq!(traffic_light_position((52. * 1.5f32).round()), (16., 31.));
+        assert_eq!(traffic_light_position((32. * 0.5f32).round()), (16., 0.));
+    }
 
     #[test]
     fn app_windows_draw_their_own_frame() {

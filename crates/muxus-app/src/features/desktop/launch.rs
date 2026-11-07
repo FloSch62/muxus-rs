@@ -161,7 +161,7 @@ mod tests {
         assert_eq!(missing.action, PlannedAction::Fail);
         assert_eq!(
             missing.toast.as_deref(),
-            Some("No host named “nowhere” was found.")
+            Some("This host is no longer in Muxus. It may have been renamed or deleted.")
         );
 
         let link = block_on(plan_launch(
