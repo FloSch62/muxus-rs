@@ -251,18 +251,28 @@ impl AppShell {
                 })
                 .collect(),
         };
+        self.sidebar_writing(true, cx);
         cx.spawn(async move |this, cx| {
             let result = backend.put_host_order(request).await;
-            let _ = this.update(cx, |this, cx| match result {
-                Ok(()) => this.load_catalog(cx),
-                Err(error) => this.show_toast(
-                    Status::Error,
-                    format!("Could not save the host order: {}", error.message),
-                    cx,
-                ),
+            let _ = this.update(cx, |this, cx| {
+                this.sidebar_writing(false, cx);
+                match result {
+                    Ok(()) => this.load_catalog(cx),
+                    Err(error) => this.show_toast(
+                        Status::Error,
+                        format!("Could not save the host order: {}", error.message),
+                        cx,
+                    ),
+                }
             });
         })
         .detach();
+    }
+
+    /// Reordering waits while an order or folder write is on its way.
+    fn sidebar_writing(&mut self, writing: bool, cx: &mut Context<Self>) {
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.set_writing(writing, cx));
     }
 
     /// Reorder a host among its siblings (folders are always alphabetical).
@@ -407,18 +417,23 @@ impl AppShell {
             cx.notify();
         });
         let (path, label) = (path.to_string(), label.to_string());
+        let writing = !moves.is_empty();
+        if writing {
+            self.sidebar_writing(true, cx);
+        }
         cx.spawn(async move |this, cx| {
-            if !moves.is_empty() {
+            if writing {
                 let (_, failed) = services::apply_folder_moves(&backend, &moves).await;
-                if failed > 0 {
-                    let _ = this.update(cx, |this, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    this.sidebar_writing(false, cx);
+                    if failed > 0 {
                         this.show_toast(
                             Status::Error,
                             format!("Some hosts could not leave “{label}”."),
                             cx,
                         )
-                    });
-                }
+                    }
+                });
             }
             // Idempotent, and must not depend on folder settings having loaded.
             let _ = backend.delete_folder_settings(&path).await;
@@ -579,10 +594,14 @@ impl AppShell {
             SidebarAction::DeleteFolder { key, path, label } => {
                 self.request_delete_folder(key, path, label, window, cx)
             }
-            SidebarAction::LocalShellSettings => self.open_settings(
-                Some(SettingsTarget::section(SettingsSection::LocalShells)),
+            SidebarAction::LocalShellSettings { item } => self.open_settings(
+                Some(SettingsTarget {
+                    section: SettingsSection::LocalShells,
+                    item,
+                }),
                 cx,
             ),
+            SidebarAction::SaveWslProfile(profile) => self.save_wsl_shell_profile(&profile, cx),
             SidebarAction::Environments(request) => self.on_environments_request(request, cx),
         }
     }
@@ -607,10 +626,13 @@ impl AppShell {
         let Some(backend) = self.data.backend() else {
             return;
         };
+        self.sidebar_writing(true, cx);
         cx.spawn(async move |this, cx| {
             let (_, failed) = services::apply_folder_moves(&backend, &moves).await;
             let _ = this.update(cx, |this, cx| {
+                this.sidebar_writing(false, cx);
                 this.load_catalog(cx);
+                // Order is only meaningful once the hosts actually belong to the folder.
                 if failed == 0 {
                     this.commit_order(order, cx);
                 }
@@ -657,13 +679,17 @@ impl AppShell {
         if from == to {
             return;
         }
+        self.sidebar_writing(true, cx);
         cx.spawn(async move |this, cx| {
             if !moves.is_empty() {
                 services::apply_folder_moves(&backend, &moves).await;
             }
             // Idempotent: credentials must never be stranded on the old path.
             let _ = backend.move_folder_settings(&from, &to).await;
-            let _ = this.update(cx, |this, cx| this.load_catalog(cx));
+            let _ = this.update(cx, |this, cx| {
+                this.sidebar_writing(false, cx);
+                this.load_catalog(cx)
+            });
         })
         .detach();
     }

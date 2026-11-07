@@ -28,7 +28,7 @@ impl AppShell {
             tabs: self.tabs.tabs.clone(),
             active_id: self.tabs.active_id.clone(),
             shown_command_group: self.shown_command_group(cx),
-            wsl_shell_profiles: Vec::new(),
+            wsl_shell_profiles: self.sidebar.read(cx).wsl_shell_profiles(),
             workspaces: self.workspaces.clone(),
         }
     }

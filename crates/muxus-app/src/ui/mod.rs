@@ -33,8 +33,13 @@ mod shell_tests;
 mod shortcuts;
 mod sidebar;
 mod sidebar_dnd;
+mod sidebar_keys;
 mod sidebar_menus;
 mod sidebar_panel;
+mod sidebar_selection;
+mod sidebar_shells;
+#[cfg(test)]
+mod sidebar_tests;
 mod status_bar;
 mod tab_actions;
 mod terminal;

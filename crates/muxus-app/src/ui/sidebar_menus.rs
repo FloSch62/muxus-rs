@@ -9,6 +9,7 @@ use muxus_app::hosts::managed::{managed_host_copy_command, managed_host_supports
 use muxus_app::hosts::tree::{
     ContainerRef, TreeChild, all_containers, folder_siblings, sibling_host_keys,
 };
+use muxus_store::prefs::state::LocalShellProfileConfig;
 use muxus_ui::gpui_kit::{
     AnyElement, App, ClickEvent, ClipboardItem, Context, IntoElement, ParentElement, Pixels, Point,
     Window,
@@ -34,8 +35,13 @@ pub enum SidebarMenu {
     Panel {
         position: Point<Pixels>,
     },
+    /// Right-click on Local terminal, a saved shell profile or a WSL distribution.
     LocalShell {
         position: Point<Pixels>,
+        /// `None` for the Local terminal row, which opens the default shell.
+        profile: Option<LocalShellProfileConfig>,
+        /// An installed WSL distribution listed automatically, not a saved profile.
+        wsl: bool,
     },
 }
 
@@ -543,7 +549,9 @@ impl SessionSidebar {
                 (position, paper)
             }
             SidebarMenu::Panel { position } => {
-                let folder_edits = !self.filtering();
+                // Folder edits rewrite paths across hosts the filter may be hiding, so
+                // they are only offered against the full list.
+                let folder_edits = self.reorder_enabled();
                 let sortable = self.reorder_enabled() && self.tree.hosts.len() > 1;
                 let move_label = if self.on_right {
                     "Move sidebar to the left"
@@ -585,23 +593,51 @@ impl SessionSidebar {
                     );
                 (position, paper)
             }
-            SidebarMenu::LocalShell { position } => {
-                let paper = menu::paper(theme)
-                    .child(
-                        MenuItem::new("shell-open", "Open")
-                            .icon("Terminal")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.menu = None;
-                                cx.emit(SidebarEvent::OpenLocalTerminal);
-                                cx.notify();
-                            })),
-                    )
-                    .child(menu_divider(theme))
-                    .child(
-                        MenuItem::new("shell-settings", "Local shell settings…")
-                            .icon("SettingsOutlined")
-                            .on_click(Self::action(SidebarAction::LocalShellSettings, cx)),
+            SidebarMenu::LocalShell {
+                position,
+                profile,
+                wsl,
+            } => {
+                let open = profile.clone();
+                let mut paper = menu::paper(theme).child(
+                    MenuItem::new("shell-open", "Open")
+                        .icon("Terminal")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.menu = None;
+                            cx.emit(match &open {
+                                Some(profile) => SidebarEvent::OpenLocalShell(profile.clone()),
+                                None => SidebarEvent::OpenLocalTerminal,
+                            });
+                            cx.notify();
+                        })),
+                );
+                if wsl && let Some(profile) = &profile {
+                    paper = paper.child(
+                        MenuItem::new("shell-save", "Save as profile")
+                            .icon("BookmarkAddOutlined")
+                            .on_click(Self::action(
+                                SidebarAction::SaveWslProfile(profile.clone()),
+                                cx,
+                            )),
                     );
+                }
+                let paper = paper.child(menu_divider(theme)).child(
+                    MenuItem::new(
+                        "shell-settings",
+                        if wsl {
+                            "WSL settings…"
+                        } else {
+                            "Local shell settings…"
+                        },
+                    )
+                    .icon("SettingsOutlined")
+                    .on_click(Self::action(
+                        SidebarAction::LocalShellSettings {
+                            item: profile.map(|profile| profile.id),
+                        },
+                        cx,
+                    )),
+                );
                 (position, paper)
             }
         };
