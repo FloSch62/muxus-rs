@@ -1,6 +1,7 @@
 //! An in-process SSH server on 127.0.0.1:0 for client tests: configurable auth (password,
 //! public keys, keyboard-interactive rounds, multi-factor), shell/exec with pty, env recording,
-//! direct-tcpip to loopback targets, tcpip-forward, and an event log the tests assert on.
+//! RFC 4335 `break` answers, direct-tcpip to loopback targets, tcpip-forward, and an event log
+//! the tests assert on.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -17,6 +18,17 @@ pub struct KbdRound {
     pub instructions: String,
     pub prompts: Vec<(String, bool)>,
     pub answers: Vec<String>,
+}
+
+/// How the server answers an RFC 4335 `break` request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BreakAnswer {
+    /// `SSH_MSG_CHANNEL_SUCCESS`: the break was passed on.
+    Accept,
+    /// `SSH_MSG_CHANNEL_FAILURE`.
+    Refuse,
+    /// No reply at all, like a server that does not know the request.
+    Ignore,
 }
 
 /// What the server accepts and how it behaves.
@@ -43,6 +55,8 @@ pub struct ServerSpec {
     pub exec_output: Option<String>,
     /// Serve the `sftp` subsystem from this directory.
     pub sftp_root: Option<std::path::PathBuf>,
+    /// Answers to the `break` requests, in the order they arrive; accepted once these run out.
+    pub break_answers: Vec<BreakAnswer>,
 }
 
 impl Default for ServerSpec {
@@ -78,6 +92,7 @@ impl ServerSpec {
             disconnect_on_exec: false,
             exec_output: None,
             sftp_root: None,
+            break_answers: Vec::new(),
         }
     }
 
@@ -103,6 +118,8 @@ pub struct ServerLog {
     pub env: Vec<(String, String)>,
     pub ptys: Vec<PtyRecord>,
     pub execs: Vec<String>,
+    /// The length (ms) of every `break` request.
+    pub breaks: Vec<u32>,
     /// Live sessions, for dropping them all at once.
     pub sessions: Vec<russh::server::Handle>,
 }
@@ -125,6 +142,11 @@ impl TestServer {
 
     pub fn connections(&self) -> usize {
         self.log.lock().unwrap().connections
+    }
+
+    /// The length (ms) of every `break` request so far.
+    pub fn breaks(&self) -> Vec<u32> {
+        self.log.lock().unwrap().breaks.clone()
     }
 
     /// Auth attempts as `method:result`.
@@ -499,6 +521,30 @@ impl Handler for ServerHandler {
             session.exit_status_request(channel, 3)?;
             session.eof(channel)?;
             session.close(channel)?;
+        }
+        Ok(())
+    }
+
+    async fn break_request(
+        &mut self,
+        channel: ChannelId,
+        break_length_ms: u32,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let answer = {
+            let mut log = self.log.lock().unwrap();
+            log.events.push(format!("break {break_length_ms}"));
+            log.breaks.push(break_length_ms);
+            self.spec
+                .break_answers
+                .get(log.breaks.len() - 1)
+                .copied()
+                .unwrap_or(BreakAnswer::Accept)
+        };
+        match answer {
+            BreakAnswer::Accept => session.channel_success(channel)?,
+            BreakAnswer::Refuse => session.channel_failure(channel)?,
+            BreakAnswer::Ignore => {}
         }
         Ok(())
     }

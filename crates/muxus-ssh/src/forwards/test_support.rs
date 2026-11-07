@@ -123,9 +123,28 @@ impl Drop for Echo {
 }
 
 /// A loopback port nothing listens on right now.
+///
+/// It comes from below the kernels' ephemeral ranges (Linux 32768+, macOS and Windows
+/// 49152+): a port the kernel handed out for `127.0.0.1:0` could be handed to a test running
+/// alongside before the caller binds it again. Within the range, each call takes the next
+/// port after a random start, so two tests of one run never get the same port either.
 pub fn free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    probe.local_addr().unwrap().port()
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicU16, Ordering};
+
+    use rand::Rng;
+    const FIRST: u16 = 20_000;
+    const COUNT: u16 = 12_000;
+    static START: OnceLock<u16> = OnceLock::new();
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    let start = *START.get_or_init(|| rand::thread_rng().gen_range(0..COUNT));
+    loop {
+        let offset = NEXT.fetch_add(1, Ordering::Relaxed) % COUNT;
+        let port = FIRST + (start + offset) % COUNT;
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
 }
 
 /// Round-trip a line through a forwarded local port.

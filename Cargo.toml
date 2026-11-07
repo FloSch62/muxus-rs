@@ -49,6 +49,8 @@ codegen-units = 4
 strip = true
 
 # The terminal engine with the scrolling and printing hot paths reworked (see
-# docs/parity/terminal-perf.md).
+# docs/parity/terminal-perf.md), and russh with the RFC 4335 `break` channel request
+# (see vendor/russh/PATCHES.md).
 [patch.crates-io]
 par-term-emu-core = { path = "vendor/par-term-emu-core" }
+russh = { path = "vendor/russh" }
