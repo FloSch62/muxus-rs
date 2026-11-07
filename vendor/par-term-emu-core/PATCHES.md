@@ -1,7 +1,7 @@
 # Muxus patches to par-term-emu-core
 
-This is `par-term-emu-core` 0.79.0, the engine member of
-[par-term-emu-core-rust](https://github.com/paulrobello/par-term-emu-core-rust) 0.79.0 (MIT,
+This is `par-term-emu-core` 0.80.0, the engine member of
+[par-term-emu-core-rust](https://github.com/paulrobello/par-term-emu-core-rust) 0.80.0 (MIT,
 `LICENSE`), patched into the workspace through `[patch.crates-io]` in the root `Cargo.toml`.
 Three kinds of changes sit on top of the published crate:
 
@@ -14,9 +14,11 @@ Three kinds of changes sit on top of the published crate:
   its own processes, and the `pty_session` feature now stops the build) and the design notes
   (`DESIGN.md`).
 
-The git history keeps them apart: the commit "Vendor par-term-emu-core 0.79.0 as published"
-holds the crate as released (`Cargo.toml.orig` as `Cargo.toml`), and each commit after it that
-starts with "Engine:" is one patch.
+The git history keeps them apart: the commit "Vendor par-term-emu-core 0.80.0 as published"
+holds the crate as released, and each commit after it that starts with "Engine:" is one patch.
+The manifest is the crate's normalized `Cargo.toml` (what cargo builds from the registry): from
+0.80.0 on, `Cargo.toml.orig` inherits from upstream's workspace (`{ workspace = true }`), which
+does not resolve here.
 
 ## Scrollback size of a running terminal
 
@@ -39,7 +41,7 @@ scrollback.
 |---|---|
 | `src/graphics/mod.rs` | `GraphicsStore::remove_graphic_everywhere` removes an image from the placements and the scrollback. The limit itself is `muxus_term::terminal::Emulator::set_image_storage_limit`. |
 
-Upstream's store-wide placement budget (0.79.0, `enforce_placement_budget`, 256 MiB) is a
+Upstream's store-wide placement budget (since 0.79.0, `enforce_placement_budget`, 256 MiB) is a
 different rule: it drops scrollback images before visible ones instead of the oldest image,
 counts bytes per shared buffer, includes virtual placements and runs only when an image is
 added, where the addon also evicts when the limit shrinks. Muxus's limits (64 MB, 16 MB in the
@@ -49,7 +51,7 @@ background) are lower, so the engine's budget never triggers first.
 
 xterm.js keeps the scrollback and the screen in one list of lines and resizes that list as a
 whole (`Buffer.resize`, `_reflowLarger`, `_reflowSmaller`, `BufferReflow.ts`). The engine
-reflows the screen on its own (still so in 0.79.0): content stays top-aligned, the cursor keeps
+reflows the screen on its own (still so in 0.80.0): content stays top-aligned, the cursor keeps
 its row instead of its line, nothing comes back from the scrollback, and stored lines keep the
 width they scrolled off at. `src/grid/reflow.rs` ports xterm.js 6.1's code (MIT, Copyright (c)
 2017-2019 The xterm.js authors) statement by statement, edge cases included.
@@ -83,9 +85,20 @@ scrollback cell, and less to copy on every write and scroll.
 `docs/parity/terminal-perf.md` has the measurements (19–20% less resident memory for a filled
 scrollback, output as fast or faster).
 
-## Not carried over
+## Kept as upstream has it
 
-The 0.60.0 copy also removed the par-mux pane-roster notifications (`%agent-state-changed`,
+**OpenTelemetry (`src/otel.rs`, `src/otel/`, 0.80.0).** Always compiled, but without the
+engine's `otel` feature it is plain std: the `OtelProtocol` enum, an OTLP header parser and a
+stub `init` that returns `None`. Nothing in the engine calls it, it reads no environment and
+opens nothing. The SDK-backed provider and its dependencies (`opentelemetry`,
+`opentelemetry_sdk`, `opentelemetry-otlp` with tonic and reqwest) compile only with that
+feature, which Muxus never enables: `muxus-term` depends on `par-term-emu-core-rust` with
+default features off, and none of those crates are in the workspace's `Cargo.lock` (they are in
+this folder's own lockfile, which resolves every optional dependency for the standalone test
+run). Even with the feature on, metrics go out only from a binary that calls `init` with its
+own runtime switch on. So it stays unpatched.
+
+**The tmux parser's par-mux roster notifications.** The 0.60.0 copy also removed the par-mux pane-roster notifications (`%agent-state-changed`,
 `%agent-released`, `%agent-telemetry-changed`) from the tmux control-mode parser. Muxus never
 turns tmux control mode on, so they never ran, and 0.79.0 split the parser into
 `src/tmux_control/` with more par-mux extensions; cutting them again would be a re-port on every
@@ -96,11 +109,11 @@ update for no change in behaviour, so the parser is upstream's.
 1. Download the new release of `par-term-emu-core` (for example `cargo fetch` in a scratch crate
    that depends on `par-term-emu-core = "=X.Y.Z"`).
 2. Commit it as published: replace everything in this folder but `LICENSE`, `PATCHES.md` and
-   `.gitignore` with the crate's `src`, `proptest-regressions`, `DESIGN.md` and `Cargo.lock`,
-   and its `Cargo.toml.orig` as `Cargo.toml` (when that manifest inherits from upstream's
-   workspace, `{ workspace = true }`, take the crate's normalized `Cargo.toml` instead).
+   `.gitignore` with the crate's `src`, `proptest-regressions`, `DESIGN.md`, `Cargo.lock` and
+   normalized `Cargo.toml`.
 3. Cherry-pick the "Engine:" commits that follow the previous "as published" commit, oldest
-   first, resolving conflicts (`git log --oneline -- vendor/par-term-emu-core` lists them).
+   first, resolving conflicts (`git log --oneline -- vendor/par-term-emu-core` lists them). The
+   manifest edits (`memchr` in; `portable-pty` and the readme out) go in by hand.
 4. Run the engine's tests from a copy outside the workspace with its own `[workspace]` table
    (not under `/tmp`: two kitty file tests refuse it), update its `Cargo.lock` from that copy,
    then pin `par-term-emu-core-rust` in `crates/muxus-term/Cargo.toml` to the same version and

@@ -17,7 +17,7 @@ Tests: `cargo test -p muxus-term -p muxus-term-view` (357 + 19; the view's point
 
 ## Emulator decisions
 
-`par-term-emu-core-rust` (=0.79.0, default features off) is the engine. Muxus-specific and
+`par-term-emu-core-rust` (=0.80.0, default features off) is the engine. Muxus-specific and
 xterm-specific behaviour sits in `muxus_term::filter::StreamFilter`, a streaming pre-parser that
 splits the output at the sequences Muxus handles itself:
 
