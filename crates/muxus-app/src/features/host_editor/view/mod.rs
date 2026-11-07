@@ -15,6 +15,7 @@ mod ssh;
 pub mod ssh_access;
 mod system_openssh;
 mod terminal;
+mod web;
 
 pub use terminal::{custom_schemes, scheme_select, terminal_color_defaults};
 
@@ -52,6 +53,9 @@ use super::logic::native_draft::{
     native_draft_problem,
 };
 use super::logic::session_logging::{HostSessionLoggingDraft, host_session_logging_draft};
+use super::logic::web_draft::{
+    WebHostDraft, blank_web_draft, web_draft_from_profile, web_draft_problem,
+};
 use super::services::{self, ConnectTarget, EditorData};
 use super::widgets::inputs::{InputCache, Menus};
 use super::widgets::shell::{SectionTab, ShellProps, confirm_paper, editor_shell};
@@ -163,6 +167,7 @@ pub struct HostEditor {
     pub(super) native: NativeHostDraft,
     pub(super) desktop: DesktopHostDraft,
     pub(super) management: ManagementHostDraft,
+    pub(super) web: WebHostDraft,
     pub(super) section: Section,
     pub(super) data: EditorData,
     pub(super) data_loaded: bool,
@@ -291,6 +296,7 @@ impl HostEditor {
             native: NativeHostDraft::default(),
             desktop: DesktopHostDraft::default(),
             management: ManagementHostDraft::default(),
+            web: WebHostDraft::default(),
             section: Section::General,
             data: EditorData::default(),
             data_loaded: false,
@@ -344,6 +350,7 @@ impl HostEditor {
                 self.native = blank_native_draft(prefill, group);
                 self.desktop = blank_desktop_draft(prefill, group);
                 self.management = blank_management_draft(prefill, group);
+                self.web = blank_web_draft(prefill, group, new.prefill_gateway.clone());
                 if let Some(name) = &new.prefill_name
                     && !name.is_empty()
                 {
@@ -372,6 +379,9 @@ impl HostEditor {
                         }
                         if let Some(draft) = management_draft_from_profile(entry, duplicate) {
                             self.management = draft;
+                        }
+                        if let Some(draft) = web_draft_from_profile(entry, duplicate) {
+                            self.web = draft;
                         }
                     }
                 }
@@ -578,8 +588,7 @@ impl HostEditor {
             SavedHostKind::Gnmi | SavedHostKind::Netconf => {
                 management_draft_problem(&self.management, self.management_kind())
             }
-            // The web page editor is not built yet; nothing to save.
-            SavedHostKind::Web => Some("Web pages cannot be edited here yet.".to_owned()),
+            SavedHostKind::Web => web_draft_problem(&self.web),
         }
     }
 
@@ -817,7 +826,15 @@ impl HostEditor {
                 }
                 sections
             }
-            SavedHostKind::Web => vec![tab(Section::General, "General", "PublicOutlined", None)],
+            SavedHostKind::Web => vec![
+                tab(Section::General, "General", "PublicOutlined", None),
+                tab(
+                    Section::Route,
+                    "Connection route",
+                    "AltRoute",
+                    self.web.ssh_gateway.as_ref().map(|_| 1),
+                ),
+            ],
         }
     }
 
@@ -936,6 +953,7 @@ impl HostEditor {
                 let native = (self.native.clone(), self.native_kind());
                 let desktop = (self.desktop.clone(), self.desktop_kind());
                 let management = (self.management.clone(), self.management_kind());
+                let web = self.web.clone();
                 let task = cx.spawn(async move |this, cx| {
                     let result = match kind {
                         SavedHostKind::Telnet | SavedHostKind::Serial => {
@@ -955,6 +973,9 @@ impl HostEditor {
                                 existing.as_deref(),
                             )
                             .await
+                        }
+                        SavedHostKind::Web => {
+                            services::save_web_host(&backend, &web, existing.as_deref()).await
                         }
                         _ => {
                             services::save_management_host(
@@ -1072,8 +1093,10 @@ impl HostEditor {
                 Section::Options => self.management_options(window, cx),
                 _ => self.management_general(window, cx),
             },
-            // The web page editor is not built yet.
-            SavedHostKind::Web => div().into_any_element(),
+            SavedHostKind::Web => match section {
+                Section::Route => self.web_route(window, cx),
+                _ => self.web_general(window, cx),
+            },
         }
     }
 }

@@ -12,7 +12,7 @@ use muxus_app::features::launcher::{
     HostPickerEvent, LauncherContext, LauncherEvent, open_host_picker, open_quick_launcher,
 };
 use muxus_app::model::SessionProfile;
-use muxus_app::state::session_actions::{connect_managed_host, connect_target};
+use muxus_app::state::session_actions::connect_target;
 use muxus_core::api::TunnelRecord;
 use muxus_ui::gpui_kit::{Context, Pixels, Point, Window};
 use muxus_ui::theme::Status;
@@ -72,7 +72,7 @@ impl AppShell {
                 self.tabs.activate_editor(&tab_id, &path);
             }
             LauncherEvent::ConnectHost(host) => {
-                connect_managed_host(&mut self.tabs, &mut self.launch_guard, &host, None, now);
+                self.connect_host(&host, None, cx);
             }
             LauncherEvent::ConnectTarget(target) => {
                 connect_target(
@@ -213,13 +213,7 @@ impl AppShell {
                     replace_tab_id,
                 } => {
                     this.close_overlay("host-picker", window, cx);
-                    connect_managed_host(
-                        &mut this.tabs,
-                        &mut this.launch_guard,
-                        &host,
-                        replace_tab_id.as_deref(),
-                        Instant::now(),
-                    );
+                    this.connect_host(&host, replace_tab_id.as_deref(), cx);
                     this.tabs_changed(cx);
                 }
                 HostPickerEvent::AddHost => {

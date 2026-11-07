@@ -15,3 +15,4 @@ pub mod native_draft;
 pub mod range_save;
 pub mod session_logging;
 pub mod tunnel;
+pub mod web_draft;

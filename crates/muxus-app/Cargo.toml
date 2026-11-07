@@ -14,6 +14,12 @@ path = "src/lib.rs"
 name = "muxus"
 path = "src/main.rs"
 
+[features]
+# Saved web pages in Muxus browser windows (wry; WebKitGTK 4.1 on Linux, see
+# crates/muxus-webview). Release packages build with it; without it pages open in the
+# system browser.
+webview = ["muxus-webview/webview"]
+
 [dependencies]
 muxus-core.workspace = true
 muxus-import.workspace = true
@@ -25,6 +31,7 @@ muxus-ssh.workspace = true
 muxus-term.workspace = true
 muxus-term-view.workspace = true
 muxus-ui.workspace = true
+muxus-webview.workspace = true
 async-channel = "2"
 indexmap = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
@@ -40,6 +47,7 @@ similar = "2"
 base64 = "0.22"
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 unicode-normalization = "0.1"
+url = "2"
 # Remote desktop tiles are GPUI images (`image::Frame`), as in muxus-term-view.
 image = { version = "0.25", default-features = false }
 

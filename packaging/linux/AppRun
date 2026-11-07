@@ -2,4 +2,13 @@
 # Entry point of the AppImage. The runtime sets APPIMAGE (the file the user started) and
 # APPDIR (its mount); Muxus reads APPIMAGE for link registration and in-app updates.
 HERE="$(dirname "$(readlink -f "$0")")"
+# A build with saved web page windows links the system's WebKitGTK 4.1 (build-appimage.sh
+# leaves this marker): say what is missing rather than the loader's error.
+if [ -e "$HERE/usr/share/muxus/requires-webkitgtk-4.1" ]; then
+    LIBS="$( (/sbin/ldconfig -p || ldconfig -p) 2>/dev/null)"
+    if [ -n "$LIBS" ] && ! printf '%s\n' "$LIBS" | grep -q 'libwebkit2gtk-4\.1\.so\.0'; then
+        echo "Muxus needs WebKitGTK 4.1: install libwebkit2gtk-4.1-0 (Debian, Ubuntu), webkit2gtk4.1 (Fedora) or webkit2gtk-4.1 (Arch)." >&2
+        exit 127
+    fi
+fi
 exec "$HERE/usr/bin/muxus" "$@"

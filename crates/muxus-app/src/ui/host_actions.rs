@@ -97,13 +97,7 @@ impl AppShell {
                             );
                         }
                         Some(ConnectTarget::SavedHost(profile)) => {
-                            connect_managed_host(
-                                &mut this.tabs,
-                                &mut this.launch_guard,
-                                &ManagedHost::profile((**profile).clone()),
-                                None,
-                                now,
-                            );
+                            this.connect_host(&ManagedHost::profile((**profile).clone()), None, cx);
                         }
                         None => {}
                     }
@@ -213,9 +207,17 @@ impl AppShell {
                     layout,
                     label,
                 } => {
-                    let entries: Vec<_> = hosts.iter().filter_map(session_set_entry).collect();
-                    let started = this.tabs.launch_set(&entries, *layout);
-                    this.clear_multi_exec_groups(cx);
+                    // Web pages open in their own windows next to the tabs; only the rest
+                    // replaces the tabs, so a group of pages alone leaves them untouched.
+                    let rest = this.open_web_hosts_of(hosts, cx);
+                    let entries: Vec<_> = rest.iter().filter_map(session_set_entry).collect();
+                    let started = if entries.is_empty() {
+                        Vec::new()
+                    } else {
+                        let started = this.tabs.launch_set(&entries, *layout);
+                        this.clear_multi_exec_groups(cx);
+                        started
+                    };
                     this.close_overlay("launch-group", window, cx);
                     if !started.is_empty() {
                         this.show_toast(
@@ -501,8 +503,14 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         match action.clone() {
+            // A web page opens in its own browser window instead.
             SidebarAction::OpenInNewWindow(host) => {
-                crate::ui::open_main_window(crate::ui::MainWindowLaunch::Host(Box::new(host)), cx)
+                if let Some(host) = self.open_web_hosts_of(&[host], cx).pop() {
+                    crate::ui::open_main_window(
+                        crate::ui::MainWindowLaunch::Host(Box::new(host)),
+                        cx,
+                    )
+                }
             }
             SidebarAction::OpenSftp(host) => self.open_host_sftp(&host, cx),
             SidebarAction::MoveHost { key, delta } => self.move_host_by_key(&key, delta, cx),

@@ -16,4 +16,5 @@ pub mod remote_desktop;
 pub mod settings;
 pub mod sftp;
 pub mod vault;
+pub mod web_hosts;
 pub mod workspaces;

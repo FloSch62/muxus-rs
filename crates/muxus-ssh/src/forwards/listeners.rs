@@ -32,10 +32,14 @@ pub(crate) struct Rule {
     pub target_port: u16,
 }
 
-async fn listen(port: u16) -> Result<TcpListener, Problem> {
-    TcpListener::bind((LOOPBACK, port)).await.map_err(|err| {
+/// Listen on 127.0.0.1, with the port the listener got: the one asked for, or the one the
+/// system picked for port 0 (a web host's private proxy).
+async fn listen(port: u16) -> Result<(TcpListener, u16), Problem> {
+    let listener = TcpListener::bind((LOOPBACK, port)).await.map_err(|err| {
         Problem::bad_request(format!("could not listen on {LOOPBACK}:{port}: {err}"))
-    })
+    })?;
+    let bound = listener.local_addr().map_or(port, |addr| addr.port());
+    Ok((listener, bound))
 }
 
 /// Accepts until aborted. Dropping the task closes the listener; connections already accepted
@@ -66,14 +70,15 @@ where
     .abort_handle()
 }
 
-/// -L: listen locally, open a direct-tcpip channel per client.
+/// -L: listen locally, open a direct-tcpip channel per client. Returns the listener and the
+/// port it is bound to.
 pub(crate) async fn start_local(
     conn: Arc<ManagedConnection>,
     rule: Rule,
-) -> Result<AbortHandle, Problem> {
-    let listener = listen(rule.bind_port).await?;
+) -> Result<(AbortHandle, u16), Problem> {
+    let (listener, port) = listen(rule.bind_port).await?;
     let target = rule.clone();
-    Ok(serve(listener, rule, move |mut socket| {
+    let handle = serve(listener, rule, move |mut socket| {
         let conn = conn.clone();
         let target = target.clone();
         async move {
@@ -99,16 +104,18 @@ pub(crate) async fn start_local(
                 }
             }
         }
-    }))
+    });
+    Ok((handle, port))
 }
 
-/// -D: minimal SOCKS5 (no auth, CONNECT only) tunneling through the connection.
+/// -D: minimal SOCKS5 (no auth, CONNECT only) tunneling through the connection. Returns the
+/// listener and the port it is bound to.
 pub(crate) async fn start_dynamic(
     conn: Arc<ManagedConnection>,
     rule: Rule,
-) -> Result<AbortHandle, Problem> {
-    let listener = listen(rule.bind_port).await?;
-    Ok(serve(listener, rule, move |mut socket| {
+) -> Result<(AbortHandle, u16), Problem> {
+    let (listener, port) = listen(rule.bind_port).await?;
+    let handle = serve(listener, rule, move |mut socket| {
         let conn = conn.clone();
         async move {
             let Ok(SocksRequest::Connect { host, port }) = socks::read_request(&mut socket).await
@@ -141,7 +148,8 @@ pub(crate) async fn start_dynamic(
                 }
             }
         }
-    }))
+    });
+    Ok((handle, port))
 }
 
 /// Remote forwards of one connection by their server-side port: the connection's single
