@@ -55,6 +55,6 @@ time limit are tested against real processes.
 | Host menu "Run script…" / "Run script on n selected hosts…", greyed out for a system OpenSSH host | sidebar/HostContextMenu.tsx | done | |
 | Folder menu "Run script on hosts in this folder…" (subfolders included) | sidebar/FolderContextMenu.tsx | done | |
 | Notice for hosts left out, or for none to run on | script-jobs.ts (`openScriptsFor`) | done | |
-| Selection bar button | sidebar/SelectionBar.tsx | missing | the selection bar itself is not ported (see ui-shell.md) |
+| Selection bar button | sidebar/SelectionBar.tsx | done | `ui/sidebar_selection.rs`: Run script… between Move and Delete opens Scripts with the selected hosts as "The selection"; Scripts leaves out what cannot run one and says so |
 | Quick launcher "Run a script on hosts" | QuickLauncherDialog.tsx | done | |
 | Keyboard command `app.scripts` | keymap/commands.ts | done | |

@@ -59,7 +59,7 @@ in-process ssh-agent; nothing touches the real `~/.ssh`, the real agent or a rea
 | chmod, directory download | — | n/a | The TypeScript app has neither. |
 | Port forwards (local, remote, dynamic SOCKS5, config forwards, saved tunnels with autostart and reconnect backoff, status) | `forwards/forward-manager.ts`, `routes/forwards.ts`, `routes/tunnels.ts` | done | `forward-manager.test.ts` (21) and `tunnel-reconnect.test.ts` (3) ported plus traffic tests per forward type. Status through `ForwardManager::subscribe()`. |
 | Forwards on a dead connection (refused SOCKS reply, dropped local clients, no crash) | `forwards/forward-manager.ts` (`openChannel`, `carry`) | done | Already safe here: a failed `direct-tcpip` open is an error value, not a throw, and closes the client. |
-| `bindPort: 0` for local and dynamic forwards | `routes/forwards.ts` | partial | The route accepts it; reporting the bound port belongs to the web-hosts work. |
+| `bindPort: 0` for local and dynamic forwards | `routes/forwards.ts` | done | The route accepts it, and local and dynamic forwards report the port they got (web page proxies use it); config forwards still deduplicate by the port they asked for. |
 
 ## Attribution
 
