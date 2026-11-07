@@ -49,11 +49,12 @@ pub(super) fn list_ports() -> io::Result<Vec<SerialPortInfo>> {
         SetupDiGetClassDevsW(
             &GUID_DEVCLASS_PORTS,
             ptr::null(),
-            0,
+            ptr::null_mut(),
             DIGCF_PRESENT | DIGCF_PROFILE,
         )
     };
-    if devices == INVALID_HANDLE_VALUE {
+    // windows-sys declares HDEVINFO as an integer and INVALID_HANDLE_VALUE as a pointer.
+    if devices == INVALID_HANDLE_VALUE as HDEVINFO {
         return Err(io::Error::last_os_error());
     }
     let mut ports = Vec::new();
@@ -247,7 +248,7 @@ fn container_serial_number(
 
 fn open_key(path: &str) -> Option<HKEY> {
     let path = wide(path);
-    let mut key: HKEY = 0;
+    let mut key: HKEY = ptr::null_mut();
     // SAFETY: the path is NUL-terminated and `key` is a valid out pointer.
     let status = unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, path.as_ptr(), 0, KEY_READ, &mut key) };
     (status == ERROR_SUCCESS).then_some(key)

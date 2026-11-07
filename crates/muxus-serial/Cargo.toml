@@ -18,8 +18,8 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 # Mark/space parity and 1.5 stop bits go into the port's DCB, and the port list comes from
-# SetupAPI (the version serialport uses).
-windows-sys = { version = "0.52", features = [
+# SetupAPI (the version muxus-os, muxus-store and gpui build on).
+windows-sys = { version = "0.61", features = [
     "Win32_Devices_Communication",
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Devices_Properties",

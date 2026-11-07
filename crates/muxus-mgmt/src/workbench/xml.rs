@@ -172,12 +172,12 @@ fn declaration(name: &str) -> Option<Option<String>> {
 }
 
 fn open_element(start: &BytesStart<'_>, scope: &mut Scope) -> Result<(XmlElement, usize), String> {
-    let name = String::from_utf8_lossy(start.name().as_ref()).into_owned();
+    let name = start.name().as_ref().to_owned();
     let mark = scope.bindings.len();
     let mut attributes = Vec::new();
     for attribute in start.attributes() {
         let attribute = attribute.map_err(|err| err.to_string())?;
-        let key = String::from_utf8_lossy(attribute.key.as_ref()).into_owned();
+        let key = attribute.key.as_ref().to_owned();
         let value = attribute
             .normalized_value(XmlVersion::Implicit1_0)
             .map_err(|err| err.to_string())?
@@ -272,7 +272,7 @@ pub fn parse_document(text: &str) -> Result<XmlDocument, String> {
                 }
             }
             Event::Text(text) => {
-                let text = text.xml10_content().map_err(|err| err.to_string())?;
+                let text = text.xml10_content();
                 match stack.last_mut() {
                     Some((parent, _)) => push_text(parent, &text),
                     None if text.chars().all(char::is_whitespace) => {}
@@ -282,13 +282,13 @@ pub fn parse_document(text: &str) -> Result<XmlDocument, String> {
                 }
             }
             Event::GeneralRef(reference) => {
-                let name = reference.decode().map_err(|err| err.to_string())?;
+                let name: &str = &reference;
                 let resolved = match reference
                     .resolve_char_ref()
                     .map_err(|err| err.to_string())?
                 {
                     Some(c) => c.to_string(),
-                    None => predefined_entity(&name)
+                    None => predefined_entity(name)
                         .ok_or_else(|| format!("Entity '{name}' not defined"))?
                         .to_owned(),
                 };
@@ -300,7 +300,7 @@ pub fn parse_document(text: &str) -> Result<XmlDocument, String> {
                 }
             }
             Event::CData(data) => {
-                let data = String::from_utf8_lossy(&data.into_inner()).into_owned();
+                let data = data.into_inner().into_owned();
                 match stack.last_mut() {
                     Some((parent, _)) => parent.children.push(XmlNode::CData(data)),
                     None => return Err("CDATA is not allowed outside the document element".into()),
@@ -308,14 +308,13 @@ pub fn parse_document(text: &str) -> Result<XmlDocument, String> {
             }
             Event::Comment(comment) => {
                 if let Some((parent, _)) = stack.last_mut() {
-                    let comment = String::from_utf8_lossy(&comment.into_inner()).into_owned();
+                    let comment = comment.into_inner().into_owned();
                     parent.children.push(XmlNode::Comment(comment));
                 }
             }
             Event::PI(instruction) => {
                 if let Some((parent, _)) = stack.last_mut() {
-                    let instruction =
-                        String::from_utf8_lossy(&instruction.into_inner()).into_owned();
+                    let instruction = instruction.into_inner().into_owned();
                     parent
                         .children
                         .push(XmlNode::ProcessingInstruction(instruction));

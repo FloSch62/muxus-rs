@@ -37,7 +37,7 @@ async-channel = "2"
 indexmap = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # Lookarounds of the compare dialog's timestamp pattern (already in the tree via muxus-term).
-fancy-regex = "0.14"
+fancy-regex = "0.20"
 futures-lite = "2"
 regex = "1"
 # Anchored multi-pattern matching for the General Text tokenizer (already in the tree via regex).
@@ -49,8 +49,8 @@ sha2 = "0.11"
 tree-sitter = "0.26.13"
 serde = "1"
 serde_json = "1"
-similar = "2"
-base64 = "0.22"
+similar = "3"
+base64 = "0.23"
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 unicode-normalization = "0.1"
 url = "2"

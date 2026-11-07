@@ -822,7 +822,9 @@ mod tests {
 
     #[test]
     fn pauses_a_catastrophic_pattern_instead_of_hanging() {
-        let evil = regex("evil", r"(a|aa)+(?=c)");
+        // The lookahead inside the repetition keeps it on the backtracking engine (a trailing
+        // lookahead alone, `(a|aa)+(?=c)`, runs on the linear-time one and cannot stall).
+        let evil = regex("evil", r"((?=a)(a|aa))+(?=c)");
         let line = "a".repeat(60);
         assert!(
             find_keyword_matches(&line, std::slice::from_ref(&evil), MAX_KEYWORD_DECORATIONS)

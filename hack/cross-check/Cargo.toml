@@ -16,7 +16,7 @@ muxus-os = { path = "../../crates/muxus-os" }
 muxus-session = { path = "session-stub", package = "muxus-session-stub" }
 async-channel = "2"
 async-trait = "0.1"
-dns-lookup = "3"
+dns-lookup = "4"
 keyring-core = "1"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

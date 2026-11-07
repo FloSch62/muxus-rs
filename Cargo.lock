@@ -2194,14 +2194,14 @@ dependencies = [
 
 [[package]]
 name = "dns-lookup"
-version = "3.0.1"
+version = "4.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e39034cee21a2f5bbb66ba0e3689819c4bb5d00382a282006e802a7ffa6c41d"
+checksum = "263c0ccfc6b3b6a93e959edad4f985779e76c0b36dbb2e13e3d27c690974adf1"
 dependencies = [
  "cfg-if",
  "libc",
  "socket2",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2591,20 +2591,9 @@ checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
 name = "fancy-regex"
-version = "0.14.0"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e24cb5a94bcae1e5408b0effca5cd7172ea3c5755049c5f3af4cd283a165298"
-dependencies = [
- "bit-set 0.8.0",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
-name = "fancy-regex"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "998b056554fbe42e03ae0e152895cd1a7e1002aec800fdc6635d20270260c46f"
+checksum = "20ed7f62ce0ae0da1a8b93c3c7104ab7e0760a74491e097c701fff966e945390"
 dependencies = [
  "bit-set 0.8.0",
  "regex-automata",
@@ -3434,7 +3423,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_repr",
- "similar",
+ "similar 2.7.0",
  "smallvec",
  "smol",
  "tracing",
@@ -6049,10 +6038,10 @@ dependencies = [
  "anyhow",
  "async-channel",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "chrono",
- "fancy-regex 0.14.0",
+ "fancy-regex",
  "futures-lite",
  "gpui-pre",
  "h2",
@@ -6082,7 +6071,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "similar",
+ "similar 3.2.1",
  "tempfile",
  "tokio",
  "tokio-rustls",
@@ -6097,7 +6086,7 @@ version = "0.11.1"
 dependencies = [
  "async-channel",
  "chrono",
- "fancy-regex 0.16.2",
+ "fancy-regex",
  "icu_collator",
  "icu_normalizer",
  "icu_provider",
@@ -6113,7 +6102,7 @@ dependencies = [
 name = "muxus-import"
 version = "0.11.1"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "muxus-core",
  "regex",
  "roxmltree 0.21.2",
@@ -6130,7 +6119,7 @@ name = "muxus-local"
 version = "0.11.1"
 dependencies = [
  "async-channel",
- "base64 0.22.1",
+ "base64 0.23.1",
  "libc",
  "muxus-core",
  "portable-pty",
@@ -6146,7 +6135,7 @@ name = "muxus-mgmt"
 version = "0.11.1"
 dependencies = [
  "async-channel",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "futures-util",
@@ -6164,7 +6153,7 @@ dependencies = [
  "prost-reflect",
  "prost-types",
  "protox",
- "quick-xml",
+ "quick-xml 0.42.0",
  "rcgen",
  "regex",
  "rustls",
@@ -6229,7 +6218,7 @@ dependencies = [
  "serde_json",
  "serialport",
  "tokio",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6238,11 +6227,11 @@ version = "0.11.1"
 dependencies = [
  "async-channel",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "dns-lookup",
- "fancy-regex 0.16.2",
+ "fancy-regex",
  "futures-lite",
  "futures-util",
  "http-body-util",
@@ -6282,7 +6271,7 @@ name = "muxus-ssh"
 version = "0.11.1"
 dependencies = [
  "async-channel",
- "base64 0.22.1",
+ "base64 0.23.1",
  "futures",
  "hex",
  "hmac 0.13.0",
@@ -6310,7 +6299,7 @@ dependencies = [
  "aes-gcm",
  "apple-native-keyring-store",
  "async-channel",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "getrandom 0.4.3",
  "hmac 0.13.0",
@@ -6350,9 +6339,9 @@ name = "muxus-term"
 version = "0.11.1"
 dependencies = [
  "async-channel",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
- "fancy-regex 0.14.0",
+ "fancy-regex",
  "futures-lite",
  "memchr",
  "muxus-core",
@@ -8341,6 +8330,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-xml"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9865,6 +9863,15 @@ checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 dependencies = [
  "bstr",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "similar"
+version = "3.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2f8bec09ae8fae0f4f265a4559a9334be3929d8504e9b536df0a41302bd1733"
+dependencies = [
+ "bstr",
 ]
 
 [[package]]
@@ -11994,7 +12001,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "338e30461b3a2b67d70eb30a6d89f8e0c93a833e07d2ae89085cd070c4a00ac0"
 dependencies = [
  "proc-macro2",
- "quick-xml",
+ "quick-xml 0.41.0",
  "quote",
 ]
 
@@ -12753,15 +12760,6 @@ dependencies = [
 
 [[package]]
 name = "windows-sys"
-version = "0.60.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2f500e4d28234f72040990ec9d39e3a6b950f9f22d3dba18416c35882612bcb"
-dependencies = [
- "windows-targets 0.53.5",
-]
-
-[[package]]
-name = "windows-sys"
 version = "0.61.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
@@ -13276,7 +13274,7 @@ checksum = "a6c2ad15e0e922856ee89afe862b8992334bbe7953adad56cd1199358cb30566"
 dependencies = [
  "bitflags 2.13.2",
  "libc",
- "quick-xml",
+ "quick-xml 0.41.0",
  "x11",
 ]
 
