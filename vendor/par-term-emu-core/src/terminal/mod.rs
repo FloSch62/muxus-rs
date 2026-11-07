@@ -257,6 +257,11 @@ pub struct Terminal {
     /// [`Terminal::advance_parser`] so guarded chunks (those containing ESC or
     /// mid-OSC state) do not allocate per call.
     pub(crate) osc_scratch: Vec<u8>,
+    /// Printable ASCII the parser handed to `print` and that is not on the
+    /// grid yet. It is written as one run (see
+    /// [`Terminal::flush_print_run`]) before any other parser callback and
+    /// before a parse pass returns, so no code ever observes it pending.
+    pub(crate) print_run: Vec<u8>,
     /// Long-lived Kitty TGP parser; reset between unrelated transmissions.
     pub(crate) kitty_parser: KittyParser,
     /// DECAWM delayed wrap: set after printing in last column
@@ -387,6 +392,7 @@ impl Terminal {
             parser: vte::Parser::new(),
             apc: ApcPrefilterState::default(),
             osc_scratch: Vec::new(),
+            print_run: Vec::new(),
             kitty_parser: KittyParser::new(),
             pending_wrap: false,
             // Initialize pixel dimensions with reasonable defaults (10x20 per cell)
@@ -833,20 +839,53 @@ impl Terminal {
             let mut parser = std::mem::replace(&mut self.parser, vte::Parser::new());
             parser.advance(self, bytes);
             self.parser = parser;
+            self.flush_print_run();
             return;
         }
 
-        let mut kept = std::mem::take(&mut self.osc_scratch);
-        kept.clear();
-        for &b in bytes {
-            if self.osc_guard_step(b) {
-                kept.push(b);
+        // The guard runs over the whole chunk before vte sees any of it.
+        // Outside an OSC every byte but ESC passes the guard untouched, so
+        // those runs are skipped with memchr; the bytes are copied only once
+        // the guard drops one (an over-cap OSC payload), and otherwise vte
+        // reads the chunk in place.
+        let mut kept: Option<Vec<u8>> = None;
+        let mut i = 0;
+        while i < bytes.len() {
+            let state = &self.security_state;
+            if !state.osc_in_osc && !state.osc_seen_esc {
+                let next = memchr_esc(&bytes[i..]).map_or(bytes.len(), |offset| i + offset);
+                if let Some(kept) = kept.as_mut() {
+                    kept.extend_from_slice(&bytes[i..next]);
+                }
+                i = next;
+                if i == bytes.len() {
+                    break;
+                }
             }
+            let b = bytes[i];
+            let keep = self.osc_guard_step(b);
+            match (kept.as_mut(), keep) {
+                (Some(kept), true) => kept.push(b),
+                (None, false) => {
+                    let mut scratch = std::mem::take(&mut self.osc_scratch);
+                    scratch.clear();
+                    scratch.extend_from_slice(&bytes[..i]);
+                    kept = Some(scratch);
+                }
+                _ => {}
+            }
+            i += 1;
         }
         let mut parser = std::mem::replace(&mut self.parser, vte::Parser::new());
-        parser.advance(self, &kept);
+        match kept {
+            Some(kept) => {
+                parser.advance(self, &kept);
+                self.osc_scratch = kept;
+            }
+            None => parser.advance(self, bytes),
+        }
         self.parser = parser;
-        self.osc_scratch = kept;
+        self.flush_print_run();
     }
 
     /// One step of the SEC-003 incremental OSC guard. Updates the tracking
@@ -1178,6 +1217,26 @@ impl Terminal {
         self.conformance_level = self.host.configured_conformance_level;
         self.bell_volumes.warning = self.host.configured_warning_bell_volume;
         self.bell_volumes.margin = self.host.configured_margin_bell_volume;
+        self.grid
+            .set_compact_scrollback(self.host.compact_scrollback);
+        self.alt_grid
+            .set_compact_scrollback(self.host.compact_scrollback);
+    }
+
+    /// Store the lines entering the scrollback without their trailing
+    /// default cells, so a scrolled line costs time and memory in
+    /// proportion to its text instead of the screen width (see
+    /// [`Grid::set_compact_scrollback`]). Off by default; survives RIS.
+    pub fn set_compact_scrollback(&mut self, compact: bool) {
+        self.host.compact_scrollback = compact;
+        self.grid.set_compact_scrollback(compact);
+        self.alt_grid.set_compact_scrollback(compact);
+    }
+
+    /// Whether scrollback lines are stored compactly
+    /// ([`Terminal::set_compact_scrollback`]).
+    pub fn compact_scrollback(&self) -> bool {
+        self.host.compact_scrollback
     }
 
     /// Soft terminal reset (DECSTR, `CSI ! p`) per VT510.
@@ -1234,6 +1293,11 @@ impl Terminal {
 }
 
 mod perform;
+
+/// Offset of the first ESC byte in `bytes`.
+fn memchr_esc(bytes: &[u8]) -> Option<usize> {
+    memchr::memchr(0x1b, bytes)
+}
 
 #[cfg(test)]
 mod tests;

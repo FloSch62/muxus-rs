@@ -771,6 +771,9 @@ pub(crate) struct HostConfig {
     pub(crate) configured_warning_bell_volume: u8,
     /// Margin bell volume RIS restores; DECSMBV changes only the live value.
     pub(crate) configured_margin_bell_volume: u8,
+    /// Store scrollback lines without their trailing default cells
+    /// ([`Terminal::set_compact_scrollback`]).
+    pub(crate) compact_scrollback: bool,
 }
 
 impl Default for HostConfig {
@@ -788,6 +791,7 @@ impl Default for HostConfig {
             configured_conformance_level: crate::conformance_level::ConformanceLevel::default(),
             configured_warning_bell_volume: 4,
             configured_margin_bell_volume: 4,
+            compact_scrollback: false,
         }
     }
 }

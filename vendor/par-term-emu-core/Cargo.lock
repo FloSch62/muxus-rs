@@ -1161,6 +1161,7 @@ dependencies = [
  "libc",
  "log",
  "lru",
+ "memchr",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

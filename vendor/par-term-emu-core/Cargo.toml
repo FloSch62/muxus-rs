@@ -97,6 +97,10 @@ version = "0.4"
 [dependencies.lru]
 version = "0.18.0"
 
+[dependencies.memchr]
+# SIMD byte search for the OSC guard (already a dependency of vte).
+version = "2"
+
 [dependencies.opentelemetry]
 version = "0.33"
 optional = true
