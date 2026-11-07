@@ -66,21 +66,6 @@ pub fn viewport_width(window: &Window) -> f32 {
     muxus_ui::zoom::unzoom(window.viewport_size().width) - 2. * inset
 }
 
-#[cfg(test)]
-mod tests {
-    use super::tab_width;
-
-    #[test]
-    fn tabs_narrow_with_the_window_between_their_bounds() {
-        assert_eq!(tab_width(true, 1440.), 210.);
-        assert_eq!(tab_width(false, 1440.), 190.);
-        assert_eq!(tab_width(true, 900.), 180.);
-        assert_eq!(tab_width(false, 1000.), 150.);
-        assert_eq!(tab_width(true, 600.), 168.);
-        assert_eq!(tab_width(false, 600.), 128.);
-    }
-}
-
 impl AppShell {
     /// Take a pane's order for this frame; tabs that moved start sliding.
     /// `true` while slides still run (the window asks for another frame).
@@ -492,4 +477,19 @@ fn window_under_pointer(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tab_width;
+
+    #[test]
+    fn tabs_narrow_with_the_window_between_their_bounds() {
+        assert_eq!(tab_width(true, 1440.), 210.);
+        assert_eq!(tab_width(false, 1440.), 190.);
+        assert_eq!(tab_width(true, 900.), 180.);
+        assert_eq!(tab_width(false, 1000.), 150.);
+        assert_eq!(tab_width(true, 600.), 168.);
+        assert_eq!(tab_width(false, 600.), 128.);
+    }
 }
