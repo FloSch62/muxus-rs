@@ -9,9 +9,11 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use muxus_ui::gpui_kit::base::input::{InputEvent, InputState};
+use muxus_ui::gpui_kit::base::input::{InputEvent, InputState, TextareaState};
 use muxus_ui::gpui_kit::{AppContext, Context, Entity, SharedString, Subscription, Window};
 use muxus_ui::widgets::tooltip::AnchorBounds;
+
+use crate::features::host_editor::view::form::Form;
 
 /// What a change handler returns: `Some(text)` to replace what was typed.
 pub type Correction = Option<String>;
@@ -21,9 +23,18 @@ struct Entry {
     _subscription: Subscription,
 }
 
+/// A list being edited as text (the keyword rules' JSON mode): its editor and the error of
+/// the last attempt to apply it.
+struct TextEdit {
+    state: Entity<TextareaState>,
+    error: Option<String>,
+    _subscription: Subscription,
+}
+
 #[derive(Default)]
 pub struct InputCache {
     entries: HashMap<SharedString, Entry>,
+    text_edits: HashMap<SharedString, TextEdit>,
 }
 
 impl InputCache {
@@ -116,6 +127,58 @@ impl InputCache {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.text_edits.clear();
+    }
+
+    /// The multi-line editor of `key` and its error, while one is open.
+    pub fn text_edit(&self, key: &str) -> Option<(Entity<TextareaState>, Option<String>)> {
+        self.text_edits
+            .get(key)
+            .map(|edit| (edit.state.clone(), edit.error.clone()))
+    }
+
+    /// Open a multi-line editor on `text` that grows from `rows.0` to `rows.1` rows; typing
+    /// clears its error.
+    pub fn open_text_edit<V: Form>(
+        &mut self,
+        key: &str,
+        text: String,
+        rows: (usize, usize),
+        window: &mut Window,
+        cx: &mut Context<V>,
+    ) {
+        let state = cx.new(|cx| {
+            let mut state = TextareaState::new(window, cx).auto_grow(rows.0, rows.1);
+            state.set_value(text, window, cx);
+            state
+        });
+        let edit_key = SharedString::from(key.to_owned());
+        let subscription = cx.subscribe(&state, move |this: &mut V, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change)
+                && let Some(edit) = this.inputs().text_edits.get_mut(&edit_key)
+                && edit.error.take().is_some()
+            {
+                cx.notify();
+            }
+        });
+        self.text_edits.insert(
+            SharedString::from(key.to_owned()),
+            TextEdit {
+                state,
+                error: None,
+                _subscription: subscription,
+            },
+        );
+    }
+
+    pub fn set_text_edit_error(&mut self, key: &str, error: String) {
+        if let Some(edit) = self.text_edits.get_mut(key) {
+            edit.error = Some(error);
+        }
+    }
+
+    pub fn close_text_edit(&mut self, key: &str) {
+        self.text_edits.remove(key);
     }
 }
 

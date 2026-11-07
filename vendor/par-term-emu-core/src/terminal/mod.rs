@@ -3296,6 +3296,26 @@ impl Terminal {
         self.host.compact_scrollback
     }
 
+    /// Muxus patch: rewrap the primary screen's scrollback on a width change
+    /// ([`Grid::set_reflow_scrollback`]).
+    pub fn set_reflow_scrollback(&mut self, reflow: bool) {
+        self.grid.set_reflow_scrollback(reflow);
+    }
+
+    /// Muxus patch: where the last resize moved the scrollback's lines
+    /// ([`Grid::take_scrollback_reflow`]).
+    pub fn take_scrollback_reflow(&mut self) -> Option<crate::grid::ScrollbackReflow> {
+        self.grid.take_scrollback_reflow()
+    }
+
+    /// Muxus patch: change the scrollback capacity of the primary screen
+    /// while the terminal runs (see [`Grid::set_max_scrollback`]); the
+    /// alternate screen keeps none.
+    pub fn set_max_scrollback(&mut self, max_scrollback: usize) {
+        self.sync_damage_generations();
+        self.grid.set_max_scrollback(max_scrollback);
+    }
+
     /// Soft terminal reset (DECSTR, `CSI ! p`) per VT510.
     ///
     /// Resets the state a program can set through escapes — cursor

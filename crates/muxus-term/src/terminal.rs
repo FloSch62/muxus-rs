@@ -13,6 +13,7 @@ use par_term_emu_core_rust::cell::{Cell, UnderlineStyle as CoreUnderline};
 use par_term_emu_core_rust::color::{Color, NamedColor};
 use par_term_emu_core_rust::cursor::CursorStyle as CoreCursorStyle;
 use par_term_emu_core_rust::graphics::TerminalGraphic;
+use par_term_emu_core_rust::grid::ScrollbackReflow;
 use par_term_emu_core_rust::terminal::Terminal as Core;
 
 use crate::buffer::{CellText, TextBuffer};
@@ -87,6 +88,26 @@ pub struct ImagePlacement {
     /// Cells the image is stretched over when the program sized it in cells.
     pub cells: Option<(usize, usize)>,
     pub z_index: i32,
+}
+
+/// The image storage of the visible tab, in MB (`ACTIVE_IMAGE_STORAGE_MB` in
+/// `TerminalViewImpl.tsx`).
+pub const ACTIVE_IMAGE_STORAGE_MB: f64 = 64.0;
+/// The image storage of a tab in the background, in MB.
+pub const BACKGROUND_IMAGE_STORAGE_MB: f64 = 16.0;
+
+/// Pixels a storage limit in MB holds (4 bytes a pixel; the addon accepts 0.5 MB to 1 GB).
+fn image_pixel_limit(megabytes: f64) -> usize {
+    (megabytes.clamp(0.5, 1000.0) / 4.0 * 1_000_000.0) as usize
+}
+
+fn stored_image_pixels(core: &Core) -> usize {
+    core.all_graphics()
+        .iter()
+        .chain(core.all_scrollback_graphics())
+        .filter(|graphic| !graphic.is_virtual)
+        .map(|graphic| graphic.width * graphic.height)
+        .sum()
 }
 
 /// Settings a terminal is created with.
@@ -248,6 +269,8 @@ pub struct Emulator {
     scrollback_limit: usize,
     /// A received LF also returns to the start of the line (a host's implicit CR).
     implicit_cr: bool,
+    /// Pixels the stored images may hold (the image addon's `storageLimit`).
+    image_pixel_limit: usize,
 }
 
 impl std::fmt::Debug for Emulator {
@@ -273,6 +296,9 @@ impl Emulator {
         // Readers already pad short lines (scrollback lines keep the width
         // they scrolled off at, so they are short after the screen widens).
         core.set_compact_scrollback(true);
+        // A width change rewraps the scrollback as well as the screen, as xterm reflows its
+        // whole buffer.
+        core.set_reflow_scrollback(true);
         let mut emulator = Self {
             core,
             filter: StreamFilter::new(),
@@ -296,6 +322,7 @@ impl Emulator {
             image_tops: HashMap::new(),
             scrollback_limit: config.scrollback,
             implicit_cr: false,
+            image_pixel_limit: image_pixel_limit(ACTIVE_IMAGE_STORAGE_MB),
         };
         emulator.init_pen();
         emulator.apply_palette();
@@ -385,6 +412,67 @@ impl Emulator {
         self.scrollback_limit
     }
 
+    /// Change the scrollback size of the running terminal (xterm's `options.scrollback`). A
+    /// smaller size drops the oldest lines as trimming does, so absolute line numbers hold.
+    pub fn set_scrollback_limit(&mut self, lines: usize) {
+        if lines == self.scrollback_limit {
+            return;
+        }
+        let before = self.lines_trimmed();
+        self.scrollback_limit = lines;
+        self.core.set_max_scrollback(lines);
+        self.after_change(before);
+    }
+
+    /// How much image data the terminal keeps, in MB (the image addon's `storageLimit`:
+    /// 4 bytes a pixel). The oldest images go first when new ones need the room, and when the
+    /// limit shrinks.
+    pub fn set_image_storage_limit(&mut self, megabytes: f64) {
+        let limit = image_pixel_limit(megabytes);
+        if limit == self.image_pixel_limit {
+            return;
+        }
+        self.image_pixel_limit = limit;
+        self.enforce_image_limit();
+        self.track_images();
+    }
+
+    /// The image storage limit in MB.
+    pub fn image_storage_limit(&self) -> f64 {
+        self.image_pixel_limit as f64 * 4.0 / 1_000_000.0
+    }
+
+    /// Image data held, in MB (the image addon's `storageUsage`).
+    pub fn image_storage_usage(&self) -> f64 {
+        stored_image_pixels(&self.core) as f64 * 4.0 / 1_000_000.0
+    }
+
+    /// The image addon's `_evictOldest`: drop the oldest images until the rest fit the limit.
+    /// The newest image always stays, as the addon stores it after making room.
+    fn enforce_image_limit(&mut self) {
+        let mut images: Vec<(u64, usize)> = self
+            .core
+            .all_graphics()
+            .iter()
+            .chain(self.core.all_scrollback_graphics())
+            .filter(|graphic| !graphic.is_virtual)
+            .map(|graphic| (graphic.id, graphic.width * graphic.height))
+            .collect();
+        let mut stored: usize = images.iter().map(|(_, pixels)| pixels).sum();
+        if stored <= self.image_pixel_limit {
+            return;
+        }
+        images.sort_by_key(|(id, _)| *id);
+        let store = self.core.graphics_store_mut();
+        for (id, pixels) in &images[..images.len() - 1] {
+            if stored <= self.image_pixel_limit {
+                break;
+            }
+            store.remove_graphic_everywhere(*id);
+            stored -= pixels;
+        }
+    }
+
     // ---- geometry ------------------------------------------------------------------------
 
     pub fn cols(&self) -> usize {
@@ -403,9 +491,44 @@ impl Emulator {
         }
         let before = self.lines_trimmed();
         self.keep_cursor_on_shorter_screen(rows);
+        let primary = self.core.grid();
+        let floor = (primary.total_lines_scrolled() - primary.scrollback_len()) as u64;
+        // The line at the top of a scrolled-back viewport, to keep it there.
+        let viewed = (!self.core.is_alt_screen_active() && self.display_offset > 0)
+            .then(|| self.absolute_line(self.viewport_top()));
         self.core.resize(cols, rows);
+        if let Some(reflow) = self.core.take_scrollback_reflow() {
+            self.follow_reflow(floor, &reflow, viewed);
+        }
         self.set_cell_size(self.cell_size.0, self.cell_size.1);
         self.after_change(before);
+    }
+
+    /// The scrollback was rewrapped for a new width: what the emulator marks on lines (failed
+    /// commands, the running command, images, the viewport's top line) follows them, as
+    /// xterm's markers follow a reflow. `floor` is the primary screen's first absolute line.
+    fn follow_reflow(&mut self, floor: u64, reflow: &ScrollbackReflow, viewed: Option<u64>) {
+        let moved = |line: u64| -> u64 {
+            match line.checked_sub(floor) {
+                Some(index) if (index as usize) < reflow.old_len => {
+                    floor + reflow.lines[index as usize] as u64
+                }
+                // Screen lines move with the scrollback's new length.
+                Some(_) => (line + reflow.new_len as u64).saturating_sub(reflow.old_len as u64),
+                None => line,
+            }
+        };
+        for line in &mut self.failed_commands {
+            *line = moved(*line);
+        }
+        self.failed_commands.dedup();
+        self.commands.map_marker(|line| moved(*line));
+        for (top, _) in self.image_tops.values_mut() {
+            *top = moved(*top);
+        }
+        if let Some(line) = viewed.and_then(|line| self.buffer_line(moved(line))) {
+            self.display_offset = self.scrollback_len().saturating_sub(line);
+        }
     }
 
     /// xterm's `Buffer.resize` when the screen gets shorter: the rows below
@@ -475,6 +598,7 @@ impl Emulator {
             self.display_offset += (after - before) as usize;
         }
         self.display_offset = self.display_offset.min(self.scrollback_len());
+        self.enforce_image_limit();
         self.track_images();
     }
 
@@ -1253,6 +1377,119 @@ mod tests {
             "the image scrolls into the scrollback with its line"
         );
         assert_eq!(images[0].line, 1);
+    }
+
+    fn kitty_image(id: u32, side: usize) -> String {
+        use base64::Engine;
+        let pixels = base64::engine::general_purpose::STANDARD.encode(vec![255u8; side * side * 4]);
+        format!("\x1b_Ga=T,i={id},f=32,s={side},v={side},C=1;{pixels}\x1b\\")
+    }
+
+    #[test]
+    fn keeps_images_within_the_storage_limit_dropping_the_oldest() {
+        let mut term = emulator(20, 4);
+        term.set_cell_size(8.0, 16.0);
+        assert_eq!(term.image_storage_limit(), ACTIVE_IMAGE_STORAGE_MB);
+        // Three images of 250×250 pixels: 0.25 MB each.
+        for id in 1..=3 {
+            term.write(kitty_image(id, 250).as_bytes());
+        }
+        assert_eq!(term.images().len(), 3);
+        assert!((term.image_storage_usage() - 0.75).abs() < 1e-9);
+        // The smallest limit the addon takes holds two of them: the oldest goes.
+        term.set_image_storage_limit(0.5);
+        let ids: Vec<u64> = term.images().iter().map(|image| image.id).collect();
+        assert_eq!(ids.len(), 2);
+        let newest = *ids.iter().max().unwrap();
+        // A new image makes room by dropping the oldest again.
+        term.write(kitty_image(4, 250).as_bytes());
+        let after: Vec<u64> = term.images().iter().map(|image| image.id).collect();
+        assert_eq!(after.len(), 2);
+        assert!(after.contains(&newest));
+        assert!(!after.contains(&ids.iter().copied().min().unwrap()));
+        // An image larger than the whole limit is still shown, alone.
+        term.write(kitty_image(5, 400).as_bytes());
+        assert_eq!(term.images().len(), 1);
+        assert_eq!(term.images()[0].width, 400);
+        // A background tab's limit is a quarter of the visible one's.
+        assert_eq!(BACKGROUND_IMAGE_STORAGE_MB * 4.0, ACTIVE_IMAGE_STORAGE_MB);
+    }
+
+    #[test]
+    fn rewraps_the_scrollback_with_the_width_and_keeps_marks_on_their_lines() {
+        let mut term = emulator(10, 3);
+        term.write(b"0123456789abcdef\r\n");
+        term.write(b"\x1b]133;C\x07false\r\n\x1b]133;D;1\x07");
+        for i in 0..5 {
+            term.write(format!("line {i}\r\n").as_bytes());
+        }
+        let failed = term.failed_command_lines();
+        assert_eq!(failed.len(), 1);
+        assert!(failed[0] < term.scrollback_len());
+        assert_eq!(line_text(&term, failed[0]).unwrap(), "false");
+        // Wider: the line the old width wrapped joins; the lines below move up with their marks.
+        term.resize(20, 3);
+        assert_eq!(line_text(&term, 0).unwrap(), "0123456789abcdef");
+        let failed = term.failed_command_lines();
+        assert_eq!(line_text(&term, failed[0]).unwrap(), "false");
+        // Narrower: stored lines wrap instead of being clipped.
+        term.resize(4, 3);
+        assert_eq!(line_text(&term, 0).unwrap(), "0123");
+        assert!(term.is_wrapped(1));
+        assert_eq!(term.buffer_text().lines().next(), Some("0123456789abcdef"));
+        let failed = term.failed_command_lines();
+        assert_eq!(line_text(&term, failed[0]).unwrap(), "fals");
+        assert_eq!(line_text(&term, failed[0] + 1).unwrap(), "e");
+    }
+
+    #[test]
+    fn a_scrolled_back_viewport_keeps_its_line_through_a_rewrap() {
+        let mut term = emulator(10, 3);
+        for i in 0..20 {
+            term.write(format!("{i:02}-abcdefghij\r\n").as_bytes());
+        }
+        // Scroll back to the line starting "05-".
+        let target = (0..term.length())
+            .find(|line| line_text(&term, *line).unwrap().starts_with("05-"))
+            .unwrap();
+        term.scroll_to_line(target);
+        term.resize(20, 3);
+        assert!(
+            line_text(&term, term.viewport_top())
+                .unwrap()
+                .starts_with("05-")
+        );
+        term.resize(5, 3);
+        assert!(
+            line_text(&term, term.viewport_top())
+                .unwrap()
+                .starts_with("05-")
+        );
+    }
+
+    #[test]
+    fn changes_the_scrollback_size_of_a_running_terminal() {
+        let mut term = emulator(10, 3);
+        for i in 0..50 {
+            term.write(format!("{i}\r\n").as_bytes());
+        }
+        assert_eq!(term.scrollback_len(), 48);
+        let trimmed = term.lines_trimmed();
+        term.scroll_to_top();
+        term.set_scrollback_limit(10);
+        assert_eq!(term.scrollback_limit(), 10);
+        assert_eq!(term.scrollback_len(), 10);
+        // The dropped lines count as trimmed; the viewport stays inside the buffer.
+        assert_eq!(term.lines_trimmed(), trimmed + 38);
+        assert_eq!(term.display_offset(), 10);
+        assert_eq!(line_text(&term, 0).unwrap(), "38");
+        // More scrollback keeps what is there and lets more in.
+        term.set_scrollback_limit(100);
+        for i in 50..70 {
+            term.write(format!("{i}\r\n").as_bytes());
+        }
+        assert_eq!(term.scrollback_len(), 30);
+        assert_eq!(line_text(&term, 0).unwrap(), "38");
     }
 
     #[test]

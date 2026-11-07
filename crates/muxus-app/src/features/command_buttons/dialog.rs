@@ -17,7 +17,7 @@ use muxus_store::prefs::command_buttons::{
     without_command_button_group,
 };
 use muxus_store::prefs::state::CommandBarPosition;
-use muxus_ui::gpui_kit::base::input::{InputEvent, InputState};
+use muxus_ui::gpui_kit::base::input::{InputEvent, InputState, Textarea, TextareaState};
 use muxus_ui::gpui_kit::{
     AnyElement, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, ScrollHandle,
@@ -28,6 +28,7 @@ use muxus_ui::theme::Status;
 use muxus_ui::theme::{ActiveTheme, TextVariant, Theme};
 use muxus_ui::widgets::dialog::{dialog_actions, dialog_paper, dialog_title, modal};
 use muxus_ui::widgets::form_control::{FormControl, FormControlLabel, label_with_caption};
+use muxus_ui::widgets::form_field::{FieldBody, FormField};
 use muxus_ui::widgets::menu::{self, MenuItem, popover_paper};
 use muxus_ui::widgets::tabs::{self, Tab};
 use muxus_ui::widgets::toggle_button::{ToggleButton, ToggleButtonGroup};
@@ -39,6 +40,7 @@ use super::palette::command_button_ink;
 use crate::features::launcher::kit::{AskAnswer, AskDialog, AskRequest, text};
 use crate::features::settings::vault_secrets::vault_secret_missing;
 use crate::features::settings::view::appearance::keybinding_overrides;
+use crate::features::settings::view::fields::style_textarea;
 use crate::features::settings::view::shortcuts::set_chord_capture;
 use crate::features::vault::secret_dialog::{
     VaultSecretDialog, VaultSecretEvent, open_vault_secret_dialog,
@@ -75,6 +77,8 @@ pub struct CommandButtonsDialog {
     model: Entity<CommandButtons>,
     selected_group: String,
     inputs: HashMap<String, Entity<InputState>>,
+    /// Multi-line fields (a card's Command), by the same keys as `inputs`.
+    textareas: HashMap<String, Entity<TextareaState>>,
     anchors: HashMap<String, AnchorBounds>,
     popup: Option<Popup>,
     ask: Option<(Entity<AskDialog>, Pending)>,
@@ -167,6 +171,7 @@ impl CommandButtonsDialog {
             model,
             selected_group,
             inputs: HashMap::new(),
+            textareas: HashMap::new(),
             anchors: HashMap::new(),
             popup: None,
             ask: None,
@@ -275,6 +280,41 @@ impl CommandButtonsDialog {
             }),
         );
         self.inputs.insert(key, input.clone());
+        input
+    }
+
+    /// A multi-line field for `key` that grows from one row to three and scrolls after
+    /// (`multiline maxRows={3}`), created with `value` the first time.
+    fn textarea(
+        &mut self,
+        key: String,
+        value: &str,
+        placeholder: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        apply: impl Fn(&str, &mut App) + 'static,
+    ) -> Entity<TextareaState> {
+        if let Some(input) = self.textareas.get(&key) {
+            return input.clone();
+        }
+        let value = value.to_owned();
+        let placeholder = placeholder.to_owned();
+        let input = cx.new(|cx| {
+            let mut state = TextareaState::new(window, cx)
+                .auto_grow(1, 3)
+                .placeholder(placeholder);
+            state.set_value(value, window, cx);
+            state
+        });
+        self.subscriptions.push(
+            cx.subscribe(&input, move |_, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let value = input.read(cx).value().to_string();
+                    apply(&value, cx);
+                }
+            }),
+        );
+        self.textareas.insert(key, input.clone());
         input
     }
 
@@ -886,9 +926,11 @@ impl CommandButtonsDialog {
                 .into_any_element()
         } else {
             let command_id = id.clone();
-            let command_input = self.input(
+            // `multiline maxRows={3}`: one row that grows to three, then scrolls.
+            let command_input = self.textarea(
                 format!("command:{id}"),
                 &button.command,
+                "systemctl status nginx",
                 window,
                 cx,
                 move |value, cx| {
@@ -896,14 +938,21 @@ impl CommandButtonsDialog {
                     Self::update_button(&command_id, cx, |button| button.command = value);
                 },
             );
+            style_textarea(&command_input, theme, cx);
+            let focus = command_input.read(cx).focus_handle(cx);
             div()
                 .flex_1()
                 .min_w_0()
                 .child(
-                    TextField::new(("command-text", index), &command_input)
-                        .label("Command")
-                        .placeholder("systemctl status nginx")
-                        .full_width(),
+                    FormField::new(
+                        ("command-text", index),
+                        FieldBody::Element(Textarea::new(&command_input).into_any_element()),
+                    )
+                    .multiline()
+                    .element_focus(focus)
+                    .label("Command")
+                    .shrink(true)
+                    .keep_placeholder(),
                 )
                 .into_any_element()
         };

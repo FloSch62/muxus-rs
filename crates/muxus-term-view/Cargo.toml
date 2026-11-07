@@ -19,6 +19,8 @@ smallvec = "1"
 
 [dev-dependencies]
 portable-pty = "0.9"
+# Headless windows for the view's pointer tests.
+gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }
 
 [lints]
 workspace = true

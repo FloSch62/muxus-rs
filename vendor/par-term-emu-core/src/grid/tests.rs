@@ -57,6 +57,42 @@ fn scroll_eviction_drops_one_row_not_a_buffer_rebuild() {
 }
 
 #[test]
+fn a_smaller_scrollback_drops_the_oldest_lines_as_trimmed() {
+    // Muxus patch: the scrollback preference changes on a running terminal.
+    let mut grid = Grid::new(10, 3, 10);
+    for i in 0..8 {
+        grid.set(0, 0, Cell::new((b'A' + i as u8) as char));
+        grid.scroll_up(1);
+    }
+    assert_eq!(grid.scrollback_len(), 8);
+    assert_eq!(grid.total_lines_scrolled(), 8);
+
+    grid.set_max_scrollback(5);
+    assert_eq!(grid.max_scrollback(), 5);
+    assert_eq!(grid.scrollback_len(), 5);
+    // The oldest lines went; the count of scrolled lines is kept, so the
+    // remaining lines keep their absolute numbers.
+    assert_eq!(grid.total_lines_scrolled(), 8);
+    assert_eq!(grid.scrollback_line(0).unwrap()[0].c, 'D');
+    assert_eq!(grid.scrollback_line(4).unwrap()[0].c, 'H');
+
+    // Growing keeps every line and lets more in.
+    grid.set_max_scrollback(20);
+    assert_eq!(grid.scrollback_len(), 5);
+    for i in 0..10 {
+        grid.set(0, 0, Cell::new((b'a' + i as u8) as char));
+        grid.scroll_up(1);
+    }
+    assert_eq!(grid.scrollback_len(), 15);
+
+    // None at all.
+    grid.set_max_scrollback(0);
+    assert_eq!(grid.scrollback_len(), 0);
+    grid.scroll_up(1);
+    assert_eq!(grid.scrollback_len(), 0);
+}
+
+#[test]
 fn snapshot_round_trips_per_line_storage() {
     // Acceptance 2/3 companion: capture flattens per-line rows into the
     // flat snapshot payload; restore re-slices it per line. Content and
@@ -1876,4 +1912,147 @@ fn delete_lines_with_n_past_region_size_empties_region_not_panics() {
     for i in 0..5 {
         assert_eq!(grid.get(0, i).unwrap().c, ' ');
     }
+}
+
+/// Muxus patch: a scrollback that reflows, filled with `lines` (`(text, wrapped)` per row,
+/// oldest first) scrolled off a `cols`-wide screen.
+fn scrollback_grid(cols: usize, max: usize, lines: &[(&str, bool)]) -> Grid {
+    let mut grid = Grid::new(cols, 2, max);
+    grid.set_reflow_scrollback(true);
+    for (text, wrapped) in lines {
+        for (col, ch) in text.chars().enumerate() {
+            grid.set(col, 0, Cell::new(ch));
+        }
+        grid.set_line_wrapped(0, *wrapped);
+        grid.scroll_up(1);
+    }
+    grid
+}
+
+fn scrollback_text(grid: &Grid) -> Vec<(String, bool)> {
+    (0..grid.scrollback_len())
+        .map(|index| {
+            let text: String = grid
+                .scrollback_line(index)
+                .unwrap()
+                .iter()
+                .filter(|cell| !cell.flags.wide_char_spacer())
+                .map(|cell| cell.c)
+                .collect();
+            (
+                text.trim_end().to_string(),
+                grid.is_scrollback_wrapped(index),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_wider_screen_joins_the_scrollback_lines_the_old_width_wrapped() {
+    let mut grid = scrollback_grid(
+        10,
+        100,
+        &[("AAAAAAAAAA", true), ("AAAAA", false), ("BBB", false)],
+    );
+    grid.resize(20, 2);
+    assert_eq!(
+        scrollback_text(&grid),
+        [("A".repeat(15), false), ("BBB".into(), false)]
+    );
+    let reflow = grid.take_scrollback_reflow().unwrap();
+    assert_eq!(reflow.lines, [0, 0, 1]);
+    assert_eq!((reflow.old_len, reflow.new_len), (3, 2));
+    // The lines above stay trimmed; the scrolled count follows the new length.
+    assert_eq!(grid.total_lines_scrolled(), 2);
+    assert!(grid.take_scrollback_reflow().is_none());
+}
+
+#[test]
+fn a_narrower_screen_wraps_scrollback_lines_instead_of_clipping_them() {
+    let mut grid = scrollback_grid(20, 100, &[("ABCDEFGHIJKLMNO", false), ("xyz", false)]);
+    grid.resize(4, 2);
+    assert_eq!(
+        scrollback_text(&grid),
+        [
+            ("ABCD".into(), true),
+            ("EFGH".into(), true),
+            ("IJKL".into(), true),
+            ("MNO".into(), false),
+            ("xyz".into(), false),
+        ]
+    );
+    assert_eq!(grid.take_scrollback_reflow().unwrap().lines, [0, 4]);
+    // Wrapped rows keep the full width.
+    assert_eq!(grid.scrollback_line(0).unwrap().len(), 4);
+}
+
+#[test]
+fn a_wide_character_that_does_not_fit_moves_to_the_next_row() {
+    let mut grid = Grid::new(3, 2, 100);
+    grid.set_reflow_scrollback(true);
+    grid.set(0, 0, Cell::new('a'));
+    let mut wide = Cell::new('中');
+    wide.flags.set_wide_char(true);
+    wide.width = 2;
+    grid.set(1, 0, wide);
+    let mut spacer = Cell::default();
+    spacer.flags.set_wide_char_spacer(true);
+    grid.set(2, 0, spacer);
+    grid.scroll_up(1);
+    grid.resize(2, 2);
+    let first = grid.scrollback_line(0).unwrap();
+    assert_eq!(first[0].c, 'a');
+    assert!(grid.is_scrollback_wrapped(0));
+    let second = grid.scrollback_line(1).unwrap();
+    assert_eq!(second[0].c, '中');
+    assert!(second[0].flags.wide_char());
+    assert!(second[1].flags.wide_char_spacer());
+}
+
+#[test]
+fn a_rewrapped_scrollback_keeps_its_capacity() {
+    let mut grid = scrollback_grid(
+        10,
+        3,
+        &[
+            ("0123456789", false),
+            ("abcdefghij", false),
+            ("klmnopqrst", false),
+        ],
+    );
+    grid.resize(5, 2);
+    // Six rows at the new width; the oldest three are evicted as a scroll evicts them.
+    assert_eq!(
+        scrollback_text(&grid),
+        [
+            ("fghij".into(), false),
+            ("klmno".into(), true),
+            ("pqrst".into(), false),
+        ]
+    );
+    assert_eq!(grid.total_lines_scrolled(), 6);
+}
+
+#[test]
+fn the_line_that_continues_onto_the_screen_is_left_alone() {
+    let mut grid = scrollback_grid(10, 100, &[("short", false), ("0123456789", true)]);
+    grid.resize(4, 2);
+    let lines = scrollback_text(&grid);
+    assert_eq!(lines[0], ("shor".into(), true));
+    assert_eq!(lines[1], ("t".into(), false));
+    // The open line keeps its stored row.
+    assert_eq!(lines[2], ("0123456789".into(), true));
+}
+
+#[test]
+fn without_the_switch_the_scrollback_keeps_its_widths() {
+    let mut grid = Grid::new(10, 2, 100);
+    for (col, ch) in "0123456789".chars().enumerate() {
+        grid.set(col, 0, Cell::new(ch));
+    }
+    grid.scroll_up(1);
+    grid.resize(4, 2);
+    assert_eq!(grid.scrollback_len(), 1);
+    assert_eq!(grid.scrollback_line(0).unwrap().len(), 10);
+    assert!(grid.take_scrollback_reflow().is_none());
 }

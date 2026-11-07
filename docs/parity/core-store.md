@@ -80,12 +80,12 @@ CARGO_TARGET_DIR=target-core cargo test -p muxus-store --test vault -- --ignored
 | Prefs envelope + rehydrate | client/src/state/prefs.ts, zustand persist | done | byte-equal golden cases (v0, v8, v15, v17, v18, none, bad JSON, empty) |
 | Prefs migration v0–17 + merge | client/src/state/prefs.ts | done | v0.15 keys: `pasteWarnLookalikes`, `closeTabOnCleanExit`, `showProgramStatus`, `discoverEnvironments`, `environmentRefreshSeconds` (`ENVIRONMENT_REFRESH_SECONDS`), `environmentsPanelWidth`; `webglRenderer` defaults to on |
 | Command buttons | client/src/command-buttons.ts | done | `shortcut` kept and de-duplicated here; dropping a shortcut that is not a bindable chord or that the shell owns needs the chord parser and happens in muxus-app (`keymap::command_buttons::keep_bindable_shortcuts`, on load and import) |
-| Highlight profiles + built-ins | client/src/highlight-profiles.ts, builtin-highlight-profiles.ts | partial | regex check injected by the caller; matching belongs to the terminal view |
-| Custom terminal schemes | client/src/terminal/custom-schemes.ts | partial | theme conversion left to the terminal view |
+| Highlight profiles + built-ins | client/src/highlight-profiles.ts, builtin-highlight-profiles.ts | done | stored shape, file format and validation here with the regex check injected by the caller; the checks, the JSON rule editor's parsing and the matching are `muxus_term::highlight_profiles` and `muxus_term::keywords` (`terminal.md`) |
+| Custom terminal schemes | client/src/terminal/custom-schemes.ts | done | stored shape, files and color arithmetic here; the conversion to a terminal theme is `muxus_term::custom_schemes` (`terminal.md`) |
 | Layout helpers | host-stats.ts, sidebar-width.ts, sftp-panel-width.ts, interface-zoom.ts | done | |
 | Window placement files | electron/src/main.ts, window-placement.ts | done | |
 | HTTP routes | server/src/routes/* | missing | by design: route logic becomes `muxus_session::Backend` methods over this store |
-| Plain-text session log files, recorder, normalizer | session-logging/{session-log-file,session-recorder,terminal-text-normalizer}.ts | missing | owned by muxus-session |
+| Plain-text session log files, recorder, normalizer | session-logging/{session-log-file,session-recorder,terminal-text-normalizer}.ts | done | in muxus-session, not the store: `muxus_session::logging::{log_file, recorder, normalizer}` (`session.md`) |
 
 ## Data compatibility evidence
 

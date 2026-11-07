@@ -14,16 +14,20 @@ use muxus_session::login_sequence::editor::{
     LoginSequenceDraft, LoginSequenceMode, LoginStepKind, change_login_step_kind, login_step_kind,
     login_step_summary, move_login_step, new_login_step, wait_pattern_error,
 };
+use muxus_term::highlight_profiles::{
+    keyword_highlight_rules_to_json, parse_keyword_highlight_rules_json,
+};
 use muxus_term::keywords::keyword_pattern_error;
 use muxus_term::paste::{PasteDelayKind, parse_paste_delay};
 use muxus_ui::color::{alpha, try_hex};
+use muxus_ui::gpui_kit::base::input::{Textarea, TextareaState};
 use muxus_ui::gpui_kit::{
-    AnyElement, App, Context, Hsla, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, px,
+    AnyElement, App, Context, Entity, Focusable, Hsla, InteractiveElement, IntoElement,
+    KeyDownEvent, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use muxus_ui::icon::icon;
-use muxus_ui::theme::{ActiveTheme, Status, Theme};
-use muxus_ui::widgets::{ButtonColor, IconButton, Tooltip};
+use muxus_ui::theme::{ActiveTheme, Status, Theme, fonts};
+use muxus_ui::widgets::{Alert, ButtonColor, IconButton, Tooltip};
 
 use super::form::{self, Choice, Form};
 use super::ssh::{row, stack};
@@ -31,6 +35,7 @@ use crate::features::host_editor::logic::session_logging::{
     HostSessionLoggingDraft, clamp_integer, format_retention, inherit_caption,
 };
 use crate::features::host_editor::widgets::visuals::{color_box, color_choices};
+use crate::features::settings::view::fields::style_textarea;
 use muxus_ui::widgets::Button;
 use muxus_ui::widgets::form_control::FormControl;
 use muxus_ui::widgets::form_control::FormControlLabel;
@@ -1069,7 +1074,111 @@ fn rule_style(theme: &Theme, rule: &KeywordHighlightRule) -> impl IntoElement {
         )
 }
 
-/// `KeywordHighlightRulesEditor` (the rule rows; JSON editing is not offered yet).
+/// `RulesJsonEditor`: the rule list as JSON text, applied with Apply or Ctrl/Cmd+Enter.
+fn rules_json_editor<V: Form>(
+    prefix: &str,
+    state: Entity<TextareaState>,
+    error: Option<String>,
+    rules: &[KeywordHighlightRule],
+    cx: &mut Context<V>,
+    on_change: ChangeHandler<V, Vec<KeywordHighlightRule>>,
+) -> AnyElement {
+    let theme = *cx.theme();
+    let p = theme.palette;
+    let json_key = format!("{prefix}-rules-json");
+    let apply = {
+        let (state, json_key, prefix) = (state.clone(), json_key.clone(), prefix.to_owned());
+        let previous = rules.to_vec();
+        Rc::new(move |this: &mut V, cx: &mut Context<V>| {
+            let text = state.read(cx).value().to_string();
+            match parse_keyword_highlight_rules_json(&text, &previous) {
+                Ok(rules) => {
+                    this.inputs().close_text_edit(&json_key);
+                    // The rows come back with the applied values.
+                    this.inputs().remove_prefix(&format!("{prefix}-rule-"));
+                    on_change(this, rules, cx);
+                }
+                Err(error) => this
+                    .inputs()
+                    .set_text_edit_error(&json_key, error.to_string()),
+            }
+            cx.notify();
+        })
+    };
+    style_textarea(&state, &theme, cx);
+    let focus = state.read(cx).focus_handle(cx);
+    let note: AnyElement = match &error {
+        Some(error) => Alert::new(Status::Error, error.clone())
+            .outlined()
+            .into_any_element(),
+        None => para(
+            "An array of rules. Each needs a keyword and a foreground color; name, background, \
+             regex, caseSensitive and wholeWord are optional. Backslashes in a regex are written \
+             twice in JSON, as in \\d+.",
+            caption(),
+            p.text.secondary,
+        )
+        .into_any_element(),
+    };
+    let key_apply = apply.clone();
+    let click_apply = apply;
+    let entity = cx.entity().downgrade();
+    let cancel_entity = cx.entity().downgrade();
+    let cancel_key = json_key.clone();
+    stack(1.)
+        .child(
+            div()
+                .on_key_down(
+                    cx.listener(move |this: &mut V, event: &KeyDownEvent, _, cx| {
+                        let keystroke = &event.keystroke;
+                        if keystroke.key == "enter"
+                            && (keystroke.modifiers.control || keystroke.modifiers.platform)
+                        {
+                            cx.stop_propagation();
+                            key_apply(this, cx);
+                        }
+                    }),
+                )
+                .child(
+                    FormField::new(
+                        SharedString::from(format!("{json_key}-field")),
+                        FieldBody::Element(Textarea::new(&state).into_any_element()),
+                    )
+                    .multiline()
+                    .min_rows(8)
+                    .element_focus(focus)
+                    .font(fonts::MONO, 12.5)
+                    .error(error.is_some())
+                    .keep_placeholder(),
+                ),
+        )
+        .child(note)
+        .child(
+            row(1.)
+                .child(
+                    Button::new(SharedString::from(format!("{prefix}-apply-json")), "Apply")
+                        .contained()
+                        .on_click(move |_, _, cx| {
+                            let _ = entity.update(cx, |this, cx| click_apply(this, cx));
+                        }),
+                )
+                .child(
+                    Button::new(
+                        SharedString::from(format!("{prefix}-cancel-json")),
+                        "Cancel",
+                    )
+                    .on_click(move |_, _, cx| {
+                        let _ = cancel_entity.update(cx, |this, cx| {
+                            this.inputs().close_text_edit(&cancel_key);
+                            cx.notify();
+                        });
+                    }),
+                ),
+        )
+        .into_any_element()
+}
+
+/// `KeywordHighlightRulesEditor`: the rule rows, or the list as JSON text ("Edit as JSON").
 pub fn keyword_rules_editor<V: Form>(
     view: &mut V,
     prefix: &str,
@@ -1082,6 +1191,10 @@ pub fn keyword_rules_editor<V: Form>(
     let theme = *cx.theme();
     let p = theme.palette;
     let on_change: ChangeHandler<V, Vec<KeywordHighlightRule>> = Rc::new(on_change);
+    let json_key = format!("{prefix}-rules-json");
+    if let Some((state, error)) = view.inputs().text_edit(&json_key) {
+        return rules_json_editor(prefix, state, error, rules, cx, on_change);
+    }
     let mut col = stack(0.75);
     if rules.is_empty() {
         col = col.child(para(empty_message.to_owned(), body2(), p.text.secondary));
@@ -1260,29 +1373,51 @@ pub fn keyword_rules_editor<V: Form>(
         );
     }
     let entity = cx.entity().downgrade();
+    let json_entity = cx.entity().downgrade();
     let add = on_change.clone();
     let all = rules.to_vec();
+    let json_rules = rules.to_vec();
     col = col.child(
-        row(1.).pt(Theme::spacing(0.5)).child(
-            Button::new(SharedString::from(format!("{prefix}-add-rule")), "Add rule")
-                .start_icon("Add")
-                .on_click(move |_, _, cx| {
-                    let _ = entity.update(cx, |this, cx| {
-                        let mut next = all.clone();
-                        next.push(KeywordHighlightRule {
-                            id: muxus_store::prefs::command_buttons::new_preference_id("highlight"),
-                            name: None,
-                            keyword: "ERROR".into(),
-                            foreground: KeywordHighlightRule::DEFAULT_FOREGROUND.into(),
-                            background: Some(KeywordHighlightRule::DEFAULT_BACKGROUND.into()),
-                            case_sensitive: false,
-                            whole_word: true,
-                            regex: None,
+        row(1.)
+            .pt(Theme::spacing(0.5))
+            .child(
+                Button::new(SharedString::from(format!("{prefix}-add-rule")), "Add rule")
+                    .start_icon("Add")
+                    .on_click(move |_, _, cx| {
+                        let _ = entity.update(cx, |this, cx| {
+                            let mut next = all.clone();
+                            next.push(KeywordHighlightRule {
+                                id: muxus_store::prefs::command_buttons::new_preference_id(
+                                    "highlight",
+                                ),
+                                name: None,
+                                keyword: "ERROR".into(),
+                                foreground: KeywordHighlightRule::DEFAULT_FOREGROUND.into(),
+                                background: Some(KeywordHighlightRule::DEFAULT_BACKGROUND.into()),
+                                case_sensitive: false,
+                                whole_word: true,
+                                regex: None,
+                            });
+                            add(this, next, cx);
                         });
-                        add(this, next, cx);
+                    }),
+            )
+            .child(
+                Button::new(
+                    SharedString::from(format!("{prefix}-edit-json")),
+                    "Edit as JSON",
+                )
+                .start_icon("DataObjectOutlined")
+                .on_click(move |_, window, cx| {
+                    let text = keyword_highlight_rules_to_json(&json_rules);
+                    let key = json_key.clone();
+                    let _ = json_entity.update(cx, |this, cx| {
+                        this.inputs()
+                            .open_text_edit(&key, text, (8, 24), window, cx);
+                        cx.notify();
                     });
                 }),
-        ),
+            ),
     );
     col.into_any_element()
 }

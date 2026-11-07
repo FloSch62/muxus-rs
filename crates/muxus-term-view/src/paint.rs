@@ -10,6 +10,7 @@ use gpui_kit::{
     UnderlineStyle as GpuiUnderline, Window, fill, outline, point, size,
 };
 use muxus_term::color::Rgba;
+use muxus_term::palette::{COMPOSITION_VIEW_BACKGROUND, COMPOSITION_VIEW_FOREGROUND};
 use muxus_term::style::UnderlineStyle;
 use muxus_term::terminal::CursorShape;
 // Painting works in layout space (scaled with the interface): `px` here takes laid-out
@@ -121,7 +122,7 @@ pub(crate) enum RulerLane {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Scrollbar {
-    /// Slider top and height as fractions of the track.
+    /// Slider top (from the track's top) and height, in px. The track is as tall as the rows.
     pub top: f32,
     pub height: f32,
     pub color: Hsla,
@@ -137,20 +138,29 @@ pub(crate) struct CellSize {
     pub baseline_shift: f32,
 }
 
+/// The IME's composition, drawn over the cursor's cell as xterm's composition view.
+#[derive(Clone, Debug)]
+pub(crate) struct FramePreedit {
+    pub text: String,
+    pub row: usize,
+    pub col: usize,
+    /// Columns from the cursor to the right edge: longer text shows its end.
+    pub cols_left: usize,
+}
+
 #[derive(Clone)]
 pub(crate) struct Frame {
     /// Shared with the view's cache: unchanged rows are not rebuilt.
     pub rows: std::rc::Rc<Vec<Vec<PaintCell>>>,
     pub cell: CellSize,
     pub fonts: FontSet,
-    pub background: Hsla,
     pub cursor: Option<FrameCursor>,
     pub images: Vec<FrameImage>,
     pub scrollbar: Option<Scrollbar>,
     pub ruler: Vec<RulerMark>,
     pub buffer_lines: usize,
     /// IME composition shown at the cursor.
-    pub preedit: Option<String>,
+    pub preedit: Option<FramePreedit>,
 }
 
 /// Width reserved at the right for the scrollbar and the overview ruler (`scrollbar.width`).
@@ -221,17 +231,8 @@ pub(crate) fn paint_frame(
             cx,
         );
     }
-    if let (Some(preedit), Some(cursor)) = (&frame.preedit, &frame.cursor) {
-        paint_preedit(
-            preedit,
-            cursor,
-            frame,
-            origin_x,
-            origin_y,
-            line_height,
-            window,
-            cx,
-        );
+    if let Some(preedit) = &frame.preedit {
+        paint_preedit(preedit, frame, origin_x, origin_y, window, cx);
     }
 
     let grid_height = frame.rows.len() as f32 * cell.height;
@@ -239,15 +240,10 @@ pub(crate) fn paint_frame(
     if let Some(scrollbar) = &frame.scrollbar {
         let track_x =
             f32::from(bounds.origin.x + bounds.size.width) - inner_padding() - scrollbar_width();
-        let track_height = f32::from(bounds.size.height) - 2.0 * inner_padding();
-        let top = origin_y + scrollbar.top * track_height;
-        let height = (scrollbar.height * track_height)
-            .max(20.0)
-            .min(track_height);
         window.paint_quad(fill(
             Bounds::new(
-                point(px(track_x), px(top)),
-                size(px(scrollbar_width()), px(height)),
+                point(px(track_x), px(origin_y + scrollbar.top)),
+                size(px(scrollbar_width()), px(scrollbar.height)),
             ),
             scrollbar.color,
         ));
@@ -651,51 +647,47 @@ fn paint_cursor(
 
 #[allow(clippy::too_many_arguments)]
 fn paint_preedit(
-    preedit: &str,
-    cursor: &FrameCursor,
+    preedit: &FramePreedit,
     frame: &Frame,
     origin_x: f32,
     origin_y: f32,
-    line_height: Pixels,
     window: &mut Window,
     cx: &mut App,
 ) {
-    if preedit.is_empty() {
+    if preedit.text.is_empty() {
         return;
     }
-    let x = cell_x(origin_x, cursor.col, frame.cell);
-    let y = origin_y + cursor.row as f32 * frame.cell.height;
-    let text: SharedString = preedit.to_string().into();
+    let x = cell_x(origin_x, preedit.col, frame.cell);
+    let y = origin_y + preedit.row as f32 * frame.cell.height;
+    let text: SharedString = preedit.text.clone().into();
     let run = TextRun {
         len: text.len(),
         font: frame.fonts.font(false, false),
-        color: cursor.color,
-        background_color: Some(frame.background),
-        underline: Some(GpuiUnderline {
-            thickness: px(1.0),
-            color: Some(cursor.color),
-            wavy: false,
-        }),
+        color: hsla(COMPOSITION_VIEW_FOREGROUND),
+        background_color: None,
+        underline: None,
         strikethrough: None,
     };
     let shaped = window
         .text_system()
         .shape_line(text, frame.fonts.size, &[run], None);
-    window.paint_quad(fill(
-        Bounds::new(
-            point(px(x), px(y)),
-            size(shaped.width, px(frame.cell.height)),
-        ),
-        frame.background,
-    ));
-    let _ = shaped.paint(
-        point(px(x), px(y)),
-        line_height,
-        TextAlign::Left,
-        None,
-        window,
-        cx,
-    );
+    // At most as wide as the room to the right edge; longer text shows its end
+    // (`direction: rtl` with the overflow hidden).
+    let max_width = preedit.cols_left as f32 * frame.cell.width;
+    let width = f32::from(shaped.width).min(max_width);
+    let shift = (f32::from(shaped.width) - width).max(0.0);
+    let bounds = Bounds::new(point(px(x), px(y)), size(px(width), px(frame.cell.height)));
+    window.paint_quad(fill(bounds, hsla(COMPOSITION_VIEW_BACKGROUND)));
+    window.with_content_mask(Some(ContentMask { bounds }), |window| {
+        let _ = shaped.paint(
+            point(px(x - shift), px(y)),
+            px(frame.cell.height),
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    });
 }
 
 /// xterm's overview ruler: three lanes in the scrollbar's width at the right edge of the padding

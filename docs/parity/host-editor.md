@@ -76,11 +76,11 @@ content (`palette.rs`) and test data.
 | Appearance (scheme select with previews and custom schemes, font/background colour overrides, command button group, paste delays, SFTP / console compatibility) | `host-editor/AppearanceSection.tsx` | done | Colour override is a swatch popover, not the OS colour input |
 | Login sequence editor | `LoginSequenceEditor.tsx`, `muxus_session::login_sequence::editor` | done | |
 | Session logging policy fields (inherit switch, enable, capture input, retention, log to file) | `SessionLoggingPolicyFields.tsx` | done | |
-| Keyword highlighting rules | `KeywordHighlightRulesEditor.tsx` | partial | Rule list editor only; the JSON mode is missing |
+| Keyword highlighting rules | `KeywordHighlightRulesEditor.tsx` | done | Rule rows and "Edit as JSON" (`shared::keyword_rules_editor`: a mono text area of 8 to 24 rows, Apply or Ctrl/Cmd+Enter, Cancel, the parse error in an outlined alert, the format note); the editor's text is kept in the form's `InputCache` |
 | Telnet / serial editors (port autocomplete with refresh, baud/data/parity/stop/flow) | `NativeHostEditor.tsx`, `native-draft.ts` | done | |
 | RDP / VNC editors (general, logon, gateway route, options) | `RemoteDesktopHostEditor.tsx`, `desktop-draft.ts` | done | |
 | gNMI / NETCONF editors (general, login, TLS security cards, files with Browse, route, options) | `ManagementHostEditor.tsx`, `management-draft.ts` | done | |
-| VaultSecretField | `VaultSecretField.tsx` | partial | Field, missing-secret state and helper texts done; "New secret…" is listed but does not open the vault secret dialog yet |
+| VaultSecretField | `VaultSecretField.tsx` | done | Field, missing-secret state and helper texts; "New secret…" opens the vault's secret dialog over the window (`secret_dialog::request_new_secret`, mounted by `ui/features.rs`) and the field takes the new secret |
 | TunnelEditorDialog (saved host or custom connection, rule, diagram, auto-start/reconnect, Save / Save & start) | `TunnelEditorDialog.tsx` | done | |
 | HostBulkEditDialog + plan | `HostBulkEditDialog.tsx`, `host-bulk-edit.ts` | done | prompt waiting, anti-idle, Backspace/Enter, implicit CR and local echo in the appearance section (`dialogs/bulk_typing.rs`); system OpenSSH is not shown yet |
 | Prompt waiting, anti-idle, keyboard and echo controls | `PastePromptFields.tsx`, `AntiIdleFields.tsx`, `TerminalAppearanceSection.tsx` | done | `view/session_input.rs`, shared by the host editor (SSH, Telnet, serial) and the bulk editor; counted in the Terminal appearance badge |
@@ -172,10 +172,6 @@ examples use them); `services` can be called directly for writes without UI.
 
 ## Known differences
 
-- "New secret…" in VaultSecretField does not open the vault secret dialog
-  (`features::vault::open_vault_secret_dialog` exists; needs a callback from
-  the editor that mounts it and writes the new id back).
-- KeywordHighlightRulesEditor has no JSON mode.
 - Colour override uses a swatch popover instead of the browser's colour input.
 - Description is single-line.
 - Autocomplete fields have no clear (×) button; select menus have no arrow-key

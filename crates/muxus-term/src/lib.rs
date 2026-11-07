@@ -14,6 +14,7 @@ pub mod keyboard;
 pub mod keywords;
 pub mod links;
 pub mod mouse;
+pub mod move_to_cell;
 pub mod osc52;
 pub mod palette;
 pub mod paste;

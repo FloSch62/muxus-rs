@@ -33,7 +33,7 @@ bookkeeping, what a tab runs).
 | 50 MB `cat` within 3 s | same | done | 1.06–1.65 s in the app, was 9.8 s |
 | Frames during a flood | xterm.js render debouncer | done | frame gaps while output flows: p95 22 ms (`seq`), 34 ms (`cat`); the longest output batch on the UI thread is under 1 ms (8 ms once) |
 | Idle CPU after a flood | xterm.js | done | below what `hack/perf.sh` can resolve (under 0.3% of a core over 3 s), one tab and ten tabs |
-| Memory | xterm.js `CircularList` of `BufferLine`s | partial | scrollback lines store their written cells only; a cell is still 40 bytes (xterm.js: 12), see below |
+| Memory | xterm.js `CircularList` of `BufferLine`s | partial | scrollback lines store their written cells only; a cell is still 40 bytes (xterm.js: 12), see below. Packing the engine's `Cell` (character, colors, flags, hyperlink id) the way xterm packs a cell into three 32-bit words reworks every reader and writer of the grid; not attempted |
 | Engine benchmark | none | done | `crates/muxus-term/examples/throughput` |
 | Benchmark of the app | none | done | `hack/perf.sh`, now with the process's CPU per step |
 | Same behaviour as before | all of the above | done | the engine's 1890 tests plus 7 new ones (property tests against the per-character path), 285 + 2 terminal tests, and the final state after every benchmark stream is identical to the original engine's |
@@ -185,9 +185,11 @@ frames), and feeding the emulator about half of the UI thread during `seq`.
 - **Cell size.** A cell is 40 bytes (xterm.js packs one into 12). Compact
   scrollback keeps short lines small, but full lines still cost 8 KB at 200
   columns.
-- **Scrollback size changes.** With the scrollback a ring buffer, changing its
-  size on a running terminal is now straightforward in the engine
-  (`terminal.md` lists it as new terminals only).
+- **Scrollback reflow.** A width change now rewraps the whole scrollback, as
+  xterm does, so a resize costs in proportion to the scrollback again: 6–45 ms
+  for 10 000 lines of 156 characters (release), once per settled resize.
+- **Scrollback size changes** are done: `Grid::set_max_scrollback` drops the
+  oldest lines from the ring buffer in one drain (`PATCHES.md` in the engine).
 - Non-ASCII text (CJK, emoji) still takes the per-character path.
 
 ## Attribution
