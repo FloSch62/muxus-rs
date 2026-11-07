@@ -62,6 +62,19 @@ impl SessionSidebar {
                         .on_click(action(SidebarAction::MoveHosts(hosts.clone()), cx)),
                 )
                 .child(
+                    // Scripts drops what cannot run one (non-SSH and system OpenSSH hosts)
+                    // and says so, as the client's `openScriptsFor` does.
+                    IconButton::new("selection-run-script", "TerminalOutlined")
+                        .tooltip("Run script…")
+                        .on_click(action(
+                            SidebarAction::RunScript {
+                                hosts: hosts.clone(),
+                                what: "The selection".into(),
+                            },
+                            cx,
+                        )),
+                )
+                .child(
                     IconButton::new("selection-delete", "DeleteOutlined")
                         .tooltip("Delete")
                         .on_click(action(SidebarAction::DeleteHosts(hosts), cx)),
