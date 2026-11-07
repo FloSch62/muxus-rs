@@ -170,8 +170,9 @@ fn friendly_error(err: &serialport::Error, path: &str) -> SerialError {
 }
 
 /// Open the device with the profile's framing. The serial library has no
-/// mark or space parity and no 1.5 stop bits; node-serialport refuses them
-/// on Unix too.
+/// mark or space parity and no 1.5 stop bits: on Windows the port is opened
+/// without them and they are set in its DCB, as node-serialport sets them;
+/// elsewhere they are refused, as node-serialport refuses them on Unix.
 pub fn open_port(profile: &SerialProfile) -> Result<Box<dyn SerialLine>, serialport::Error> {
     let options = serial_open_options(profile);
     let invalid =
@@ -183,24 +184,29 @@ pub fn open_port(profile: &SerialProfile) -> Result<Box<dyn SerialLine>, serialp
         8 => serialport::DataBits::Eight,
         other => return Err(invalid(format!("Invalid data bits setting {other}"))),
     };
-    let parity = match options.parity {
-        SerialParity::None => serialport::Parity::None,
-        SerialParity::Even => serialport::Parity::Even,
-        SerialParity::Odd => serialport::Parity::Odd,
-        SerialParity::Mark | SerialParity::Space => {
+    let overrides = DcbOverrides::for_framing(options.parity, options.stop_bits);
+    if cfg!(not(windows)) {
+        if overrides.parity.is_some() {
             return Err(invalid(
                 "Mark and space parity are not supported on this computer".into(),
             ));
         }
-    };
-    let stop_bits = match options.stop_bits {
-        StopBits::One => serialport::StopBits::One,
-        StopBits::Two => serialport::StopBits::Two,
-        StopBits::OnePointFive => {
+        if overrides.stop_bits.is_some() {
             return Err(invalid(
                 "1.5 stop bits are not supported on this computer".into(),
             ));
         }
+    }
+    let parity = match options.parity {
+        SerialParity::None => serialport::Parity::None,
+        SerialParity::Even => serialport::Parity::Even,
+        SerialParity::Odd => serialport::Parity::Odd,
+        // Opened with parity checking on; the DCB then names the parity.
+        SerialParity::Mark | SerialParity::Space => serialport::Parity::Odd,
+    };
+    let stop_bits = match options.stop_bits {
+        StopBits::One | StopBits::OnePointFive => serialport::StopBits::One,
+        StopBits::Two => serialport::StopBits::Two,
     };
     let flow_control = if options.rtscts {
         serialport::FlowControl::Hardware
@@ -221,9 +227,86 @@ pub fn open_port(profile: &SerialProfile) -> Result<Box<dyn SerialLine>, serialp
         let builder = builder.exclusive(options.lock);
         Ok(Box::new(builder.open_native()?))
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
+        let port = builder.open_native()?;
+        overrides.apply(&port)?;
+        let port: Box<dyn serialport::SerialPort> = Box::new(port);
+        Ok(Box::new(port))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = overrides;
         Ok(Box::new(builder.open()?))
+    }
+}
+
+/// `DCB.Parity` for mark parity (winbase.h `MARKPARITY`).
+const DCB_MARK_PARITY: u8 = 3;
+/// `DCB.Parity` for space parity (winbase.h `SPACEPARITY`).
+const DCB_SPACE_PARITY: u8 = 4;
+/// `DCB.StopBits` for 1.5 stop bits (winbase.h `ONE5STOPBITS`).
+const DCB_ONE5_STOP_BITS: u8 = 1;
+
+#[cfg(windows)]
+const _: () = {
+    use windows_sys::Win32::Devices::Communication::{MARKPARITY, ONE5STOPBITS, SPACEPARITY};
+    assert!(DCB_MARK_PARITY == MARKPARITY);
+    assert!(DCB_SPACE_PARITY == SPACEPARITY);
+    assert!(DCB_ONE5_STOP_BITS == ONE5STOPBITS);
+};
+
+/// The framing the serial library cannot set, as Windows DCB values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct DcbOverrides {
+    parity: Option<u8>,
+    stop_bits: Option<u8>,
+}
+
+impl DcbOverrides {
+    fn for_framing(parity: SerialParity, stop_bits: StopBits) -> Self {
+        Self {
+            parity: match parity {
+                SerialParity::Mark => Some(DCB_MARK_PARITY),
+                SerialParity::Space => Some(DCB_SPACE_PARITY),
+                SerialParity::None | SerialParity::Even | SerialParity::Odd => None,
+            },
+            stop_bits: (stop_bits == StopBits::OnePointFive).then_some(DCB_ONE5_STOP_BITS),
+        }
+    }
+
+    /// Write the overrides into the open port's DCB (`GetCommState`/`SetCommState`, as
+    /// node-serialport's Windows binding does).
+    #[cfg(windows)]
+    fn apply(self, port: &serialport::COMPort) -> Result<(), serialport::Error> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Devices::Communication::{DCB, GetCommState, SetCommState};
+        use windows_sys::Win32::Foundation::HANDLE;
+
+        if self == Self::default() {
+            return Ok(());
+        }
+        let handle = port.as_raw_handle() as HANDLE;
+        // SAFETY: DCB is plain data; all-zero is a valid value to fill in.
+        let mut dcb: DCB = unsafe { std::mem::zeroed() };
+        dcb.DCBlength = std::mem::size_of::<DCB>() as u32;
+        // SAFETY: `handle` is the open port's own handle and `dcb` is a correctly sized DCB.
+        if unsafe { GetCommState(handle, &mut dcb) } == 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        if let Some(parity) = self.parity {
+            dcb.Parity = parity;
+            // fParity: check and report parity errors.
+            dcb._bitfield |= 1 << 1;
+        }
+        if let Some(stop_bits) = self.stop_bits {
+            dcb.StopBits = stop_bits;
+        }
+        // SAFETY: as above; SetCommState only reads the DCB.
+        if unsafe { SetCommState(handle, &dcb) } == 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        Ok(())
     }
 }
 
@@ -470,5 +553,63 @@ impl Control {
             self.ends.events.close();
         }
         self.ends.feedback.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_space_parity_and_one_and_a_half_stop_bits_become_dcb_values() {
+        assert_eq!(
+            DcbOverrides::for_framing(SerialParity::Mark, StopBits::One),
+            DcbOverrides {
+                parity: Some(3),
+                stop_bits: None
+            }
+        );
+        assert_eq!(
+            DcbOverrides::for_framing(SerialParity::Space, StopBits::OnePointFive),
+            DcbOverrides {
+                parity: Some(4),
+                stop_bits: Some(1)
+            }
+        );
+        for parity in [SerialParity::None, SerialParity::Even, SerialParity::Odd] {
+            for stop_bits in [StopBits::One, StopBits::Two] {
+                assert_eq!(
+                    DcbOverrides::for_framing(parity, stop_bits),
+                    DcbOverrides::default()
+                );
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn refuses_mark_space_parity_and_one_and_a_half_stop_bits_off_windows() {
+        let refusal = |profile: SerialProfile| match open_port(&profile) {
+            Err(err) => (err.kind(), err.description),
+            Ok(_) => panic!("the framing should be refused"),
+        };
+        let mut profile = SerialProfile::new("/dev/muxus-test-no-such-port");
+        profile.parity = SerialParity::Space;
+        assert_eq!(
+            refusal(profile.clone()),
+            (
+                serialport::ErrorKind::InvalidInput,
+                "Mark and space parity are not supported on this computer".to_string()
+            )
+        );
+        profile.parity = SerialParity::None;
+        profile.stop_bits = StopBits::OnePointFive;
+        assert_eq!(
+            refusal(profile),
+            (
+                serialport::ErrorKind::InvalidInput,
+                "1.5 stop bits are not supported on this computer".to_string()
+            )
+        );
     }
 }
