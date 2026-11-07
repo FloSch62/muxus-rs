@@ -12,6 +12,7 @@ use crate::color::alpha;
 use crate::icon::{MEDIUM, SMALL, icon};
 use crate::theme::ActiveTheme;
 use crate::widgets::button::elevation;
+use crate::widgets::focus::{self, TabStop};
 
 type Handler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
@@ -126,7 +127,10 @@ impl RenderOnce for Checkbox {
             .rounded(px(total / 2.))
             .child(icon(name, size, ink));
         if !self.disabled {
-            root = root.cursor_pointer().hover(move |s| s.bg(hover));
+            root = root
+                .tab_stop_with_ripple(focus::ripple(ink, None), false)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover));
             if let Some(handler) = self.on_click {
                 root = root.on_click(move |event, window, cx| handler(event, window, cx));
             }
@@ -176,7 +180,9 @@ impl Switch {
 }
 
 impl RenderOnce for Switch {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus_handle = focus::keyed_focus(&self.id, window, cx);
+        let focused = !self.disabled && focus::focus_visible(&focus_handle, window);
         let theme = cx.theme();
         let p = &theme.palette;
         let dark = theme.mode.is_dark();
@@ -247,6 +253,8 @@ impl RenderOnce for Switch {
                     .items_center()
                     .justify_center()
                     .when_enabled(!self.disabled, hover)
+                    // The focus ripple on the switch base, in the thumb's ink.
+                    .when_focused(focused, focus::ripple(thumb_color, None))
                     .child(
                         div()
                             .size(px(thumb))
@@ -256,7 +264,7 @@ impl RenderOnce for Switch {
                     ),
             );
         if !self.disabled {
-            root = root.cursor_pointer();
+            root = root.track_focus(&focus_handle).cursor_pointer();
             if let Some(handler) = self.on_click {
                 root = root.on_click(move |event, window, cx| handler(event, window, cx));
             }
@@ -267,6 +275,7 @@ impl RenderOnce for Switch {
 
 trait EnabledHover: Styled + Sized {
     fn when_enabled(self, enabled: bool, hover: gpui_kit::Hsla) -> Self;
+    fn when_focused(self, focused: bool, ripple: gpui_kit::Hsla) -> Self;
 }
 
 impl EnabledHover for gpui_kit::Div {
@@ -276,5 +285,9 @@ impl EnabledHover for gpui_kit::Div {
         } else {
             self
         }
+    }
+
+    fn when_focused(self, focused: bool, ripple: gpui_kit::Hsla) -> Self {
+        if focused { self.bg(ripple) } else { self }
     }
 }

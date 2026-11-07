@@ -424,7 +424,10 @@ impl RenderOnce for MenuItem {
                 natural
             }))
         };
-        if self.selected {
+        if self.selected && self.highlighted {
+            // An autocomplete's picked option under the highlight: selected + hover.
+            item = item.bg(hover);
+        } else if self.selected {
             item = item.bg(selected_bg);
         } else if self.focus_ring {
             item = item.bg(p.action.focus);

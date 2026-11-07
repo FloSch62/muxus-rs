@@ -13,6 +13,7 @@ use gpui_kit::{
 
 use crate::color::rgba8;
 use crate::widgets::dialog::CloseHandler;
+use crate::widgets::focus::FocusTrap;
 
 /// Draw order of a [`window_layer`] relative to other deferred elements:
 /// dialogs 3, menus [`super::menu::MENU_LAYER`] above them.
@@ -46,6 +47,8 @@ pub fn modal_layer(
     on_close: Option<CloseHandler>,
 ) -> AnyElement {
     let size = window.viewport_size();
+    let id: ElementId = id.into();
+    let trap = ElementId::NamedChild(std::sync::Arc::new(id.clone()), "focus-trap".into());
     window_layer(
         window,
         DIALOG_LAYER,
@@ -66,13 +69,14 @@ pub fn modal_layer(
                 },
             )
             .child(crate::widgets::hover::hover_refresh("modal-layer-hover"))
-            .child(
+            .child(FocusTrap::new(
+                trap,
                 div()
                     .id("modal-layer-paper")
                     .flex()
                     .max_h(size.height - px(64.))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(paper),
-            ),
+            )),
     )
 }

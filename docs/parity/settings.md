@@ -44,7 +44,7 @@ opens the window. `MUXUS_SETTINGS_SECTION`, `MUXUS_SETTINGS_SCROLL`, `MUXUS_SETT
 | Section navigation, deep links (`section` + `item`), leave-logging confirmation, unsaved dot with tooltip | SettingsDialog.tsx `useSettingsNavigation`, `SettingsBody` | done | `section::SettingsNavigation` (tested). The narrow-window section picker (below 600px) is missing. |
 | Live cross-window preference sync | zustand persist + desktop bridge | done | one in-process entity; see hook points |
 | Settings layout language (page, group, row, row select, status text) | SettingsLayout.tsx | done | `view/kit.rs` |
-| Appearance: theme, interface scale, layout toggles + live preview, status bar items, terminal colors (scheme pickers, text/background color with "Use scheme color"), terminal font, sliders, split panes | SettingsDialog.tsx `AppearanceSection`, `LayoutSettings`, LayoutPreview.tsx, TerminalSchemeSelect.tsx | done | Interface scale is stored; scaling the main window is the app's. The font family is a plain field (installed fonts drive the warning and the description); the Autocomplete dropdown is missing. |
+| Appearance: theme, interface scale, layout toggles + live preview, status bar items, terminal colors (scheme pickers, text/background color with "Use scheme color"), terminal font, sliders, split panes | SettingsDialog.tsx `AppearanceSection`, `LayoutSettings`, LayoutPreview.tsx, TerminalSchemeSelect.tsx | done | Interface scale is stored; scaling the main window is the app's. The font family is a free-solo `Autocomplete` over the bundled, installed and generic families (`terminal_font_families`); installed fonts drive the warning and the description. The sliders are the kit's `Slider` (small, 180px), stepping by keyboard too. |
 | Custom color schemes: new from a copy, import (Windows Terminal, iTerm2, Muxus), export one/all, rename, delete, color editor with preview | CustomTerminalSchemeSettings.tsx | done | file logic is `muxus-term::custom_schemes` |
 | Color wells | `<input type="color">` | done (replaced) | the browser opens the system dialog; here a popover with a saturation/value square, hue strip and hex field |
 | Terminal: cursor, clipboard and mouse, paste pacing, buffer and rendering | `TerminalSection` | done | |
@@ -62,7 +62,7 @@ opens the window. `MUXUS_SETTINGS_SECTION`, `MUXUS_SETTINGS_SCROLL`, `MUXUS_SETT
 | Toasts, confirmations | ToastHost.tsx, DialogHost.tsx | done | per window, like the client |
 | Vault startup coordination | password-vault-startup.ts | done | `vault_startup.rs` (test ported) |
 | Vault secret helpers | vault-secrets.ts | partial | find/missing/buttons using/filter/`secretTerminalIds`/`quotedList` + tests; sending a secret belongs to the command buttons feature |
-| Keyboard focus order (Tab between controls) | MUI | partial | inputs focus on click; Tab order between buttons and switches is not wired |
+| Keyboard focus order (Tab between controls) | MUI | done | Tab and Shift+Tab walk inputs, buttons, switches, checkboxes, sliders, toggle groups and selects in paint order (the window's component root); keyboard focus shows MUI's focus ripple (a 2px primary outline on selects); Enter or Space presses the focused control; the window's dialogs trap the focus |
 
 ## Screenshots
 

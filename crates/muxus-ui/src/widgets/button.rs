@@ -14,6 +14,7 @@ use crate::color::alpha;
 use crate::icon::icon;
 use crate::label::label;
 use crate::theme::{ActiveTheme, Theme, fonts};
+use crate::widgets::focus::{self, TabStop};
 use crate::widgets::tooltip::{AnchorBounds, Placement, Tooltip, bounds_probe};
 
 pub type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -82,6 +83,8 @@ pub struct IconButton {
     anchor: Option<AnchorBounds>,
     placement: Placement,
     wash: Option<(Hsla, Hsla)>,
+    turned: bool,
+    tab_stop: bool,
 }
 
 impl IconButton {
@@ -102,7 +105,21 @@ impl IconButton {
             anchor: None,
             placement: Placement::Bottom,
             wash: None,
+            turned: false,
+            tab_stop: true,
         }
+    }
+
+    /// `tabIndex={-1}`: out of the tab order (an Autocomplete's own buttons).
+    pub fn skip_tab(mut self) -> Self {
+        self.tab_stop = false;
+        self
+    }
+
+    /// The icon turned half a turn (an Autocomplete's popup indicator while open).
+    pub fn turned(mut self, turned: bool) -> Self {
+        self.turned = turned;
+        self
     }
 
     /// A background tint and its hover form (`sx={{ bgcolor, '&:hover':
@@ -224,7 +241,13 @@ impl RenderOnce for IconButton {
                 self.selected.then_some(theme.palette.action.selected),
                 |b, bg| b.bg(bg),
             )
-            .child(icon(&self.icon, self.icon_size, ink));
+            .child(if self.turned {
+                icon(&self.icon, self.icon_size, ink).with_transformation(
+                    gpui_kit::Transformation::rotate(gpui_kit::radians(std::f32::consts::PI)),
+                )
+            } else {
+                icon(&self.icon, self.icon_size, ink)
+            });
         if let Some((background, _)) = self.wash {
             button = button.bg(background);
         }
@@ -237,6 +260,12 @@ impl RenderOnce for IconButton {
         let anchor = self.anchor.unwrap_or_default();
         button = button.child(bounds_probe(&anchor));
         if !self.disabled {
+            if self.tab_stop {
+                button = button.tab_stop_with_ripple(
+                    focus::ripple(ink, self.wash.map(|(background, _)| background)),
+                    false,
+                );
+            }
             button = button
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
@@ -624,6 +653,12 @@ impl RenderOnce for Button {
             );
         }
         if !self.disabled {
+            button = button.tab_stop_with_ripple(focus::ripple(fg, bg), false);
+            if self.variant == ButtonVariant::Contained {
+                // `&.Mui-focusVisible { boxShadow: theme.shadows[6] }`.
+                let raised = elevation(6, theme);
+                button = button.focus_visible(move |s| s.shadow(raised));
+            }
             button = button.cursor_pointer().hover(move |mut s| {
                 if let Some(bg) = hover_bg {
                     s = s.bg(bg);
