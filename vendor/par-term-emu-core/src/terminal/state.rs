@@ -774,6 +774,9 @@ pub(crate) struct HostConfig {
     /// Store scrollback lines without their trailing default cells
     /// ([`Terminal::set_compact_scrollback`]).
     pub(crate) compact_scrollback: bool,
+    /// Muxus patch: resize the screens the way xterm.js resizes its buffers
+    /// ([`Terminal::set_xterm_resize`]).
+    pub(crate) xterm_resize: bool,
 }
 
 impl Default for HostConfig {
@@ -792,6 +795,7 @@ impl Default for HostConfig {
             configured_warning_bell_volume: 4,
             configured_margin_bell_volume: 4,
             compact_scrollback: false,
+            xterm_resize: false,
         }
     }
 }
