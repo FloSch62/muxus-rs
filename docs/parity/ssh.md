@@ -49,7 +49,7 @@ in-process ssh-agent; nothing touches the real `~/.ssh`, the real agent or a rea
 | Upload a drop: folders shallowest first, replace confirmation, cancel, progress phases, summary | `client/src/sftp-upload.ts` | done | `upload::upload_to_remote` over the `UploadDeps` trait; `SftpUploadDeps` runs it on `SftpService`. `collect_drop` walks local paths instead of browser entries. |
 | Progress smoothing/throttling | `client/src/api/transfers.ts` (`progressReporter`) | done | `ProgressMeter`. |
 | Session reopen after the SFTP channel ended | `connection-manager.ts` (`sftp.once('close')`) | done | Dead sessions are dropped on the error that reveals them; an operation whose first request finds the session gone is retried on a fresh one. |
-| Terminal upload store (one upload per connection, toasts, browser counts) | `client/src/terminal-upload.ts`, `state/sftp-uploads.ts` | missing | UI state; belongs to the app layer. |
+| Terminal upload store (one upload per connection, toasts, browser counts) | `client/src/terminal-upload.ts`, `state/sftp-uploads.ts` | done | App-layer state: `muxus-app` `features/sftp/terminal_upload.rs` and `services::SftpUploads`, tracked in `sftp.md`. |
 | chmod, directory download | — | n/a | The TypeScript app has neither. |
 | Port forwards (local, remote, dynamic SOCKS5, config forwards, saved tunnels with autostart and reconnect backoff, status) | `forwards/forward-manager.ts`, `routes/forwards.ts`, `routes/tunnels.ts` | done | `forward-manager.test.ts` (21) and `tunnel-reconnect.test.ts` (3) ported plus traffic tests per forward type. Status through `ForwardManager::subscribe()`. |
 

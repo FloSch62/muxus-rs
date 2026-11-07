@@ -32,7 +32,7 @@ the profile types of `muxus_core::protocol` (`LocalProfile`, `TelnetProfile`,
 | Text normalizer | `server/src/session-logging/terminal-text-normalizer.ts` | done | Line offsets in UTF-16 units, as stored by TS. CSI parameters clamped to 65535 (guards a runaway allocation TS would attempt). |
 | Session log files (paths, numbering, append, timestamps, failure handling) | `server/src/session-logging/session-log-file.ts` | done | Writer thread flushes within 250 ms; 16 MB backlog limit. |
 | Session recorder | `server/src/session-logging/session-recorder.ts` | done | History goes through the `HistorySink` trait; `MemoryHistory` implements it for tests. 250 ms batch coalescing with a tokio timer when a runtime is present. |
-| History store | `server/src/session-logging/history-store.ts`, `history-worker.js` | missing | Belongs to `muxus-store`; it must implement `muxus_session::logging::HistorySink`. |
+| History store | `server/src/session-logging/history-store.ts`, `history-worker.js` | done | `muxus_store::history` (tracked in `core-store.md`); `muxus_session::adapters::StoreHistory` implements `HistorySink` over it. |
 | App log buffer | `server/src/logging/log-buffer.ts` | done | Plus `AppLogLayer`, a `tracing` layer feeding the same buffer. |
 | Login sequence output matcher | `server/src/login-sequence/output-matcher.ts` | done | `fancy-regex` with a backtrack limit replaces the 100 ms vm timeout. Patterns that need no backtracking run on a linear-time engine and never time out. |
 | Login sequence runner | `server/src/login-sequence/runner.ts` | done | |
