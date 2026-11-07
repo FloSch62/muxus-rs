@@ -389,8 +389,7 @@ impl Grid {
                 fg: pen.fg,
                 bg: pen.bg,
                 underline_color: pen.underline_color,
-                flags: pen.flags,
-                width: 1,
+                flags: pen.flags.with_width(1),
             };
         }
     }

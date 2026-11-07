@@ -78,8 +78,7 @@ impl Terminal {
             fg: PackedColor::pack(self.attrs.fg),
             bg: PackedColor::pack(self.attrs.bg),
             underline_color: PackedOptionColor::pack(self.attrs.underline_color),
-            flags,
-            width: 1,
+            flags: flags.with_width(1),
         };
 
         let mut rest = run;
@@ -349,8 +348,7 @@ impl Terminal {
             fg: PackedColor::pack(self.attrs.fg),
             bg: PackedColor::pack(self.attrs.bg),
             underline_color: PackedOptionColor::pack(self.attrs.underline_color),
-            flags: cell_flags,
-            width: char_width as u8,
+            flags: cell_flags.with_width(char_width as u8),
         };
 
         let cursor_col = self.cursor.col;
@@ -382,8 +380,7 @@ impl Terminal {
                 fg: PackedColor::pack(self.attrs.fg),
                 bg: PackedColor::pack(self.attrs.bg),
                 underline_color: PackedOptionColor::pack(self.attrs.underline_color),
-                flags: spacer_flags,
-                width: 1, // Spacers always have width 1
+                flags: spacer_flags.with_width(1), // Spacers always have width 1
             };
             let spacer_col = self.cursor.col - 1;
             let spacer_row = self.cursor.row;
@@ -481,7 +478,7 @@ impl Terminal {
                 let grapheme = target_cell.get_grapheme();
                 let new_width = grapheme::is_wide_grapheme(&grapheme);
                 if new_width && target_cell.width() == 1 {
-                    target_cell.width = 2;
+                    target_cell.set_width(2);
                     target_cell.flags.set_wide_char(true);
 
                     if target_col + 1 < cols {
@@ -495,8 +492,7 @@ impl Terminal {
                             fg: target_cell.fg,
                             bg: target_cell.bg,
                             underline_color: target_cell.underline_color,
-                            flags: spacer_flags,
-                            width: 1,
+                            flags: spacer_flags.with_width(1),
                         };
                         self.active_grid_mut()
                             .set(target_col + 1, target_row, spacer);
@@ -555,7 +551,7 @@ impl Terminal {
                         let grapheme = target_cell_mut.get_grapheme();
                         let new_width = grapheme::is_wide_grapheme(&grapheme);
                         if new_width && target_cell_mut.width() == 1 {
-                            target_cell_mut.width = 2;
+                            target_cell_mut.set_width(2);
                             target_cell_mut.flags.set_wide_char(true);
 
                             if target_col + 1 < cols {
@@ -569,8 +565,7 @@ impl Terminal {
                                     fg: target_cell_mut.fg,
                                     bg: target_cell_mut.bg,
                                     underline_color: target_cell_mut.underline_color,
-                                    flags: spacer_flags,
-                                    width: 1,
+                                    flags: spacer_flags.with_width(1),
                                 };
                                 self.active_grid_mut()
                                     .set(target_col + 1, target_row, spacer);
@@ -629,8 +624,7 @@ impl Terminal {
                         fg: target_cell.fg,
                         bg: target_cell.bg,
                         underline_color: target_cell.underline_color,
-                        flags: spacer_flags,
-                        width: 1,
+                        flags: spacer_flags.with_width(1),
                     })
                 } else {
                     None
@@ -642,7 +636,7 @@ impl Terminal {
             // Previous cell is a lone regional indicator - combine them
             if let Some(target_cell) = self.active_grid_mut().get_mut(prev_col, prev_row) {
                 target_cell.combining_push(c);
-                target_cell.width = 2;
+                target_cell.set_width(2);
                 target_cell.flags.set_wide_char(true);
             }
 
@@ -721,8 +715,7 @@ impl Terminal {
             fg: PackedColor::pack(self.attrs.fg),
             bg: PackedColor::pack(self.attrs.bg),
             underline_color: PackedOptionColor::pack(self.attrs.underline_color),
-            flags: cell_flags,
-            width: 1, // Initially width 1, will become 2 when paired
+            flags: cell_flags.with_width(1), // Initially width 1, will become 2 when paired
         };
 
         let cursor_col = self.cursor.col;
@@ -952,7 +945,7 @@ mod tests {
 
         let cell = term.active_grid().get(0, 0).unwrap();
         assert_eq!(cell.c, '😀');
-        assert_eq!(cell.width, 2);
+        assert_eq!(cell.width(), 2);
         assert!(cell.flags.wide_char());
 
         // Check spacer cell
