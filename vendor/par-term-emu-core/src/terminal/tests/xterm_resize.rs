@@ -38,6 +38,15 @@ fn a_pending_wrap_ends_with_the_cursor_past_the_text() {
 }
 
 #[test]
+fn a_resize_to_the_same_size_changes_nothing() {
+    let mut term = terminal(10, 3, 100);
+    term.process(b"0123456789");
+    term.resize(10, 3);
+    term.process(b"X");
+    assert_eq!(screen(term.grid())[..2], ["0123456789", "X"]);
+}
+
+#[test]
 fn the_saved_cursor_follows_its_line() {
     let mut term = terminal(10, 5, 100);
     term.process(b"0123456789abcde\r\nx\x1b7\r\n$ ");

@@ -38,7 +38,7 @@ bookkeeping, what a tab runs).
 | Memory | xterm.js `CircularList` of `BufferLine`s | partial | scrollback lines store their written cells only, and a cell is 32 bytes (was 40; xterm.js: 12): its cached width moved into the byte its flags padded to (`vendor/par-term-emu-core/PATCHES.md`, "Cell size"). Measured with `throughput <stream> --resize` (an emulator filled at 200×50 with 10 000 lines of scrollback, release, the resident memory it added): plain log 46.1 → 37.2 MB, colored log 57.8 → 46.9 MB, `ls -la` 28.6 → 23.3 MB, `seq` 5.3 → 4.7 MB, 19–20% less; output is as fast or faster (interleaved runs on a loaded machine: log 87–91 → 109–130 MB/s, colored log 61–76 → 70–83 MB/s, `seq` 55–59 → 64–74 MB/s). `hack/perf.sh` was not rerun (this machine has no GNOME Shell). Not taken, see below: 24 bytes (the combining marks, the underline color and the hyperlink id out of line together) and xterm.js's 12 |
 | Engine benchmark | none | done | `crates/muxus-term/examples/throughput` |
 | Benchmark of the app | none | done | `hack/perf.sh`, now with the process's CPU per step |
-| Same behaviour as before | all of the above | done | the engine's 1890 tests plus 7 new ones (property tests against the per-character path), 285 + 2 terminal tests, and the final state after every benchmark stream is identical to the original engine's (the engine has 1955 tests now, with the Muxus patches') |
+| Same behaviour as before | all of the above | done | the engine's 1890 tests plus 7 new ones (property tests against the per-character path), 285 + 2 terminal tests, and the final state after every benchmark stream is identical to the original engine's (the engine has 1956 tests now, with the Muxus patches') |
 
 ## Results
 

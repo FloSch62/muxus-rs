@@ -1715,6 +1715,10 @@ impl Terminal {
     ) -> usize {
         use crate::grid::BufferPositions;
 
+        // xterm.js ignores a resize to the size it has (a pending wrap stays pending).
+        if (self.grid.cols(), self.grid.rows()) == (cols, rows) || cols == 0 || rows == 0 {
+            return viewport_top.unwrap_or(self.grid.scrollback_len());
+        }
         let old_cols = self.grid.cols();
         let primary_active = !self.alt_screen_active;
         let saved = self.saved_state.saved_cursor;
