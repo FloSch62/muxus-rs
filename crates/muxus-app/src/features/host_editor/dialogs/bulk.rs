@@ -54,6 +54,9 @@ use muxus_ui::widgets::form_field::{FieldBody, FormField};
 use muxus_ui::widgets::typography::{body2, caption, para, text};
 use muxus_ui::widgets::typography::{button, rem};
 
+#[path = "bulk_typing.rs"]
+mod typing;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum BulkEditEvent {
     Close,
@@ -105,6 +108,12 @@ const SECTIONS: [(Section, &str, &str, &str, &[BulkHostField]); 6] = [
             BulkHostField::CommandButtonGroup,
             BulkHostField::PasteLineDelayMs,
             BulkHostField::PasteCharDelayMs,
+            BulkHostField::PastePromptWait,
+            BulkHostField::AntiIdle,
+            BulkHostField::BackspaceKey,
+            BulkHostField::EnterKey,
+            BulkHostField::ImplicitCr,
+            BulkHostField::LocalEcho,
         ],
     ),
     (
@@ -1069,6 +1078,7 @@ impl BulkEditDialog {
                                 ),
                             )),
                     )
+                    .child(self.typing_settings(window, cx))
                     .into_any_element()
             }
             Section::Highlighting => {
