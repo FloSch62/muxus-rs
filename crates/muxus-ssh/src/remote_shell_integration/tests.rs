@@ -324,7 +324,7 @@ fn starts_zsh_through_the_cached_shim_and_preserves_a_custom_zdotdir() {
             "/home/u/.cache/muxus",
             None
         ),
-        "export MUXUS_USER_ZDOTDIR='/home/o'\\''hara/.config/zsh'; export ZDOTDIR='/home/u/.cache/muxus/zsh'; exec '/usr/bin/zsh' -l"
+        "export MUXUS_USER_ZDOTDIR='/home/o'\\''hara/.config/zsh'; export ZDOTDIR='/home/u/.cache/muxus/zsh'; export COLORTERM=truecolor; exec '/usr/bin/zsh' -l"
     );
 }
 
@@ -332,7 +332,7 @@ fn starts_zsh_through_the_cached_shim_and_preserves_a_custom_zdotdir() {
 fn starts_interactive_bash_through_its_cached_init_file() {
     assert_eq!(
         remote_shell_command(&bash(), "/home/u/.cache/muxus", None),
-        "exec '/bin/bash' --noprofile --rcfile '/home/u/.cache/muxus/bash-init.bash' -i"
+        "export COLORTERM=truecolor; exec '/bin/bash' --noprofile --rcfile '/home/u/.cache/muxus/bash-init.bash' -i"
     );
 }
 
@@ -341,11 +341,11 @@ fn hands_a_reconnect_directory_to_the_startup_files_as_quoted_data() {
     let cwd = "/srv/team's $(project)";
     assert_eq!(
         remote_shell_command(&bash(), "/home/u/.cache/muxus", Some(cwd)),
-        "export MUXUS_RESTORE_CWD='/srv/team'\\''s $(project)'; exec '/bin/bash' --noprofile --rcfile '/home/u/.cache/muxus/bash-init.bash' -i"
+        "export MUXUS_RESTORE_CWD='/srv/team'\\''s $(project)'; export COLORTERM=truecolor; exec '/bin/bash' --noprofile --rcfile '/home/u/.cache/muxus/bash-init.bash' -i"
     );
     assert_eq!(
         remote_shell_command(&zsh(None), "/home/u/.cache/muxus", Some(cwd)),
-        "export MUXUS_RESTORE_CWD='/srv/team'\\''s $(project)'; unset MUXUS_USER_ZDOTDIR; export ZDOTDIR='/home/u/.cache/muxus/zsh'; exec '/usr/bin/zsh' -l"
+        "export MUXUS_RESTORE_CWD='/srv/team'\\''s $(project)'; unset MUXUS_USER_ZDOTDIR; export ZDOTDIR='/home/u/.cache/muxus/zsh'; export COLORTERM=truecolor; exec '/usr/bin/zsh' -l"
     );
 }
 

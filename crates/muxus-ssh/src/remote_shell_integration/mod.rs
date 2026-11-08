@@ -99,6 +99,10 @@ fn posix_join(parts: &[&str]) -> String {
     out
 }
 
+/// Muxus renders 24-bit color, but sshd drops a forwarded COLORTERM unless the server lists it in
+/// AcceptEnv, and remote programs then round their colors to the 256-color palette.
+const COLORTERM_EXPORT: &str = "export COLORTERM=truecolor; ";
+
 /// The exec command for an integrated shell. `cwd` is the directory a reconnecting tab was last
 /// in; the startup files change into it.
 pub fn remote_shell_command(shell: &SupportedShell, root: &str, cwd: Option<&str>) -> String {
@@ -111,7 +115,7 @@ pub fn remote_shell_command(shell: &SupportedShell, root: &str, cwd: Option<&str
     };
     match shell.kind {
         ShellKind::Bash => format!(
-            "{restore_cwd}exec {executable} --noprofile --rcfile {} -i",
+            "{restore_cwd}{COLORTERM_EXPORT}exec {executable} --noprofile --rcfile {} -i",
             quote_shell_word(&posix_join(&[root, "bash-init.bash"]))
         ),
         ShellKind::Zsh => {
@@ -120,7 +124,7 @@ pub fn remote_shell_command(shell: &SupportedShell, root: &str, cwd: Option<&str
                 None => "unset MUXUS_USER_ZDOTDIR; ".to_string(),
             };
             format!(
-                "{restore_cwd}{user_zdotdir}export ZDOTDIR={}; exec {executable} -l",
+                "{restore_cwd}{user_zdotdir}export ZDOTDIR={}; {COLORTERM_EXPORT}exec {executable} -l",
                 quote_shell_word(&posix_join(&[root, "zsh"]))
             )
         }
