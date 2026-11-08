@@ -13,7 +13,7 @@ use muxus_ui::gpui_kit::{
 };
 use muxus_ui::label::{label, paragraph};
 use muxus_ui::theme::{ActiveTheme, Status, Theme};
-use muxus_ui::widgets::Button;
+use muxus_ui::widgets::{Button, Chip};
 
 use super::super::hooks::{DesktopUpdateHooks, settings_hooks};
 use super::super::texts::{self, DOCS_URL};
@@ -317,6 +317,18 @@ impl SettingsWindow {
                 ),
             );
         }
+        // Not in the TypeScript app: tells this build apart from the Electron one, which runs
+        // on the same data and shows the same version line.
+        title_row = title_row.child(
+            div().pb(px(3.)).child(
+                Chip::new("Rust")
+                    .outlined()
+                    .palette(p.primary)
+                    .height(20.)
+                    .font_size(11.)
+                    .tooltip("about-rust", "The native Rust build of Muxus"),
+            ),
+        );
         div()
             .flex()
             .items_center()
