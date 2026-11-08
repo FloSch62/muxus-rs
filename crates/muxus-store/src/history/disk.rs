@@ -76,7 +76,9 @@ pub(crate) fn directory_size(directory: &Path) -> io::Result<u64> {
         if kind.is_dir() {
             total += directory_size(&entry.path())?;
         } else if kind.is_file() {
-            let metadata = entry.metadata()?;
+            // Not `entry.metadata()`: on Windows that is the directory listing's copy, which
+            // leaves out what is written to a file that is still open (an active session).
+            let metadata = std::fs::metadata(entry.path())?;
             total += allocated_bytes(&metadata);
         }
     }
