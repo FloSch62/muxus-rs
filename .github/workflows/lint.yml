@@ -1,0 +1,59 @@
+name: Lint
+
+# `cargo xtask ci` without the tests: rustfmt, clippy with warnings as errors, and the
+# layering and style checks. Clippy runs on every desktop, since much of the code is behind
+# `#[cfg(unix)]` / `#[cfg(windows)]` / `#[cfg(target_os = …)]`.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # .cargo/config.toml keeps local builds to 3 jobs; a runner has the machine to itself.
+  CARGO_BUILD_JOBS: 4
+
+jobs:
+  clippy:
+    name: Clippy (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-22.04
+          - name: macOS
+            os: macos-15
+          - name: Windows
+            os: windows-2022
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libfontconfig-dev libfreetype-dev libwayland-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev \
+            libwebkit2gtk-4.1-dev
+      # aws-lc-sys assembles its crypto code with NASM on Windows.
+      - if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Layering and style
+        if: runner.os == 'Linux'
+        run: |
+          cargo xtask layering
+          cargo xtask style
