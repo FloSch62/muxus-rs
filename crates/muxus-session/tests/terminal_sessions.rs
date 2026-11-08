@@ -187,10 +187,16 @@ async fn sign_in(handle: &SessionHandle) -> Vec<SessionEvent> {
 
 #[tokio::test]
 async fn a_local_shell_runs_commands_and_reports_its_exit() {
+    // The typed line is echoed back, so the answer must be one only the shell can compute.
+    let (shell, command) = if cfg!(windows) {
+        ("cmd.exe", "set /a x=40+2 >nul & call echo hello-%x%\r")
+    } else {
+        ("/bin/sh", "echo hello-$((40+2))\r")
+    };
     let sandbox = start().await;
     let handle = sandbox
         .backend
-        .open_session(connect(json!({ "kind": "local", "shell": "/bin/sh" })));
+        .open_session(connect(json!({ "kind": "local", "shell": shell })));
     let first = next_event(&handle).await;
     let terminal_id = match message(&first) {
         Some(TerminalServerMessage::Session { terminal_id }) => terminal_id.clone(),
@@ -213,7 +219,13 @@ async fn a_local_shell_runs_commands_and_reports_its_exit() {
         _ => unreachable!(),
     }
     assert!(sandbox.backend.terminal_ids().contains(&terminal_id));
-    handle.send_data(b"echo hello-$((40+2))\r".to_vec());
+    if cfg!(windows) {
+        // ConPTY asks where the cursor is and waits for the terminal's answer before the
+        // shell starts; there is no terminal here to give it.
+        output_until(&handle, "\x1b[6n").await;
+        handle.send_data(b"\x1b[1;1R".to_vec());
+    }
+    handle.send_data(command.as_bytes().to_vec());
     output_until(&handle, "hello-42").await;
     handle.send_data(b"exit 7\r".to_vec());
     let end = events_until(&handle, |event| {

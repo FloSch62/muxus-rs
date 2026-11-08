@@ -8,9 +8,11 @@ use super::*;
 use crate::Problem;
 use crate::connection::io::BoxFuture;
 use crate::sftp::progress::{ByteProgress, CancelSignal, UploadStep};
+#[cfg(unix)]
+use crate::sftp::upload::collect_drop;
 use crate::sftp::upload::{
     ConfirmRequest, DropPayload, DroppedFile, SftpUploadDeps, TransferPhase, UploadDeps,
-    UploadError, UploadProgress, UploadResult, collect_drop, upload_summary, upload_to_remote,
+    UploadError, UploadProgress, UploadResult, upload_summary, upload_to_remote,
 };
 
 /// Local files for a drop: `(relative path, content)`.
@@ -282,6 +284,7 @@ fn summarizes_what_happened() {
     assert_eq!(upload_summary(result(0, 0), None), "Nothing was uploaded");
 }
 
+#[cfg(unix)]
 #[test]
 fn walks_dropped_folders_keeping_empty_ones() {
     let dir = tempfile::tempdir().unwrap();

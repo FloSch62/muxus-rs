@@ -6,7 +6,6 @@
 //! request except reads, writes and closes lands in a per-root log the tests assert on.
 
 use std::collections::HashMap;
-use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, UNIX_EPOCH};
@@ -148,16 +147,22 @@ fn ok(id: u32) -> Status {
     }
 }
 
+fn seconds(time: std::io::Result<std::time::SystemTime>) -> u32 {
+    time.ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |since| since.as_secs() as u32)
+}
+
 fn attrs_of(meta: &std::fs::Metadata) -> FileAttributes {
     FileAttributes {
-        size: Some(meta.size()),
-        uid: Some(meta.uid()),
+        size: Some(meta.len()),
+        uid: Some(platform::uid(meta)),
         user: None,
-        gid: Some(meta.gid()),
+        gid: Some(platform::gid(meta)),
         group: None,
-        permissions: Some(meta.mode()),
-        atime: Some(meta.atime() as u32),
-        mtime: Some(meta.mtime() as u32),
+        permissions: Some(platform::mode(meta)),
+        atime: Some(seconds(meta.accessed())),
+        mtime: Some(seconds(meta.modified())),
     }
 }
 
@@ -237,7 +242,8 @@ impl LocalFs {
 
     fn set_attrs(&self, path: &Path, attrs: &FileAttributes) -> Result<(), StatusReply> {
         if let Some(mode) = attrs.permissions {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o7777))
+            let current = std::fs::metadata(path).map_err(io_reply)?.permissions();
+            std::fs::set_permissions(path, platform::permissions(current, mode & 0o7777))
                 .map_err(io_reply)?;
         }
         if let Some(mtime) = attrs.mtime {
@@ -296,7 +302,7 @@ impl russh_sftp::server::Handler for LocalFs {
         ));
         let mut options: std::fs::OpenOptions = pflags.into();
         if let Some(mode) = attrs.permissions {
-            options.mode(mode & 0o7777);
+            platform::open_mode(&mut options, mode & 0o7777);
         }
         let file = options.open(self.local(&filename)).map_err(|err| {
             if err.kind() == std::io::ErrorKind::AlreadyExists {
@@ -327,7 +333,7 @@ impl russh_sftp::server::Handler for LocalFs {
         let mut data = vec![0u8; len as usize];
         let mut filled = 0;
         while filled < data.len() {
-            match file.read_at(&mut data[filled..], offset + filled as u64) {
+            match platform::read_at(file, &mut data[filled..], offset + filled as u64) {
                 Ok(0) => break,
                 Ok(n) => filled += n,
                 Err(err) => return Err(io_reply(err)),
@@ -348,7 +354,7 @@ impl russh_sftp::server::Handler for LocalFs {
         data: Vec<u8>,
     ) -> Result<Status, Self::Error> {
         let file = self.file(&handle)?;
-        file.write_all_at(&data, offset).map_err(io_reply)?;
+        platform::write_all_at(file, &data, offset).map_err(io_reply)?;
         Ok(ok(id))
     }
 
@@ -397,7 +403,8 @@ impl russh_sftp::server::Handler for LocalFs {
     ) -> Result<Status, Self::Error> {
         let file = self.file(&handle)?;
         if let Some(mode) = attrs.permissions {
-            file.set_permissions(std::fs::Permissions::from_mode(mode & 0o7777))
+            let current = file.metadata().map_err(io_reply)?.permissions();
+            file.set_permissions(platform::permissions(current, mode & 0o7777))
                 .map_err(io_reply)?;
         }
         if let Some(mtime) = attrs.mtime {
@@ -467,7 +474,7 @@ impl russh_sftp::server::Handler for LocalFs {
         self.record(format!("mkdir {}", self.remote(&path)));
         let mut builder = std::fs::DirBuilder::new();
         if let Some(mode) = attrs.permissions {
-            std::os::unix::fs::DirBuilderExt::mode(&mut builder, mode & 0o7777);
+            platform::dir_mode(&mut builder, mode & 0o7777);
         }
         builder.create(self.local(&path)).map_err(|err| {
             if err.kind() == std::io::ErrorKind::AlreadyExists {
@@ -529,7 +536,7 @@ impl russh_sftp::server::Handler for LocalFs {
         targetpath: String,
     ) -> Result<Status, Self::Error> {
         self.record(format!("symlink {} {targetpath}", self.remote(&linkpath)));
-        std::os::unix::fs::symlink(targetpath, self.local(&linkpath)).map_err(io_reply)?;
+        platform::symlink(&targetpath, &self.local(&linkpath)).map_err(io_reply)?;
         Ok(ok(id))
     }
 
@@ -557,6 +564,118 @@ impl russh_sftp::server::Handler for LocalFs {
         ));
         std::fs::rename(self.local(&oldpath), self.local(&newpath)).map_err(io_reply)?;
         Ok(Packet::Status(ok(id)))
+    }
+}
+
+/// The POSIX file calls the server needs. Windows has no modes or owners: a file reports
+/// 0644 (0444 when read-only) and a directory 0755, owned by uid and gid 0, and a mode only
+/// sets or clears the read-only bit.
+#[cfg(unix)]
+mod platform {
+    use std::fs::{DirBuilder, File, Metadata, OpenOptions, Permissions};
+    use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::path::Path;
+
+    pub fn uid(meta: &Metadata) -> u32 {
+        meta.uid()
+    }
+
+    pub fn gid(meta: &Metadata) -> u32 {
+        meta.gid()
+    }
+
+    pub fn mode(meta: &Metadata) -> u32 {
+        meta.mode()
+    }
+
+    pub fn permissions(_current: Permissions, mode: u32) -> Permissions {
+        Permissions::from_mode(mode)
+    }
+
+    pub fn open_mode(options: &mut OpenOptions, mode: u32) {
+        options.mode(mode);
+    }
+
+    pub fn dir_mode(builder: &mut DirBuilder, mode: u32) {
+        builder.mode(mode);
+    }
+
+    pub fn read_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+        file.read_at(buf, offset)
+    }
+
+    pub fn write_all_at(file: &File, data: &[u8], offset: u64) -> std::io::Result<()> {
+        file.write_all_at(data, offset)
+    }
+
+    pub fn symlink(target: &str, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+}
+
+#[cfg(windows)]
+mod platform {
+    use std::fs::{DirBuilder, File, Metadata, OpenOptions, Permissions};
+    use std::os::windows::fs::FileExt;
+    use std::path::Path;
+
+    const S_IFDIR: u32 = 0o040000;
+    const S_IFREG: u32 = 0o100000;
+    const S_IFLNK: u32 = 0o120000;
+
+    pub fn uid(_meta: &Metadata) -> u32 {
+        0
+    }
+
+    pub fn gid(_meta: &Metadata) -> u32 {
+        0
+    }
+
+    pub fn mode(meta: &Metadata) -> u32 {
+        let kind = meta.file_type();
+        if kind.is_symlink() {
+            S_IFLNK | 0o777
+        } else if kind.is_dir() {
+            S_IFDIR | 0o755
+        } else if meta.permissions().readonly() {
+            S_IFREG | 0o444
+        } else {
+            S_IFREG | 0o644
+        }
+    }
+
+    pub fn permissions(mut current: Permissions, mode: u32) -> Permissions {
+        current.set_readonly(mode & 0o200 == 0);
+        current
+    }
+
+    pub fn open_mode(_options: &mut OpenOptions, _mode: u32) {}
+
+    pub fn dir_mode(_builder: &mut DirBuilder, _mode: u32) {}
+
+    pub fn read_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<usize> {
+        file.seek_read(buf, offset)
+    }
+
+    pub fn write_all_at(file: &File, mut data: &[u8], mut offset: u64) -> std::io::Result<()> {
+        while !data.is_empty() {
+            let written = file.seek_write(data, offset)?;
+            if written == 0 {
+                return Err(std::io::ErrorKind::WriteZero.into());
+            }
+            data = &data[written..];
+            offset += written as u64;
+        }
+        Ok(())
+    }
+
+    pub fn symlink(target: &str, link: &Path) -> std::io::Result<()> {
+        let resolved = link.parent().unwrap_or(link).join(target);
+        if resolved.is_dir() {
+            std::os::windows::fs::symlink_dir(target, link)
+        } else {
+            std::os::windows::fs::symlink_file(target, link)
+        }
     }
 }
 

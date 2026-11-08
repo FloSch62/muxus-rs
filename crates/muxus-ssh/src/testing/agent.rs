@@ -6,15 +6,19 @@ use std::path::{Path, PathBuf};
 use russh::keys::PrivateKey;
 use russh::keys::agent::client::AgentClient;
 
-/// Starts an ssh-agent on a Unix socket in `dir` holding `keys`.
+/// Starts an ssh-agent holding `keys` (a Unix socket in `dir`, a named pipe on Windows).
 pub async fn start_agent(dir: &Path, keys: &[PrivateKey]) -> PathBuf {
-    let path = dir.join(format!("agent-{}.sock", rand::random::<u32>()));
-    let listener = tokio::net::UnixListener::bind(&path).unwrap();
-    let stream = tokio_stream::wrappers::UnixListenerStream::new(listener);
-    tokio::spawn(async move {
-        let _ = russh::keys::agent::server::serve(stream, ()).await;
+    let (path, listener) = listen(dir, "agent");
+    let connections = futures::stream::unfold(listener, |mut listener| async move {
+        Some((listener.accept().await, listener))
     });
+    tokio::spawn(async move {
+        let _ = russh::keys::agent::server::serve(Box::pin(connections), ()).await;
+    });
+    #[cfg(unix)]
     let mut client = AgentClient::connect_uds(&path).await.unwrap();
+    #[cfg(windows)]
+    let mut client = AgentClient::connect_named_pipe(&path).await.unwrap();
     for key in keys {
         client.add_identity(key, &[]).await.unwrap();
     }
@@ -23,11 +27,10 @@ pub async fn start_agent(dir: &Path, keys: &[PrivateKey]) -> PathBuf {
 
 /// An agent that accepts connections and reads requests but never replies.
 pub async fn start_silent_agent(dir: &Path) -> PathBuf {
-    let path = dir.join(format!("silent-{}.sock", rand::random::<u32>()));
-    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let (path, mut listener) = listen(dir, "silent");
     tokio::spawn(async move {
         let mut held = Vec::new();
-        while let Ok((stream, _)) = listener.accept().await {
+        while let Ok(stream) = listener.accept().await {
             held.push(stream);
         }
     });
@@ -59,12 +62,11 @@ pub async fn start_hanging_agent(
 ) -> (PathBuf, std::sync::Arc<AgentCounters>) {
     use std::sync::atomic::Ordering;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let path = dir.join(format!("hang-{}.sock", rand::random::<u32>()));
-    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let (path, mut listener) = listen(dir, "hang");
     let counters = std::sync::Arc::new(AgentCounters::default());
     let shared = counters.clone();
     tokio::spawn(async move {
-        while let Ok((mut stream, _)) = listener.accept().await {
+        while let Ok(mut stream) = listener.accept().await {
             let counters = shared.clone();
             let identity = identity.clone();
             tokio::spawn(async move {
@@ -229,18 +231,17 @@ pub async fn start_sk_agent(
     use tokio::io::AsyncReadExt;
 
     use crate::security_keys::{read_field, ssh_string};
-    let path = dir.join(format!("sk-{}.sock", rand::random::<u32>()));
-    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let (path, mut listener) = listen(dir, "sk");
     let counters = std::sync::Arc::new(AgentCounters::default());
     let shared = counters.clone();
     let identities = std::sync::Arc::new(identities);
     tokio::spawn(async move {
-        while let Ok((stream, _)) = listener.accept().await {
+        while let Ok(stream) = listener.accept().await {
             let counters = shared.clone();
             let identities = identities.clone();
             let behaviour = behaviour.clone();
             tokio::spawn(async move {
-                let (mut reader, writer) = stream.into_split();
+                let (mut reader, writer) = tokio::io::split(stream);
                 let writer = std::sync::Arc::new(tokio::sync::Mutex::new(writer));
                 loop {
                     let mut len = [0u8; 4];
@@ -301,9 +302,67 @@ pub async fn start_sk_agent(
 }
 
 /// Writes one agent reply frame.
-async fn reply(writer: &tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>, body: Vec<u8>) {
+async fn reply(writer: &tokio::sync::Mutex<tokio::io::WriteHalf<AgentStream>>, body: Vec<u8>) {
     use tokio::io::AsyncWriteExt;
     let mut frame = (body.len() as u32).to_be_bytes().to_vec();
     frame.extend(body);
     let _ = writer.lock().await.write_all(&frame).await;
+}
+
+#[cfg(unix)]
+type AgentStream = tokio::net::UnixStream;
+#[cfg(windows)]
+type AgentStream = tokio::net::windows::named_pipe::NamedPipeServer;
+
+/// Where a test agent takes connections: a Unix socket in `dir`, or on Windows a named pipe,
+/// the way the client reaches agents there.
+struct AgentListener {
+    #[cfg(unix)]
+    socket: tokio::net::UnixListener,
+    #[cfg(windows)]
+    path: PathBuf,
+    #[cfg(windows)]
+    next: AgentStream,
+}
+
+#[cfg(unix)]
+fn listen(dir: &Path, name: &str) -> (PathBuf, AgentListener) {
+    let path = dir.join(format!("{name}-{}.sock", rand::random::<u32>()));
+    let socket = tokio::net::UnixListener::bind(&path).unwrap();
+    (path, AgentListener { socket })
+}
+
+#[cfg(windows)]
+fn listen(_dir: &Path, name: &str) -> (PathBuf, AgentListener) {
+    use tokio::net::windows::named_pipe::ServerOptions;
+    let path = PathBuf::from(format!(
+        r"\\.\pipe\muxus-test-{name}-{}",
+        rand::random::<u32>()
+    ));
+    let next = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(&path)
+        .unwrap();
+    let listener = AgentListener {
+        path: path.clone(),
+        next,
+    };
+    (path, listener)
+}
+
+impl AgentListener {
+    #[cfg(unix)]
+    async fn accept(&mut self) -> std::io::Result<AgentStream> {
+        Ok(self.socket.accept().await?.0)
+    }
+
+    /// A pipe instance serves one client: the next one is created before this one is handed
+    /// out, so a client never finds the pipe missing.
+    #[cfg(windows)]
+    async fn accept(&mut self) -> std::io::Result<AgentStream> {
+        use tokio::net::windows::named_pipe::ServerOptions;
+        self.next.connect().await?;
+        let next = ServerOptions::new().create(&self.path)?;
+        Ok(std::mem::replace(&mut self.next, next))
+    }
 }

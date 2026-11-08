@@ -11,8 +11,13 @@ use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 use super::*;
 use crate::Problem;
 use crate::sftp::progress::{ByteProgress, UploadStep};
-use crate::sftp::service::{MAX_EDITOR_BYTES, UploadOptions, delete_tree_with_budget};
-use crate::sftp::types::{EditorFileResponse, SftpEntryType, SftpFileSaveRequest};
+use crate::sftp::service::{UploadOptions, delete_tree_with_budget};
+use crate::sftp::types::SftpFileSaveRequest;
+#[cfg(unix)]
+use crate::sftp::{
+    service::MAX_EDITOR_BYTES,
+    types::{EditorFileResponse, SftpEntryType},
+};
 
 fn overwrite() -> UploadOptions {
     UploadOptions {
@@ -58,8 +63,8 @@ async fn upload(
 }
 
 fn local_mtime_ms(path: &std::path::Path) -> i64 {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(path).unwrap().mtime() * 1000
+    let modified = std::fs::metadata(path).unwrap().modified().unwrap();
+    modified.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64 * 1000
 }
 
 // --- SFTP upload overwrite policy -------------------------------------------------------------
@@ -124,6 +129,7 @@ async fn stages_a_new_destination_before_renaming_it_into_place() {
     assert!(!fx.exists(temp));
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn creates_clipboard_images_with_owner_only_permissions() {
     use std::os::unix::fs::PermissionsExt;
@@ -155,6 +161,7 @@ async fn creates_clipboard_images_with_owner_only_permissions() {
     assert_eq!(meta.permissions().mode() & 0o777, 0o600);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn atomically_replaces_an_existing_regular_file_after_explicit_overwrite_consent() {
     let fx = Fixture::new().await;
@@ -274,6 +281,7 @@ async fn replaces_a_file_on_servers_without_the_posix_rename_extension() {
     assert_eq!(fx.read("/remote/report.txt"), "payload");
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn refuses_to_follow_a_destination_symlink_even_with_overwrite_consent() {
     let fx = Fixture::new().await;
@@ -558,6 +566,7 @@ async fn drag_download_tickets_stop_working_once_the_connection_closes() {
 
 // --- SFTP remote editor -----------------------------------------------------------------------
 
+#[cfg(unix)]
 #[tokio::test]
 async fn reads_bounded_utf8_text_with_its_optimistic_concurrency_metadata() {
     let fx = Fixture::new().await;
@@ -583,6 +592,7 @@ async fn reads_bounded_utf8_text_with_its_optimistic_concurrency_metadata() {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn refuses_files_the_editor_cannot_show() {
     let fx = Fixture::new().await;
@@ -688,6 +698,7 @@ async fn rejects_a_save_when_the_remote_file_changed() {
     assert_eq!(fx.read("/etc/example.conf"), "new value");
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn atomically_replaces_the_remote_text_when_the_version_still_matches() {
     let fx = Fixture::new().await;
@@ -723,6 +734,7 @@ async fn atomically_replaces_the_remote_text_when_the_version_still_matches() {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn refuses_saves_over_directories_links_and_oversized_text() {
     let fx = Fixture::new().await;
@@ -772,6 +784,7 @@ async fn refuses_saves_over_directories_links_and_oversized_text() {
 
 // --- Listing, folders, renames and deletes ----------------------------------------------------
 
+#[cfg(unix)]
 #[tokio::test]
 async fn lists_a_directory_with_types_permissions_owners_and_drag_tickets() {
     let options = SftpServerOptions {
@@ -885,6 +898,7 @@ async fn renames_entries_and_requires_both_names() {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn deletes_files_and_whole_trees_without_following_links() {
     let fx = Fixture::new().await;

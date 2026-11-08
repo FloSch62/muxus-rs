@@ -52,12 +52,9 @@ impl Fixture {
         list_hosts(&self.doc(content), None)
     }
 
-    pub fn home(&self, rest: &[&str]) -> String {
-        let mut p = self.env.home.clone();
-        for part in rest {
-            p.push(part);
-        }
-        path_string(&p)
+    /// `~/<rest>` as the config expands it: the home folder, then the path as written.
+    pub fn tilde(&self, rest: &str) -> String {
+        format!("{}/{rest}", path_string(&self.env.home))
     }
 }
 
@@ -197,13 +194,10 @@ fn parses_forwards_proxy_jumps_and_auth_options() {
             ConfigForward::dynamic(1080),
         ])
     );
-    assert_eq!(
-        app.resolved.identity_files,
-        vec![f.home(&[".ssh", "app_key"])]
-    );
+    assert_eq!(app.resolved.identity_files, vec![f.tilde(".ssh/app_key")]);
     assert_eq!(
         app.resolved.certificate_files,
-        vec![f.home(&[".ssh", "app_key-cert.pub"])]
+        vec![f.tilde(".ssh/app_key-cert.pub")]
     );
 }
 
@@ -370,7 +364,7 @@ fn accumulates_certificate_file_and_resolves_proxy_command() {
     let resolved = resolve_host(&doc, "web", None);
     assert_eq!(
         resolved.certificate_files,
-        vec![f.home(&[".ssh", "web-cert.pub"]), "/shared-cert.pub".into()]
+        vec![f.tilde(".ssh/web-cert.pub"), "/shared-cert.pub".into()]
     );
     assert_eq!(
         resolved.proxy_command.as_deref(),
@@ -468,10 +462,7 @@ fn resolves_the_dial_time_tunables_muxus_applies_from_advanced_options() {
     ]));
     let r = resolve_host(&doc, "lab", None);
     assert_eq!(r.compression, Some(true));
-    assert_eq!(
-        r.identity_agent,
-        Some(f.home(&[".1password", "agent.sock"]))
-    );
+    assert_eq!(r.identity_agent, Some(f.tilde(".1password/agent.sock")));
     assert_eq!(r.password_authentication, Some(false));
     assert_eq!(r.kbd_interactive_authentication, Some(false));
     assert_eq!(r.remote_command.as_deref(), Some("tmux new -A -s main"));
@@ -482,10 +473,7 @@ fn resolves_the_dial_time_tunables_muxus_applies_from_advanced_options() {
     );
     assert_eq!(
         r.user_known_hosts_files,
-        Some(vec![
-            f.home(&[".ssh", "lab_hosts"]),
-            f.home(&[".ssh", "extra_hosts"])
-        ])
+        Some(vec![f.tilde(".ssh/lab_hosts"), f.tilde(".ssh/extra_hosts")])
     );
     assert_eq!(r.global_known_hosts_files, None);
 }
@@ -679,7 +667,7 @@ fn expands_the_full_user_known_hosts_file_token_context() {
     .join("-");
     assert_eq!(
         resolve_host(&doc, "alias", None).user_known_hosts_files,
-        Some(vec![format!("{}/{}", f.home(&[".ssh"]), name)])
+        Some(vec![f.tilde(&format!(".ssh/{name}"))])
     );
 }
 

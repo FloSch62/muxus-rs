@@ -280,7 +280,8 @@ async fn probe(port: u16) -> TcpProbe {
         loopback(),
         port,
         true,
-        Duration::from_secs(2),
+        // Windows retries a refused loopback connect for about two seconds.
+        Duration::from_secs(5),
         Duration::from_millis(200),
     )
     .await

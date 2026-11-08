@@ -422,6 +422,8 @@ async fn reports_compression_the_server_agreed_to() {
     );
 }
 
+// Windows always has OpenSSH's agent pipe to name, so it never lacks an agent socket.
+#[cfg(unix)]
 #[tokio::test]
 async fn says_when_agent_forwarding_is_asked_for_but_no_agent_is_reachable() {
     let server = start(ServerSpec::new().password(PASSWORD)).await;

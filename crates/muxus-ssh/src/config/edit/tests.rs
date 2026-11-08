@@ -295,7 +295,8 @@ fn moves_a_host_to_a_new_include_file_and_wires_the_include_into_the_root() {
     .unwrap();
     let root_text = read(&root);
     assert!(!root_text.contains("web.example.com"));
-    assert!(root_text.contains("Include config.d/work"));
+    let include = path_string(&std::path::Path::new("config.d").join("work"));
+    assert!(root_text.contains(&format!("Include {include}")));
     assert!(read(&group_file).contains("HostName web.example.com"));
     let hosts = list_hosts(&load_config_document(&root, &h.env), None);
     let mut names: Vec<&str> = hosts.iter().map(|h| h.alias.as_str()).collect();

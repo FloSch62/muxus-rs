@@ -602,10 +602,12 @@ mod tests {
 
     #[test]
     fn resolves_paths_lexically() {
-        assert_eq!(
-            resolve_path(Path::new("/a/b/../c/./d")),
-            PathBuf::from("/a/c/d")
-        );
-        assert_eq!(resolve_path(Path::new("/")), PathBuf::from("/"));
+        let (path, resolved, root) = if cfg!(windows) {
+            (r"C:\a\b\..\c\.\d", r"C:\a\c\d", r"C:\")
+        } else {
+            ("/a/b/../c/./d", "/a/c/d", "/")
+        };
+        assert_eq!(resolve_path(Path::new(path)), PathBuf::from(resolved));
+        assert_eq!(resolve_path(Path::new(root)), PathBuf::from(root));
     }
 }

@@ -28,6 +28,15 @@ fn memory() -> Database {
     Database::open_in_memory().unwrap()
 }
 
+/// An absolute path on this platform: `path` itself, or on drive C: on Windows.
+fn absolute(path: &str) -> String {
+    if cfg!(windows) {
+        format!("C:{path}")
+    } else {
+        path.to_string()
+    }
+}
+
 fn telnet(host: &str, port: u16) -> SavedHostSessionProfile {
     SavedHostSessionProfile::Telnet(TelnetProfile {
         profile_id: None,
@@ -1178,7 +1187,7 @@ mod logging {
 
         let saved = db
             .save_session_log_file_settings(&SessionLogFileSettings {
-                directory: Some(" /srv/logs ".into()),
+                directory: Some(format!(" {} ", absolute("/srv/logs"))),
                 filename_pattern: " {kind}/{host}_{date}.log ".into(),
                 timestamps: true,
             })
@@ -1186,7 +1195,7 @@ mod logging {
         assert_eq!(
             saved,
             SessionLogFileSettings {
-                directory: Some("/srv/logs".into()),
+                directory: Some(absolute("/srv/logs")),
                 filename_pattern: "{kind}/{host}_{date}.log".into(),
                 timestamps: true
             }
@@ -1236,7 +1245,7 @@ mod logging {
                 .is_err()
         );
         assert!(
-            db.save_session_history_settings(&settings(Some("/"), 1 << 30))
+            db.save_session_history_settings(&settings(Some(&absolute("/")), 1 << 30))
                 .is_err()
         );
         assert!(
@@ -1244,9 +1253,9 @@ mod logging {
                 .is_err()
         );
         let saved = db
-            .save_session_history_settings(&settings(Some("/srv/history"), 1 << 30))
+            .save_session_history_settings(&settings(Some(&absolute("/srv/history")), 1 << 30))
             .unwrap();
-        assert_eq!(saved.storage_location.as_deref(), Some("/srv/history"));
+        assert_eq!(saved.storage_location, Some(absolute("/srv/history")));
         assert_eq!(saved.max_age_days, Some(7));
     }
 }

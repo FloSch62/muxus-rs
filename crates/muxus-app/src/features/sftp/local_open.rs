@@ -826,6 +826,22 @@ fn report(error: &ApiError, cx: &mut App) {
 mod tests {
     use super::*;
 
+    /// A directory opened so its times can be set: Windows opens one only with
+    /// FILE_FLAG_BACKUP_SEMANTICS and write access.
+    fn open_directory(path: &Path) -> File {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            File::options()
+                .write(true)
+                .custom_flags(0x0200_0000)
+                .open(path)
+                .unwrap()
+        }
+        #[cfg(not(windows))]
+        File::open(path).unwrap()
+    }
+
     #[test]
     fn keeps_ordinary_remote_names_intact() {
         assert_eq!(local_copy_file_name("plan.drawio"), "plan.drawio");
@@ -960,8 +976,7 @@ mod tests {
             .unwrap()
             .set_modified(long_ago)
             .unwrap();
-        File::open(&old.directory)
-            .unwrap()
+        open_directory(&old.directory)
             .set_modified(long_ago)
             .unwrap();
         purge_stale_local_copies(&root, SystemTime::now(), LOCAL_COPY_MAX_AGE);

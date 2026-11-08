@@ -63,6 +63,7 @@ fn scratch_environment(home: &Path) -> LocalEnvironment {
         }
     }
     vars.insert("HOME".into(), home.to_string_lossy().into_owned());
+    vars.insert("USERPROFILE".into(), home.to_string_lossy().into_owned());
     vars.insert(
         "XDG_CACHE_HOME".into(),
         home.join(".cache").to_string_lossy().into_owned(),
@@ -86,6 +87,8 @@ fn scratch_environment(home: &Path) -> LocalEnvironment {
 fn plans_the_environment_of_a_local_shell() {
     let home = tempfile::tempdir().unwrap();
     let mut environment = scratch_environment(home.path());
+    // zsh's integration, as on Linux: Windows integrates cmd only.
+    environment.platform = Platform::Linux;
     environment
         .vars
         .insert("ZDOTDIR".into(), "/home/u/.config/zsh".into());
@@ -103,7 +106,7 @@ fn plans_the_environment_of_a_local_shell() {
     assert_eq!(plan.env["TERM_PROGRAM"], "muxus");
     assert!(!plan.env.contains_key("KITTY_WINDOW_ID"));
     assert_eq!(plan.env["MUXUS_USER_ZDOTDIR"], "/home/u/.config/zsh");
-    assert!(plan.env["ZDOTDIR"].ends_with("shell-integration/zsh"));
+    assert!(Path::new(&plan.env["ZDOTDIR"]).ends_with("shell-integration/zsh"));
 }
 
 /// A container, pod or console session runs its tool directly, without shell integration.

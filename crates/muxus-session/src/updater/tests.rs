@@ -990,6 +990,8 @@ async fn downloads_over_real_http_from_a_loopback_mirror() {
     assert_eq!(requests.len(), 3);
 }
 
+// XDG paths: Linux paths, absolute only on Unix.
+#[cfg(unix)]
 #[test]
 fn keeps_pending_downloads_in_the_user_cache() {
     let env: HashMap<String, String> =

@@ -1644,6 +1644,8 @@ mod tests {
         );
     }
 
+    // Linux semantics: XDG paths and executable bits.
+    #[cfg(unix)]
     #[test]
     fn finds_a_programs_icon_in_the_theme_it_inherits_from() {
         let scratch = tempfile::tempdir().unwrap();
@@ -1725,6 +1727,8 @@ mod tests {
         );
     }
 
+    // Linux semantics: XDG paths and executable bits.
+    #[cfg(unix)]
     #[test]
     fn lists_installed_programs_only_ranked_for_the_file() {
         let scratch = tempfile::tempdir().unwrap();

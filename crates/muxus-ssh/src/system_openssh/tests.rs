@@ -246,7 +246,12 @@ fn enters_a_container_with_a_forced_terminal_whatever_the_hosts_settings_say() {
 #[test]
 fn finds_ssh_on_path() {
     let dir = tempfile::tempdir().unwrap();
-    let program = dir.path().join("ssh");
+    let platform = Platform::current();
+    let program = dir.path().join(if platform == Platform::Windows {
+        "ssh.exe"
+    } else {
+        "ssh"
+    });
     std::fs::write(&program, "#!/bin/sh\n").unwrap();
     #[cfg(unix)]
     {
@@ -254,11 +259,9 @@ fn finds_ssh_on_path() {
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let missing = dir.path().join("nonexistent");
-    let env = HashMap::from([(
-        "PATH".to_string(),
-        format!("{}:{}", missing.display(), dir.path().display()),
-    )]);
-    assert_eq!(find_ssh_binary(&env, Platform::Linux), Some(program));
+    let path = std::env::join_paths([missing.as_path(), dir.path()]).unwrap();
+    let env = HashMap::from([("PATH".to_string(), path.to_string_lossy().into_owned())]);
+    assert_eq!(find_ssh_binary(&env, platform), Some(program));
 }
 
 #[test]

@@ -2,7 +2,9 @@
 //! scratch folders; nothing here changes a real default.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -236,6 +238,8 @@ fn leaves_other_builds_alone() {
 
 // --- Linux link handler registration ---
 
+// XDG paths: Linux paths, absolute only on Unix.
+#[cfg(unix)]
 #[tokio::test]
 async fn reports_the_current_handlers_by_name_without_changing_anything() {
     let scratch = scratch();
@@ -374,6 +378,8 @@ async fn reaches_an_appimage_whose_path_needs_quoting_through_a_plain_link() {
     assert!(!linux.state().await.ssh.is_default);
 }
 
+// XDG paths: Linux paths, absolute only on Unix.
+#[cfg(unix)]
 #[tokio::test]
 async fn uses_the_desktop_file_a_package_installed() {
     let scratch = scratch();
@@ -635,6 +641,8 @@ fn reads_desktop_entries_like_the_desktop_does() {
     assert_eq!(split_exec("   "), None);
 }
 
+// XDG paths: Linux paths, absolute only on Unix.
+#[cfg(unix)]
 #[test]
 fn lists_data_directories_most_important_first() {
     let env: HashMap<String, String> = [

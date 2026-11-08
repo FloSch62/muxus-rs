@@ -173,8 +173,12 @@ where
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
-        let (socket, _) = listener.accept().await.unwrap();
-        serve(socket, handle).await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        serve(&mut socket, handle).await;
+        // Closing with unread input resets the connection on Windows, and the client loses
+        // what was already sent: finish writing, then read until the client hangs up.
+        let _ = tokio::io::AsyncWriteExt::shutdown(&mut socket).await;
+        let _ = tokio::io::copy(&mut socket, &mut tokio::io::sink()).await;
     });
     let socket = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     (socket, port)

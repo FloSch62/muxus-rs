@@ -734,6 +734,7 @@ topology:
 
 #[test]
 fn fits_two_saved_nodes_side_by_side_as_the_viewer_does() {
+    use super::topology::{annotation_positions, layout, parse_topology};
     let topology = parse_topology(
         r#"topology:
   nodes:

@@ -206,7 +206,12 @@ impl Sandbox {
             vec![self.known_hosts.clone()],
             vec![self.dir.path().join("no-global-known-hosts")],
         );
-        options.env_lookup = Arc::new(|_: &str| None);
+        // Windows falls back to OpenSSH's agent pipe without SSH_AUTH_SOCK: name one that
+        // does not exist so the machine's own agent stays out.
+        options.env_lookup = Arc::new(|name: &str| {
+            (cfg!(windows) && name == "SSH_AUTH_SOCK")
+                .then(|| r"\\.\pipe\muxus-test-no-agent".to_string())
+        });
         options
     }
 

@@ -244,9 +244,10 @@ mod tests {
 
     impl Sandbox {
         fn terminal(&self) -> SessionHandle {
+            let shell = if cfg!(windows) { "cmd.exe" } else { "/bin/sh" };
             let connect: TerminalClientMessage = serde_json::from_value(serde_json::json!({
                 "op": "connect",
-                "profile": { "kind": "local", "shell": "/bin/sh" },
+                "profile": { "kind": "local", "shell": shell },
                 "cols": 80,
                 "rows": 24
             }))

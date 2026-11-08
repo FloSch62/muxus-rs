@@ -140,6 +140,8 @@ pub(crate) fn set_mtime(path: &Path, seconds: u64) {
         .unwrap();
 }
 
+/// Modes, owners and symlinks are POSIX: the tests that set or read them run on Unix only.
+#[cfg(unix)]
 pub(crate) fn set_mode(path: &Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
