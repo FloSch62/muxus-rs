@@ -61,8 +61,8 @@ const TOGGLE_WEIGHT: f32 = 550.0;
 
 use crate::keys::keyboard_event;
 use crate::paint::{
-    CellSize, FontSet, Frame, FrameCursor, FrameImage, FramePreedit, PaintCell, RulerLane,
-    RulerMark, Scrollbar, hsla, inner_padding, paint_frame, scrollbar_width,
+    CellSize, FontSet, Frame, FrameCursor, FrameImage, FramePreedit, ImageLayer, PaintCell,
+    RulerLane, RulerMark, Scrollbar, hsla, inner_padding, paint_frame, scrollbar_width,
 };
 use crate::scrollbar::{
     MINIMUM_SLIDER_SIZE, POINTER_DRAG_RESET_DISTANCE, ScrollbarState, line_for_position,
@@ -173,7 +173,10 @@ pub struct TerminalView {
     scrolled_at: Option<Instant>,
     left_at: Option<Instant>,
     scroll_remainder: f32,
-    images: HashMap<u64, ((u32, u32), Arc<RenderImage>)>,
+    images: HashMap<u64, CachedImage>,
+    /// Images replaced or gone since the last frame; they leave the atlas at the next one,
+    /// once no painted frame shows them.
+    retired_images: Vec<Arc<RenderImage>>,
     scale_factor: f32,
     preedit: Option<String>,
     /// Bumped with every settings change, for the rows cache.
@@ -186,6 +189,15 @@ pub struct TerminalView {
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
+/// An image placement as the atlas holds it.
+struct CachedImage {
+    /// The pixels it was made from: a frame of an animation hands the placement new ones.
+    pixels: Arc<Vec<u8>>,
+    /// Its size in device pixels.
+    size: (u32, u32),
+    image: Arc<RenderImage>,
+}
+
 impl EventEmitter<TerminalViewEvent> for TerminalView {}
 
 impl Focusable for TerminalView {
@@ -196,6 +208,20 @@ impl Focusable for TerminalView {
 
 fn parse_color(value: &str) -> Rgba {
     parse_css_color(value).unwrap_or_default()
+}
+
+/// RGBA `pixels` with a one-pixel border around them that repeats their edge pixels.
+fn with_edge_border(pixels: &[u8], width: usize, height: usize) -> Vec<u8> {
+    let row_bytes = width * 4;
+    let mut out = Vec::with_capacity((width + 2) * (height + 2) * 4);
+    for y in 0..height + 2 {
+        let source = y.saturating_sub(1).min(height - 1) * row_bytes;
+        let row = &pixels[source..source + row_bytes];
+        out.extend_from_slice(&row[..4]);
+        out.extend_from_slice(row);
+        out.extend_from_slice(&row[row_bytes - 4..]);
+    }
+    out
 }
 
 impl TerminalView {
@@ -254,6 +280,12 @@ impl TerminalView {
         let subscriptions = vec![
             cx.on_focus(&focus, window, |view, _, cx| view.set_focused(true, cx)),
             cx.on_blur(&focus, window, |view, _, cx| view.set_focused(false, cx)),
+            cx.on_release(|view, cx| {
+                let cached = view.images.drain().map(|(_, cached)| cached.image);
+                for image in view.retired_images.drain(..).chain(cached) {
+                    cx.drop_image(image, None);
+                }
+            }),
         ];
         let fonts = FontSet {
             family: "JetBrains Mono".into(),
@@ -308,6 +340,7 @@ impl TerminalView {
             left_at: None,
             scroll_remainder: 0.0,
             images: HashMap::new(),
+            retired_images: Vec::new(),
             scale_factor: 1.0,
             preedit: None,
             settings_version: 0,
@@ -1711,20 +1744,33 @@ impl TerminalView {
 
     // ---- frame ---------------------------------------------------------------------------
 
-    /// The image as a GPUI sprite at its painted size in device pixels: scaled with a bilinear
-    /// filter like the canvas the image addon draws on (GPUI samples sprites without filtering).
+    /// The image as a GPUI sprite for its painted size `target` in device pixels, and whether it
+    /// has a border to paint outside that size. Painted larger than its pixels, it stays at its
+    /// own size and the GPU stretches it: sprites are sampled bilinearly, as the canvas the
+    /// image addon draws on, and a one-pixel border repeating its edge keeps the atlas
+    /// neighbours out of its edge. Painted smaller, it is scaled down here, with a filter that
+    /// averages the pixels it drops. The sprite is made again when the pixels change (a frame
+    /// of an animation) or the size does.
     fn render_image(
         &mut self,
         id: u64,
-        pixels: &[u8],
+        pixels: &Arc<Vec<u8>>,
         width: usize,
         height: usize,
         target: (u32, u32),
-    ) -> Option<Arc<RenderImage>> {
-        if let Some((size, image)) = self.images.get(&id)
-            && *size == target
+    ) -> Option<(Arc<RenderImage>, bool)> {
+        let own = (width as u32, height as u32);
+        let stretched = target.0 >= own.0 && target.1 >= own.1 && target != own;
+        let size = if stretched {
+            (own.0 + 2, own.1 + 2)
+        } else {
+            target
+        };
+        if let Some(cached) = self.images.get(&id)
+            && cached.size == size
+            && Arc::ptr_eq(&cached.pixels, pixels)
         {
-            return Some(image.clone());
+            return Some((cached.image.clone(), stretched));
         }
         if width == 0
             || height == 0
@@ -1734,30 +1780,38 @@ impl TerminalView {
         {
             return None;
         }
-        let source = image::RgbaImage::from_raw(
-            width as u32,
-            height as u32,
-            pixels[..width * height * 4].to_vec(),
-        )?;
-        let mut scaled = if (width as u32, height as u32) == target {
-            source
+        let mut sprite = if stretched {
+            image::RgbaImage::from_raw(size.0, size.1, with_edge_border(pixels, width, height))?
         } else {
-            image::imageops::resize(
-                &source,
-                target.0,
-                target.1,
-                image::imageops::FilterType::Triangle,
-            )
+            let source =
+                image::RgbaImage::from_raw(own.0, own.1, pixels[..width * height * 4].to_vec())?;
+            if own == target {
+                source
+            } else {
+                image::imageops::resize(
+                    &source,
+                    target.0,
+                    target.1,
+                    image::imageops::FilterType::Triangle,
+                )
+            }
         };
         // GPUI's sprites are BGRA.
-        for pixel in scaled.pixels_mut() {
+        for pixel in sprite.pixels_mut() {
             pixel.0.swap(0, 2);
         }
         let image = Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(
-            scaled
+            sprite
         )]));
-        self.images.insert(id, (target, image.clone()));
-        Some(image)
+        let cached = CachedImage {
+            pixels: pixels.clone(),
+            size,
+            image: image.clone(),
+        };
+        if let Some(old) = self.images.insert(id, cached) {
+            self.retired_images.push(old.image);
+        }
+        Some((image, stretched))
     }
 
     /// The "Find in terminal" box: an elevated Paper at the top right with the query field (search
@@ -2165,24 +2219,41 @@ impl TerminalView {
                 (width * self.scale_factor).round() as u32,
                 (height * self.scale_factor).round() as u32,
             );
-            if let Some(image) = self.render_image(
+            if let Some((image, bordered)) = self.render_image(
                 placement.id,
                 &placement.pixels,
                 placement.width,
                 placement.height,
                 target,
             ) {
+                // The border is one of the image's pixels wide, as stretched.
+                let border = if bordered {
+                    (
+                        width / placement.width as f32,
+                        height / placement.height as f32,
+                    )
+                } else {
+                    (0.0, 0.0)
+                };
                 images.push(FrameImage {
                     row,
                     col: placement.col,
                     image,
                     width,
                     height,
-                    below_text: placement.z_index < 0,
+                    border,
+                    layer: ImageLayer::of(placement.z_index),
                 });
             }
         }
-        self.images.retain(|id, _| live.contains(id));
+        let retired = &mut self.retired_images;
+        self.images.retain(|id, cached| {
+            let keep = live.contains(id);
+            if !keep {
+                retired.push(cached.image.clone());
+            }
+            keep
+        });
 
         let length = self.emulator.length();
         let opacity = self.scrollbar_opacity();
@@ -2270,6 +2341,10 @@ impl Render for TerminalView {
             self.focused = focused;
             self.restart_blink();
             self.schedule_tick(cx);
+        }
+        // Images the last frame replaced: no painted frame shows them any more.
+        for image in self.retired_images.drain(..) {
+            cx.drop_image(image, Some(window));
         }
         let frame = self.build_frame();
         let colors = self.emulator.colors();
@@ -2892,5 +2967,66 @@ mod tests {
         view.read_with(cx, |view, _| {
             assert_eq!(view.emulator.image_storage_limit(), ACTIVE_IMAGE_STORAGE_MB);
         });
+    }
+
+    /// A frame of an animated image (kitty's `a=f`) makes a new sprite for the placement and
+    /// retires the one it replaced, to leave the atlas; unchanged pixels keep their sprite. A
+    /// sprite the GPU stretches carries a border one image pixel wide.
+    #[gpui::test]
+    fn a_new_frame_of_an_image_replaces_its_sprite_and_retires_the_old_one(
+        cx: &mut TestAppContext,
+    ) {
+        const ST: &str = "\x1b\\";
+        // 2×2 RGB pixels of 1s and of 2s.
+        const ONES: &str = "AQEBAQEBAQEBAQEB";
+        const TWOS: &str = "AgICAgICAgICAgIC";
+        let (view, _ends, cx) = terminal(cx, TerminalSettings::default(), 40, 10);
+        // Stretched over 4×2 cells (40×40 px).
+        write(
+            &view,
+            cx,
+            &format!("\x1b_Ga=T,i=3,f=24,s=2,v=2,q=2,c=4,r=2,C=1;{ONES}{ST}"),
+        );
+        let sprite = |view: &Entity<TerminalView>, cx: &mut VisualTestContext| {
+            view.update(cx, |view, _| {
+                let frame = view.build_frame();
+                assert_eq!(frame.images.len(), 1);
+                (frame.images[0].image.clone(), frame.images[0].border)
+            })
+        };
+        let (first, border) = sprite(&view, cx);
+        assert_eq!(border, (20.0, 20.0));
+        assert_eq!(
+            first.size(0),
+            gpui::size(gpui::DevicePixels(4), gpui::DevicePixels(4)),
+            "the image's own 2×2 pixels and their border"
+        );
+        let (again, _) = sprite(&view, cx);
+        assert!(Arc::ptr_eq(&first, &again));
+        view.read_with(cx, |view, _| assert!(view.retired_images.is_empty()));
+
+        write(
+            &view,
+            cx,
+            &format!("\x1b_Ga=f,r=1,i=3,f=24,s=2,v=2,q=2;{TWOS}{ST}\x1b_Ga=a,c=1,i=3,q=2;{ST}"),
+        );
+        let (second, _) = sprite(&view, cx);
+        assert!(!Arc::ptr_eq(&first, &second));
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.images.len(), 1);
+            assert_eq!(view.retired_images.len(), 1);
+            assert!(Arc::ptr_eq(&view.retired_images[0], &first));
+        });
+    }
+
+    #[test]
+    fn the_edge_border_repeats_the_edge_pixels() {
+        // 2×1: pixels a and b become a 4×3 sprite of rows "a a b b".
+        let (a, b) = ([1, 2, 3, 4], [5, 6, 7, 8]);
+        let row = [a, a, b, b].concat();
+        assert_eq!(
+            with_edge_border(&[a, b].concat(), 2, 1),
+            [row.clone(), row.clone(), row].concat()
+        );
     }
 }

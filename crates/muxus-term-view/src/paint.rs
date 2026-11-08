@@ -170,7 +170,32 @@ pub(crate) struct FrameImage {
     /// Size in logical pixels.
     pub width: f32,
     pub height: f32,
-    pub below_text: bool,
+    /// The sprite's border outside that size on each side (x, y), in logical pixels.
+    pub border: (f32, f32),
+    pub layer: ImageLayer,
+}
+
+/// Where an image goes among the cells, by its kitty z-index, as kitty draws it: under the
+/// cells' backgrounds below `i32::MIN / 2`, over the backgrounds but under the text for the other
+/// negative values, over the text from 0. (The image addon puts every negative z under the
+/// backgrounds, where a program's colored cells hide it.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImageLayer {
+    UnderBackgrounds,
+    UnderText,
+    OverText,
+}
+
+impl ImageLayer {
+    pub(crate) fn of(z_index: i32) -> Self {
+        if z_index >= 0 {
+            Self::OverText
+        } else if z_index < i32::MIN / 2 {
+            Self::UnderBackgrounds
+        } else {
+            Self::UnderText
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -267,30 +292,42 @@ pub(crate) fn paint_frame(
     let rendering_mode = cx.text_rendering_mode();
     cx.set_text_rendering_mode(TextRenderingMode::Grayscale);
 
-    for image in frame.images.iter().filter(|image| image.below_text) {
-        paint_image(image, origin_x, origin_y, cell, bounds, window);
-    }
+    let paint_images = |layer: ImageLayer, window: &mut Window| {
+        for image in frame.images.iter().filter(|image| image.layer == layer) {
+            paint_image(image, origin_x, origin_y, cell, bounds, window);
+        }
+    };
+    let row_y = |row_index: usize| origin_y + row_index as f32 * cell.height;
 
-    for (row_index, row) in frame.rows.iter().enumerate() {
-        let y = origin_y + row_index as f32 * cell.height;
-        paint_backgrounds(row, origin_x, y, cell, window);
-        paint_text(
-            row,
-            origin_x,
-            y,
-            cell,
-            &frame.fonts,
-            line_height,
-            window,
-            cx,
-        );
-        paint_box_glyphs(row, origin_x, y, cell, frame.fonts.size, window);
-        paint_decorations(row, origin_x, y, cell, window);
-    }
-
-    for image in frame.images.iter().filter(|image| !image.below_text) {
-        paint_image(image, origin_x, origin_y, cell, bounds, window);
-    }
+    // The grid is two layers, as xterm's WebGL renderer draws it: the backgrounds, then the
+    // text and the drawn glyphs, with the images that go under the text between them. Each
+    // primitive outside a layer finds its place among everything it overlaps; a screen of
+    // colored cells has thousands.
+    paint_images(ImageLayer::UnderBackgrounds, window);
+    window.paint_layer(bounds, |window| {
+        for (row_index, row) in frame.rows.iter().enumerate() {
+            paint_backgrounds(row, origin_x, row_y(row_index), cell, window);
+        }
+    });
+    paint_images(ImageLayer::UnderText, window);
+    window.paint_layer(bounds, |window| {
+        for (row_index, row) in frame.rows.iter().enumerate() {
+            let y = row_y(row_index);
+            paint_text(
+                row,
+                origin_x,
+                y,
+                cell,
+                &frame.fonts,
+                line_height,
+                window,
+                cx,
+            );
+            paint_box_glyphs(row, origin_x, y, cell, frame.fonts.size, window);
+            paint_decorations(row, origin_x, y, cell, window);
+        }
+    });
+    paint_images(ImageLayer::OverText, window);
 
     if let Some(cursor) = &frame.cursor {
         paint_cursor(
@@ -476,7 +513,8 @@ fn paint_text(
             let before = text.len();
             // Box drawing and blocks are drawn on the grid (`paint_box_glyphs`); the run keeps
             // a space in their place, with its underline or strikethrough.
-            let fallback = if box_glyph_char(&piece.text).is_some() {
+            let drawn = box_glyph_char(&piece.text).is_some();
+            let fallback = if drawn {
                 text.push(' ');
                 None
             } else {
@@ -485,10 +523,12 @@ fn paint_text(
             };
             let len = text.len() - before;
             // Cells that would make equal runs extend the last one; the run (and its font) is
-            // only built when the style changes.
+            // only built when the style changes. A drawn glyph's space shows none of its style
+            // unless it is underlined or struck through, so it extends any run.
             let key = RunKey::of(piece, fallback);
+            let plain_space = drawn && key.underline.is_none() && !key.strikethrough;
             match runs.last_mut() {
-                Some(last) if last_key == Some(key) => last.len += len,
+                Some(last) if last_key == Some(key) || plain_space => last.len += len,
                 _ => {
                     runs.push(text_run(piece, fonts, fallback, len));
                     last_key = Some(key);
@@ -678,9 +718,17 @@ fn paint_image(
     let x = cell_x(origin_x, image.col, cell);
     let y = origin_y + image.row as f32 * cell.height;
     let image_bounds = Bounds::new(point(px(x), px(y)), size(px(image.width), px(image.height)));
+    let (border_x, border_y) = image.border;
+    let sprite_bounds = Bounds::new(
+        point(px(x - border_x), px(y - border_y)),
+        size(
+            px(image.width + 2.0 * border_x),
+            px(image.height + 2.0 * border_y),
+        ),
+    );
     let _ = window.paint_image(
-        bounds,
-        image_bounds,
+        bounds.intersect(&image_bounds),
+        sprite_bounds,
         Default::default(),
         image.image.clone(),
         0,
@@ -841,6 +889,19 @@ fn paint_ruler(frame: &Frame, bounds: Bounds<Pixels>, grid_height: f32, window: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_kitty_z_index_picks_the_layer_kitty_draws_the_image_in() {
+        assert_eq!(ImageLayer::of(0), ImageLayer::OverText);
+        assert_eq!(ImageLayer::of(5), ImageLayer::OverText);
+        // presenterm places its images at z=-2: over the slide's colored cells.
+        assert_eq!(ImageLayer::of(-2), ImageLayer::UnderText);
+        assert_eq!(ImageLayer::of(i32::MIN / 2), ImageLayer::UnderText);
+        assert_eq!(
+            ImageLayer::of(i32::MIN / 2 - 1),
+            ImageLayer::UnderBackgrounds
+        );
+    }
 
     fn cell(edit: impl FnOnce(&mut PaintCell)) -> PaintCell {
         let mut cell = PaintCell {
