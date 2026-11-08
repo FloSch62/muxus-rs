@@ -266,7 +266,7 @@ pub fn build_demo_home(base: &Path, alias: &str) -> io::Result<Option<PathBuf>> 
 pub fn demo_shell(root: &Path, prompt: &str) -> (LocalProfile, LocalEnvironment) {
     let rc = root.join(".muxus-demo-rc").display().to_string();
     let profile = LocalProfile {
-        shell: Some("/usr/bin/bash".into()),
+        shell: Some("/bin/bash".into()),
         args: Some(vec![
             "--noprofile".into(),
             "--rcfile".into(),
@@ -281,7 +281,7 @@ pub fn demo_shell(root: &Path, prompt: &str) -> (LocalProfile, LocalEnvironment)
         ("PATH", "/usr/local/bin:/usr/bin:/bin"),
         ("TERM", "xterm-256color"),
         ("LANG", "C.UTF-8"),
-        ("SHELL", "/usr/bin/bash"),
+        ("SHELL", "/bin/bash"),
         ("HOSTNAME", prompt),
         ("MUXUS_DEMO", "1"),
         ("TZ", "UTC"),
