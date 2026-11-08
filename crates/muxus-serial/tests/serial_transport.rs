@@ -454,8 +454,10 @@ mod pty {
             // Give the session's control task a moment to drop the line.
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        // Something else may open it too (it would see EBUSY under a lingering lock).
-        let plain = serialport::new(&path, 9600).exclusive(false).open();
+        // Something else may open it too (it would see EBUSY under a lingering lock). On macOS
+        // without a speed, which the serial library sets with an ioctl a pty refuses.
+        let baud_rate = if cfg!(target_os = "macos") { 0 } else { 9600 };
+        let plain = serialport::new(&path, baud_rate).exclusive(false).open();
         assert!(plain.is_ok(), "{:?}", plain.err());
         drop(plain);
         let started = std::time::Instant::now();
