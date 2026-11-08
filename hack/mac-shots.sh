@@ -6,8 +6,10 @@
 #
 # --bin is where the programs are, the examples in its examples/ (default target/debug:
 # `cargo build -p muxus-app --bin muxus --example settings --example sftp …`, see the list
-# at the bottom). Each shot starts the program with a scratch data folder, waits for
-# its window, lets it settle, captures the window alone (screencapture -l) and quits it.
+# at the bottom). Each shot starts the program from a minimal app bundle (through
+# LaunchServices, as an installed app starts) with a scratch data folder, waits for its
+# window, lets it settle, brings it forward again so it draws a current frame, captures
+# the window alone (screencapture -l) and quits it.
 # The program's output lands next to each PNG as <name>.log; when no window shows up the
 # whole screen is captured as <name>-screen.png instead. Capturing needs the Screen
 # Recording permission, which the GitHub runners grant to bash.
@@ -32,9 +34,10 @@ bin="$(cd "$bin" && pwd)"
 if [[ -z "$out" ]]; then out="$(mktemp -d "${TMPDIR:-/tmp}/muxus-shots-XXXXXX")"; fi
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
-scratch="$(mktemp -d "${TMPDIR:-/tmp}/muxus-mac-shots-XXXXXX")"
+# Resolved (/var is /private/var): the programs are found by their path while they run.
+scratch="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/muxus-mac-shots-XXXXXX")" && pwd -P)"
 # Keep the display awake: while it sleeps macOS reports every window as occluded and GPUI
-# draws no frames, so a shot shows the window as it was when the display went to sleep.
+# draws no frames for them.
 caffeinate -d -u &
 caffeinate_pid=$!
 trap 'kill "$caffeinate_pid" 2>/dev/null; rm -rf "$scratch"' EXIT
@@ -80,38 +83,76 @@ shot_one() {
   local path="$bin/$program"
   [[ -x "$path" ]] || path="$bin/examples/$program"
   mkdir -p "$data"
+  local app
+  app="$(bundle "$program" "$path")"
   # macOS's bash (the runner's login shell) otherwise opens with a note that zsh is the default.
-  env MUXUS_DATA_DIR="$data" MUXUS_WINDOW=1420x880 BASH_SILENCE_DEPRECATION_WARNING=1 "$@" \
-    "$path" >"$log" 2>&1 &
-  local pid=$! id="" waited=0
-  while [[ -z "$id" && $waited -lt 60 ]] && kill -0 "$pid" 2>/dev/null; do
+  local env_args=() var
+  for var in MUXUS_DATA_DIR="$data" MUXUS_WINDOW=1420x880 BASH_SILENCE_DEPRECATION_WARNING=1 "$@"; do
+    env_args+=(--env "$var")
+  done
+  : >"$log"
+  open -n -a "$app" "${env_args[@]}" --stdout "$log" --stderr "$log"
+  local pid="" id="" waited=0
+  while [[ -z "$id" && $waited -lt 60 ]]; do
     sleep 1
     waited=$((waited + 1))
+    [[ -n "$pid" ]] || pid="$(pgrep -n -f "$app/Contents/MacOS/")" || pid=""
+    [[ -n "$pid" ]] || continue
+    kill -0 "$pid" 2>/dev/null || break
     id="$("$scratch/window-id" "$pid" 2>/dev/null)" || id=""
   done
   if [[ -n "$id" ]]; then
     sleep "$settle"
+    # The window shows the frames its display link hands it, and on the runners' virtual
+    # display that link stops soon after the window opens. A window that becomes key again
+    # draws a frame at once: hand the focus to Finder and back.
+    open -a Finder
+    sleep 1
+    open -a "$app"
+    sleep 1
     # The window may have been replaced while it settled (a fullscreen or restored one).
     id="$("$scratch/window-id" "$pid" 2>/dev/null)" || id=""
   fi
   if [[ -n "$id" ]] && screencapture -x -o -l "$id" "$png" && [[ -s "$png" ]]; then
     echo "$name: ok"
   else
-    if kill -0 "$pid" 2>/dev/null; then
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       echo "$name: no window after ${waited}s" | tee -a "$log"
     else
-      wait "$pid"
-      echo "$name: exited with status $? before a window showed" | tee -a "$log"
+      echo "$name: exited before a window showed" | tee -a "$log"
     fi
     screencapture -x "$out/$name-screen.png" || true
     failed+=("$name")
   fi
+  [[ -n "$pid" ]] || return 0
   kill "$pid" 2>/dev/null
   # Give it a moment to quit, then make sure it has.
   local tries=0
   while kill -0 "$pid" 2>/dev/null && [[ $tries -lt 10 ]]; do sleep 0.5; tries=$((tries + 1)); done
   kill -9 "$pid" 2>/dev/null
-  wait "$pid" 2>/dev/null
+}
+
+# bundle <program> <path>: a minimal app bundle around the program, started through
+# LaunchServices as an installed app is, so that `open -a` can bring it forward again.
+bundle() {
+  local program="$1" path="$2" app="$scratch/apps/$1.app"
+  if [[ ! -d "$app" ]]; then
+    mkdir -p "$app/Contents/MacOS"
+    cp "$path" "$app/Contents/MacOS/$program"
+    cat >"$app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>$program</string>
+  <key>CFBundleIdentifier</key><string>dev.muxus.shots.${program//_/-}</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+PLIST
+  fi
+  echo "$app"
 }
 
 # The main window with the documentation's scenes (crates/muxus-app/src/ui/scenes.rs).
