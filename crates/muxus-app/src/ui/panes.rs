@@ -415,13 +415,14 @@ impl AppShell {
         } else {
             570.
         };
+        // Grid tracks share the row, where wrapped cards of a computed width could add up
+        // to a rounding error more than it and push the last card onto a row of its own.
         let columns = empty_pane_columns(available, 3);
-        let card_width = (available - EMPTY_CARD_GAP * (columns as f32 - 1.)) / columns as f32;
         let picker_card = (self.geometry.clone(), pane_id.to_string());
         let picker_pane = pane_id.to_string();
         let cards = div()
-            .flex()
-            .flex_wrap()
+            .grid()
+            .grid_cols(columns as u16)
             .gap(px(EMPTY_CARD_GAP))
             .w(px(available))
             .child(empty_action(
@@ -430,7 +431,6 @@ impl AppShell {
                 "Local terminal",
                 "This device",
                 true,
-                card_width,
                 None,
                 theme,
                 cx.listener(move |this, _, _, cx| {
@@ -443,7 +443,6 @@ impl AppShell {
                 "Saved host",
                 "Choose any host",
                 false,
-                card_width,
                 Some(picker_card),
                 theme,
                 cx.listener(move |this, event: &ClickEvent, window, cx| {
@@ -464,7 +463,6 @@ impl AppShell {
                 "Add host",
                 "SSH, Telnet, serial, RDP, VNC, gNMI, NETCONF",
                 false,
-                card_width,
                 None,
                 theme,
                 cx.listener(|this, _, window, cx| this.add_host(None, window, cx)),
@@ -1425,7 +1423,6 @@ fn empty_action(
     title: &'static str,
     description: &'static str,
     primary: bool,
-    width: f32,
     record: Option<(std::rc::Rc<PaneGeometry>, String)>,
     theme: &Theme,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -1455,7 +1452,6 @@ fn empty_action(
     let mut card = div()
         .id(id)
         .relative()
-        .w(px(width))
         .min_h(px(92.))
         .p(px(12.))
         .flex()
