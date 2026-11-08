@@ -316,3 +316,44 @@ the noise: `seq` 66–79 → 71–76 MB/s, `log` 134–159 →
 254–256 → 228–252, `vim` 167–174 → 170–182. Resident memory of a filled emulator: plain log
 37.2–37.5 MB, colored log 46.9 MB, `ls -la` 23.2–23.4 MB, `seq` 4.4–4.9 MB (0.79.0 in the same
 runs: 37.1, 46.9, 23.1, 4.4–4.5); resizes to 150 columns and back as before.
+
+## Full-screen color redraws and kitty animation (Windows, over SSH)
+
+Two programs that write as fast as the terminal takes it, run in a release build on Windows 11
+over SSH into WSL (a 1600×1000 window, 149×44 cells, 20 s a run, three runs): DOOM-fire-zig
+(every frame a full screen of `▀` cells with 256-color foreground and background, 60–120 KB a
+frame) and kitty-doom (a 320×200 RGB image placed with `a=T,c=,r=,C=1`, then every frame as
+`a=f,r=1` plus `a=a,c=1`, 257 KB a frame). Each was patched to print the frames and bytes it
+got out in the run. The Electron build (xterm.js 6.1 with the image addon) is the reference;
+without a terminal the pty takes 604 and 393 frames a second.
+
+| | Before | After | Electron |
+|---|---|---|---|
+| DOOM-fire-zig | 147–154 fps, 17 MB/s, 42 frames painted a second | 464–485 fps, 54–56 MB/s, 71 frames painted | 587–606 fps, 73–75 MB/s |
+| kitty-doom | 316–328 fps, drawn at 320×200 px at the bottom left | 327–331 fps, drawn over all 149×44 cells, 154–156 frames painted | 293–299 fps, but only the first frame shown (`a=f` is not supported) |
+| GPU memory during kitty-doom | grew 48 MB/s (1.45 GB after 30 s), never freed | 39 MB throughout | |
+
+What changed:
+
+- **The grid is painted in layers** (`paint_frame`): one for the cells' backgrounds, one for
+  the text and drawn glyphs. Outside a layer every quad is placed in GPUI's bounds tree to find
+  its draw order; DOOM-fire's screen is some 13 000 quads, and painting took 16.4 ms a frame.
+  In layers it takes 0.8 ms. Images with a negative kitty z-index above `i32::MIN / 2` go
+  between the two layers, as kitty draws them.
+- **The output pump yields without a timer on Windows** (`yield_to_event_loop`): the 1 ms
+  timer it waited on every 12 ms of output fires at the next 15.6 ms timer tick there, and the
+  UI thread sat idle (0.73 of a core used) while output waited. GPUI's Windows loop paints and
+  takes input once its tasks have run 10 ms, so the task only goes to the back of the queue.
+  Frame gaps while output flows stay under 25 ms.
+- **A drawn glyph's placeholder space extends the text run** before it (`paint_text`): a
+  screen of differently colored `▀` built a run, and a font, per cell.
+- **kitty frames edit the image in place** (engine patch, `PATCHES.md`) and **the view makes a
+  placement's sprite again when its pixels change, retiring the old one from the atlas**. The
+  view used to keep every sprite it ever made, one per frame. Images painted larger than their
+  pixels are stretched by the GPU (bilinear, with a one-pixel border repeating the edge)
+  instead of being scaled on the CPU for every frame.
+
+What is left: the UI thread now spends most of its time parsing (the emulator takes
+DOOM-fire's stream at 72 MB/s on its own, `throughput` with a captured stream), and that keeps
+DOOM-fire below xterm.js; parsing off the UI thread would be the next step. kitty-doom is bound
+by the program and the pty.
