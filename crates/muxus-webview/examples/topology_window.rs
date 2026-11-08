@@ -93,6 +93,7 @@ fn main() {
         annotations,
         theme: theme(&mode),
         nodes,
+        placement: None,
     };
     let data = std::env::temp_dir().join("muxus-topology-window-example");
     let windows = WebWindows::for_current_exe(&data).expect("the example's own path");

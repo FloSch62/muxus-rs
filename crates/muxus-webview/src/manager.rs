@@ -53,6 +53,9 @@ struct Inner {
     closed_rx: async_channel::Receiver<ClosedWebWindow>,
     nodes_tx: async_channel::Sender<OpenedNode>,
     nodes_rx: async_channel::Receiver<OpenedNode>,
+    /// Topology windows, by key, once they show.
+    shown_tx: async_channel::Sender<String>,
+    shown_rx: async_channel::Receiver<String>,
 }
 
 /// Every page window of the app, by saved host.
@@ -101,6 +104,7 @@ impl WebWindows {
     ) -> Self {
         let (closed_tx, closed_rx) = async_channel::unbounded();
         let (nodes_tx, nodes_rx) = async_channel::unbounded();
+        let (shown_tx, shown_rx) = async_channel::unbounded();
         Self {
             inner: Arc::new(Inner {
                 program: program.into(),
@@ -112,6 +116,8 @@ impl WebWindows {
                 closed_rx,
                 nodes_tx,
                 nodes_rx,
+                shown_tx,
+                shown_rx,
             }),
         }
     }
@@ -192,6 +198,12 @@ impl WebWindows {
         self.spawn(windows, request.key.clone(), &launch, None)
     }
 
+    /// Topology windows, by key, as they show: each starts hidden and shows once its page is
+    /// drawn, which is when the dialog it replaces can go.
+    pub fn shown_windows(&self) -> async_channel::Receiver<String> {
+        self.inner.shown_rx.clone()
+    }
+
     /// Nodes topology windows ask to open, by window key.
     pub fn opened_nodes(&self) -> async_channel::Receiver<OpenedNode> {
         self.inner.nodes_rx.clone()
@@ -230,6 +242,7 @@ impl WebWindows {
             let _ = child.wait();
             return Err("Could not open the page window.".into());
         };
+        let launch_is_topology = launch.topology.is_some();
         let launch = line(launch);
         if let Err(error) = stdin
             .write_all(launch.as_bytes())
@@ -246,6 +259,8 @@ impl WebWindows {
         let inner = Arc::downgrade(&self.inner);
         let closed_tx = self.inner.closed_tx.clone();
         let nodes_tx = self.inner.nodes_tx.clone();
+        // Only a topology window has a dialog waiting for it to show.
+        let shown_tx = launch_is_topology.then(|| self.inner.shown_tx.clone());
         let watch = move || {
             let mut error = None;
             for text in BufReader::new(stdout).lines() {
@@ -257,6 +272,11 @@ impl WebWindows {
                             key: key.clone(),
                             name,
                         });
+                    }
+                    Ok(WebWindowEvent::Opened) => {
+                        if let Some(shown) = &shown_tx {
+                            let _ = shown.try_send(key.clone());
+                        }
                     }
                     _ => {}
                 }

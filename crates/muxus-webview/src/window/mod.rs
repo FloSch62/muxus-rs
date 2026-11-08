@@ -23,6 +23,8 @@ use crate::request::{WebWindowRequest, is_window_url, parse_web_window_request, 
 
 enum UserEvent {
     Command(WebWindowCommand),
+    /// The topology window's page finished loading: time to show the window.
+    PageLoaded,
 }
 
 fn fail(message: impl Into<String>) -> i32 {
@@ -39,6 +41,23 @@ fn window_title(host_title: &str, page_title: &str) -> String {
     } else {
         format!("{host_title} — {page_title}")
     }
+}
+
+/// The app's icon, as Electron's windows have it: icon resource 1 of `muxus.exe` (muxus-app's
+/// build script), at the sizes the title bar and the taskbar draw it. A binary without it (the
+/// examples) leaves the system's.
+#[cfg(windows)]
+pub(super) fn set_app_icon(window: &Window) {
+    use tao::dpi::PhysicalSize;
+    use tao::platform::windows::{IconExtWindows, WindowExtWindows};
+    use tao::window::Icon;
+    let scale = window.scale_factor();
+    let icon = |side: f64| {
+        let side = (side * scale).round() as u32;
+        Icon::from_resource(1, Some(PhysicalSize::new(side, side))).ok()
+    };
+    window.set_window_icon(icon(16.));
+    window.set_taskbar_icon(icon(32.));
 }
 
 /// The settings every page view gets, the host window's and those of pages it opens: it stays
@@ -138,6 +157,8 @@ pub(crate) fn run(launch: WebWindowLaunch, commands: impl BufRead + Send + 'stat
         Ok(window) => Rc::new(window),
         Err(error) => return fail(format!("Cannot open a window for the page: {error}")),
     };
+    #[cfg(windows)]
+    set_app_icon(&window);
     // One cookie jar and storage per host, so a page keeps its logins and never shares them
     // with another page or with Muxus.
     let mut context = WebContext::new(Some(launch.data_directory.clone()));

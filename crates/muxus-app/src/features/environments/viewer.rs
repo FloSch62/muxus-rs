@@ -16,25 +16,45 @@ use std::rc::Rc;
 
 use muxus_core::environments::{ContainerlabLab, ContainerlabTopologyResponse};
 use muxus_ui::color::css;
-use muxus_ui::gpui_kit::{App, Global};
+use muxus_ui::gpui_kit::{App, Global, Window};
 use muxus_ui::theme::{ActiveTheme, Status, Theme};
+use muxus_ui::zoom::{unzoom, zoom};
 use muxus_webview::{
     TopologyNode, TopologyTheme, TopologyWindowRequest, WebWindowResult, WebWindows,
+    WindowPlacement,
 };
 
 use super::model::{EnvironmentHost, is_running};
 use super::sessions::node_uses_ssh;
+use super::topology::dialog_size;
 use crate::features::launcher::kit::show_toast;
 use crate::hosts::system_openssh::SYSTEM_OPENSSH_UNAVAILABLE;
 
 /// Opens the node a window asks for (by name).
 type NodeOpener = Rc<dyn Fn(String, &mut App)>;
 
+/// Runs once a new window shows (`true`), or closes without having shown (`false`).
+type Handover = Box<dyn FnOnce(bool, &mut App)>;
+
 /// The app's topology windows.
 struct TopologyViewers {
     windows: WebWindows,
     /// Who opens a node a window asks for, by window key.
     owners: HashMap<String, NodeOpener>,
+    /// Who waits for a new window to show, by window key.
+    handovers: HashMap<String, Handover>,
+}
+
+/// Run and forget what waits for the window `key` to show.
+fn finish_handover(key: &str, shown: bool, cx: &mut App) {
+    let handover = if cx.has_global::<TopologyViewers>() {
+        cx.global_mut::<TopologyViewers>().handovers.remove(key)
+    } else {
+        None
+    };
+    if let Some(handover) = handover {
+        handover(shown, cx);
+    }
 }
 
 impl Global for TopologyViewers {}
@@ -67,10 +87,18 @@ pub fn install(data_root: PathBuf, cx: &mut App) {
         }
     })
     .detach();
+    let shown = windows.shown_windows();
+    cx.spawn(async move |cx| {
+        while let Ok(key) = shown.recv().await {
+            cx.update(|cx| finish_handover(&key, true, cx));
+        }
+    })
+    .detach();
     let closed = windows.closed();
     cx.spawn(async move |cx| {
         while let Ok(window) = closed.recv().await {
             cx.update(|cx| {
+                finish_handover(&window.key, false, cx);
                 if cx.has_global::<TopologyViewers>() {
                     cx.global_mut::<TopologyViewers>()
                         .owners
@@ -98,24 +126,53 @@ pub fn install(data_root: PathBuf, cx: &mut App) {
     cx.set_global(TopologyViewers {
         windows,
         owners: HashMap::new(),
+        handovers: HashMap::new(),
     });
 }
 
-/// Show a lab's topology in its window; `open_node` opens a node the window asks for.
-/// `None` without topology windows; an error when the window could not be started.
+/// Show a lab's topology in its window; `open_node` opens a node the window asks for. A new
+/// window starts hidden: `on_shown` runs once it shows (`true`), or closes without having
+/// shown (`false`). `None` without topology windows; an error when the window could not be
+/// started.
 pub fn open(
     request: &TopologyWindowRequest,
     open_node: impl Fn(String, &mut App) + 'static,
+    on_shown: impl FnOnce(bool, &mut App) + 'static,
     cx: &mut App,
 ) -> Option<Result<WebWindowResult, String>> {
     let viewers = cx.try_global::<TopologyViewers>()?;
     let result = viewers.windows.open_topology(request);
-    if let Ok(WebWindowResult::Opened | WebWindowResult::Focused) = result {
-        cx.global_mut::<TopologyViewers>()
+    if let Ok(opened @ (WebWindowResult::Opened | WebWindowResult::Focused)) = result {
+        let viewers = cx.global_mut::<TopologyViewers>();
+        viewers
             .owners
             .insert(request.key.clone(), Rc::new(open_node));
+        if opened == WebWindowResult::Opened {
+            viewers
+                .handovers
+                .insert(request.key.clone(), Box::new(on_shown));
+        }
     }
     Some(result)
+}
+
+/// The dialog's place on screen, in physical pixels: the viewer's window shows its page
+/// there, so the dialog seems to become the window.
+pub fn dialog_placement(window: &Window) -> WindowPlacement {
+    let viewport = window.viewport_size();
+    let (width, height) = dialog_size(unzoom(viewport.width), unzoom(viewport.height));
+    let (width, height) = (width * zoom(), height * zoom());
+    // `bounds` is the drawing area in logical screen pixels; the dialog sits in its middle.
+    let origin = window.bounds().origin;
+    let left = f32::from(origin.x) + (f32::from(viewport.width) - width) / 2.;
+    let top = f32::from(origin.y) + (f32::from(viewport.height) - height) / 2.;
+    let scale = window.scale_factor();
+    WindowPlacement {
+        x: (left * scale).round() as i32,
+        y: (top * scale).round() as i32,
+        width: (width * scale).round() as u32,
+        height: (height * scale).round() as u32,
+    }
 }
 
 /// The app's look for a window: the viewer's `appearance` (background, text, paper, divider,
@@ -194,6 +251,8 @@ pub fn topology_request(
                 }
             })
             .collect(),
+        // The panel puts the window over its dialog (see `show_topology_window`).
+        placement: None,
     }
 }
 

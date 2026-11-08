@@ -38,7 +38,23 @@ pub struct TopologyWindowRequest {
     pub theme: TopologyTheme,
     /// The lab's nodes, for the bar under the drawing.
     pub nodes: Vec<TopologyNode>,
+    /// Where the page goes on screen: over the app's dialog, which closes once the window
+    /// shows, so the dialog seems to become the window. `None` lets the system place it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<WindowPlacement>,
 }
+
+/// A window's page area on screen, in physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowPlacement {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The largest page area a window takes, per side.
+const MAX_PLACEMENT_SIDE: u32 = 16_384;
 
 /// The app's look, as CSS colors. The first five are the viewer's `appearance`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,8 +106,8 @@ pub struct TopologyNode {
     pub reason: Option<String>,
 }
 
-/// Whether a window may show this request: a window key, a title of at most 500 UTF-16 units
-/// and a topology file of at most [`MAX_TOPOLOGY_BYTES`].
+/// Whether a window may show this request: a window key, a title of at most 500 UTF-16 units,
+/// a topology file of at most [`MAX_TOPOLOGY_BYTES`] and a page area of a sane size.
 pub fn is_valid_topology_request(request: &TopologyWindowRequest) -> bool {
     is_window_key(&request.key)
         && utf16_len(&request.title) <= 500
@@ -101,6 +117,10 @@ pub fn is_valid_topology_request(request: &TopologyWindowRequest) -> bool {
             .as_ref()
             .is_none_or(|annotations| annotations.len() <= MAX_TOPOLOGY_BYTES)
         && matches!(request.theme.mode.as_str(), "light" | "dark")
+        && request.placement.is_none_or(|placement| {
+            (1..=MAX_PLACEMENT_SIDE).contains(&placement.width)
+                && (1..=MAX_PLACEMENT_SIDE).contains(&placement.height)
+        })
 }
 
 /// The node a message from the window's page asks to open (`{"type":"open","name":…}`), if it
@@ -170,6 +190,7 @@ pub(crate) mod tests {
                     reason: None,
                 },
             ],
+            placement: None,
         }
     }
 
@@ -185,6 +206,18 @@ pub(crate) mod tests {
         let mut bad = request();
         bad.yaml = "x".repeat(MAX_TOPOLOGY_BYTES + 1);
         assert!(!is_valid_topology_request(&bad));
+        let placed = |width, height| TopologyWindowRequest {
+            placement: Some(WindowPlacement {
+                x: -1920,
+                y: 40,
+                width,
+                height,
+            }),
+            ..request()
+        };
+        assert!(is_valid_topology_request(&placed(1200, 700)));
+        assert!(!is_valid_topology_request(&placed(0, 700)));
+        assert!(!is_valid_topology_request(&placed(1200, 100_000)));
     }
 
     #[test]

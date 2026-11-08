@@ -807,19 +807,25 @@ impl EnvironmentsPanel {
                     this.topology = None;
                     this.run(PanelAction::Open((**entry).clone()), window, cx);
                 }
-                TopologyEvent::Window(request) => this.show_topology_window(request, cx),
+                TopologyEvent::Window(request) => this.show_topology_window(request, window, cx),
             },
         );
         self.topology = Some((dialog, subscription));
     }
 
-    /// The topology in the containerlab viewer's window: the dialog closes once the window
-    /// is up (or was already, for this lab); should it not start, the dialog stays with the
-    /// topology drawn natively.
-    fn show_topology_window(&mut self, request: &TopologyWindowRequest, cx: &mut Context<Self>) {
+    /// The topology in the containerlab viewer's window, shown where the dialog is: the
+    /// dialog closes once the window shows (or at once, when the lab's window was already
+    /// open); should the window not come up, the dialog draws the topology natively.
+    fn show_topology_window(
+        &mut self,
+        request: &TopologyWindowRequest,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some((dialog, _)) = &self.topology else {
             return;
         };
+        let dialog = dialog.clone();
         let (host, lab) = {
             let dialog = dialog.read(cx);
             (dialog.host().clone(), dialog.lab().clone())
@@ -835,13 +841,44 @@ impl EnvironmentsPanel {
                 cx.emit(EnvironmentsPanelEvent::Open(Box::new(entry)));
             });
         };
-        match viewer::open(request, open_node, cx) {
-            Some(Ok(WebWindowResult::Opened | WebWindowResult::Focused)) => {
+        let panel = cx.entity().downgrade();
+        let waiting = dialog.downgrade();
+        let on_shown = move |shown: bool, cx: &mut App| {
+            let _ = panel.update(cx, |this, cx| {
+                // Only the dialog that asked, should another have replaced it meanwhile.
+                if !this
+                    .topology
+                    .as_ref()
+                    .is_some_and(|(dialog, _)| dialog.entity_id() == waiting.entity_id())
+                {
+                    return;
+                }
+                if shown {
+                    this.topology = None;
+                } else if let Some(dialog) = waiting.upgrade() {
+                    dialog.update(cx, |dialog, cx| dialog.stop_handover(cx));
+                }
+                cx.notify();
+            });
+        };
+        let request = TopologyWindowRequest {
+            placement: Some(viewer::dialog_placement(window)),
+            ..request.clone()
+        };
+        match viewer::open(&request, open_node, on_shown, cx) {
+            // The dialog waits for the new window to show.
+            Some(Ok(WebWindowResult::Opened)) => {}
+            Some(Ok(WebWindowResult::Focused)) => {
                 self.topology = None;
                 cx.notify();
             }
-            Some(Err(error)) => show_toast(Status::Error, error, cx),
-            Some(Ok(WebWindowResult::Invalid)) | None => {}
+            Some(Err(error)) => {
+                show_toast(Status::Error, error, cx);
+                dialog.update(cx, |dialog, cx| dialog.stop_handover(cx));
+            }
+            Some(Ok(WebWindowResult::Invalid)) | None => {
+                dialog.update(cx, |dialog, cx| dialog.stop_handover(cx));
+            }
         }
     }
 

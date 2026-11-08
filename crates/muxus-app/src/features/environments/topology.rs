@@ -189,8 +189,22 @@ pub fn annotation_positions(annotations: Option<&str>) -> HashMap<String, (f32, 
     positions
 }
 
-/// Where each node sits in a `width` × `height` area: the saved positions scaled to fit,
-/// or a circle.
+/// The dialog's size in a viewport of `width` × `height` CSS px (`maxWidth="lg" fullWidth`,
+/// `height: 82vh`). The viewer's window takes the same place on screen.
+pub fn dialog_size(width: f32, height: f32) -> (f32, f32) {
+    ((width - 64.).clamp(320., 1200.), (height * 0.82).max(320.))
+}
+
+/// The containerlab viewer's `fitView`: the padding around the nodes, as a share of their
+/// extent, and the most it zooms in.
+const FIT_PADDING: f32 = 0.6;
+const FIT_MAX_ZOOM: f32 = 4.;
+/// A node box (`render_graph`), which the fit keeps clear of the area's edges.
+const NODE_WIDTH: f32 = 120.;
+const NODE_HEIGHT: f32 = 28.;
+
+/// Where each node sits in a `width` × `height` area: the saved positions fitted as the
+/// viewer fits them (centered, with room around them), or a circle.
 pub fn layout(
     topology: &Topology,
     positions: &HashMap<String, (f32, f32)>,
@@ -215,9 +229,14 @@ pub fn layout(
             .fold((f32::MAX, f32::MIN), |(lo, hi), (_, (_, y))| {
                 (lo.min(*y), hi.max(*y))
             });
-        let span_x = (max_x - min_x).max(1.);
-        let span_y = (max_y - min_y).max(1.);
-        let scale = ((width - 2. * margin) / span_x).min((height - 2. * margin) / span_y);
+        // Stretching the spans to the area put two nodes side by side against its left and
+        // right edges, however close they were saved; the extent includes a node box, so a
+        // flat or single-node lab gets a finite zoom too.
+        let span_x = max_x - min_x;
+        let span_y = max_y - min_y;
+        let scale = (width / ((span_x + NODE_WIDTH) * (1. + FIT_PADDING)))
+            .min(height / ((span_y + NODE_HEIGHT) * (1. + FIT_PADDING)))
+            .min(FIT_MAX_ZOOM);
         let offset_x = (width - span_x * scale) / 2.;
         let offset_y = (height - span_y * scale) / 2.;
         for (node, (x, y)) in saved {
@@ -257,6 +276,9 @@ pub struct TopologyDialog {
     lab: ContainerlabLab,
     state: TopologyState,
     selected: Option<String>,
+    /// The topology went to the viewer's window, which is not up yet: the spinner stays, so the
+    /// native drawing does not flash up before the dialog closes.
+    handing_over: bool,
     _task: Task<()>,
 }
 
@@ -270,6 +292,12 @@ impl TopologyDialog {
 
     pub fn lab(&self) -> &ContainerlabLab {
         &self.lab
+    }
+
+    /// The viewer's window did not come up: draw the topology here after all.
+    pub fn stop_handover(&mut self, cx: &mut Context<Self>) {
+        self.handing_over = false;
+        cx.notify();
     }
 
     pub fn new(
@@ -297,6 +325,7 @@ impl TopologyDialog {
                     && viewer::available(cx)
                 {
                     let request = topology_request(&this.host, &this.lab, response, cx.theme());
+                    this.handing_over = true;
                     cx.emit(TopologyEvent::Window(Box::new(request)));
                 }
                 this.state = match result {
@@ -318,6 +347,7 @@ impl TopologyDialog {
             lab,
             state: TopologyState::Loading,
             selected: None,
+            handing_over: false,
             _task: task,
         }
     }
@@ -373,10 +403,10 @@ impl TopologyDialog {
                 div()
                     .id(ElementId::Name(format!("topology-node-{node}").into()))
                     .absolute()
-                    .left(px(x - 60.))
-                    .top(px(y - 14.))
-                    .w(px(120.))
-                    .h(px(28.))
+                    .left(px(x - NODE_WIDTH / 2.))
+                    .top(px(y - NODE_HEIGHT / 2.))
+                    .w(px(NODE_WIDTH))
+                    .h(px(NODE_HEIGHT))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -407,8 +437,10 @@ impl Render for TopologyDialog {
         let theme = *cx.theme();
         let p = theme.palette;
         let viewport = window.viewport_size();
-        let width = (muxus_ui::zoom::unzoom(viewport.width) - 64.).clamp(320., 1200.);
-        let height = (muxus_ui::zoom::unzoom(viewport.height) * 0.82).max(320.);
+        let (width, height) = dialog_size(
+            muxus_ui::zoom::unzoom(viewport.width),
+            muxus_ui::zoom::unzoom(viewport.height),
+        );
         let graph_height = (height - 120.).max(200.);
         let entity = cx.entity().downgrade();
         let path = match &self.state {
@@ -448,8 +480,8 @@ impl Render for TopologyDialog {
                         let _ = close.update(cx, |_, cx| cx.emit(TopologyEvent::Close));
                     }),
             );
-        let body: AnyElement = match &self.state {
-            TopologyState::Loading => div()
+        let spinner = || {
+            div()
                 .h(px(graph_height))
                 .flex()
                 .items_center()
@@ -459,7 +491,11 @@ impl Render for TopologyDialog {
                     28.,
                     p.primary.main,
                 ))
-                .into_any_element(),
+                .into_any_element()
+        };
+        let body: AnyElement = match &self.state {
+            TopologyState::Loading => spinner(),
+            TopologyState::Ready(..) if self.handing_over => spinner(),
             TopologyState::Error(message) => div()
                 .h(px(graph_height))
                 .p(px(16.))

@@ -99,7 +99,8 @@ cargo test -p muxus-ssh         # one crate
 cargo xtask ci                  # fmt, clippy, tests, layering, style
 ```
 
-The Linux packages build with `--features webview`; without it saved web pages open in the system
+The Linux packages build with `--features webview`, and Windows builds always have it (WebView2 comes
+with Windows); without it saved web pages open in the system
 browser, lab topologies are drawn natively, and nothing needs WebKitGTK.
 
 ## Checking Windows and macOS code from Linux

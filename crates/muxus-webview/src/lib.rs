@@ -31,7 +31,7 @@ pub use request::{
     WebWindowRequest, WebWindowResult, is_window_url, parse_web_window_request, proxy_port,
     proxy_url, refused_forward_id,
 };
-pub use topology::{TopologyNode, TopologyTheme, TopologyWindowRequest};
+pub use topology::{TopologyNode, TopologyTheme, TopologyWindowRequest, WindowPlacement};
 
 /// Whether this build shows pages in windows of its own.
 pub const AVAILABLE: bool = cfg!(feature = "webview");

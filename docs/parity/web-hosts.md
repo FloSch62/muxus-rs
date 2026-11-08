@@ -54,7 +54,7 @@ WebKitGTK; such a build opens pages the way the browser build of Muxus does.
 | `parseWebWindowRequest` (key, http(s) URL ≤ 4096, title ≤ 500, `socks5://127.0.0.1:<port>`, forward ID) | `web-windows.ts` | done | Checked by the app and again by the window process; `web-windows.test.ts` ported |
 | One cookie jar and storage per host, kept between visits | `web-windows.ts` (`persist:muxus-web-<key>`) | done | wry `WebContext` on `<user data>/web-pages/<host id>` (created 0700); WebKit's data is not Chromium's, so pages opened by the Electron build sign in again once |
 | Every request through the proxy, name lookups included; `localhost` is the gateway | `web-windows.ts` (`proxyRules`, `<-loopback>`) | done | wry `ProxyConfig::Socks5` (WebKitGTK network proxy settings, no ignore list); GLib's SOCKS5 sends host names (checked: CONNECT by name through a logging proxy) |
-| Window: 1200×800, title `<host> — <page title>`, Muxus icon | `web-windows.ts` | done | Icon by name (`muxus`, the packages' hicolor icon) on Linux |
+| Window: 1200×800, title `<host> — <page title>`, Muxus icon | `web-windows.ts` | done | Icon by name (`muxus`, the packages' hicolor icon) on Linux; on Windows icon resource 1 of `muxus.exe`, which `crates/muxus-app/build.rs` embeds from the same PNGs (GPUI's windows load it too) |
 | Alt+Left/Right, Ctrl+[ / Ctrl+], F5 / Ctrl+R | `web-windows.ts` (`before-input-event`) | done (Linux) | WebKitGTK `key-press-event`; macOS/Windows use an injected key handler (Cmd on macOS), unverified |
 | Right-click menu (Back, Forward, Reload, Cut, Copy, Paste) | `web-windows.ts` (`context-menu`) | done (Linux) | WebKitGTK `context-menu` signal: WebKit's menu (link, image and input method items) is replaced by the six items, Back/Forward while there is history that way, Cut/Copy/Paste as Chromium's `editFlags` put it (cut a selection in a field, copy a selection, paste into a field) from the hit test; Cut/Copy/Paste run WebKit's editing commands. Pages a page opened get the same menu (Electron shows none there). macOS/Windows: the engine's own menu (wry has no hook) |
 | Pages stay on http(s); pages they open (target=_blank) get a window in the host's session and proxy, with the same rules, and close with it | `web-windows.ts` (`guardContents`) | done (Linux) | Popups are GTK windows with a related wry view; macOS/Windows let the engine open them in the opener's environment (same cookies and proxy), without the navigation guard |
@@ -65,7 +65,7 @@ WebKitGTK; such a build opens pages the way the browser build of Muxus does.
 | Page refused by the window ("invalid") reports an error | `web-hosts.ts` | done | |
 | Sidebar details "via SOCKS5 on …", address, Copy address, kind icon, search, duplicate, export/import | `host-details.ts`, `saved-hosts.ts`, `managed-hosts.ts`, `data-transfer.ts` | done | Data-layer commit; duplicate goes through the web editor ("<name> copy") |
 | Links never name a page | `command-line-launch.ts` | done | Data-layer commit (`muxus-import` launch resolve) |
-| Packages | — | done (Linux) | `packages.yml` deb job installs `libwebkit2gtk-4.1-dev` and builds with `--features webview`; `build-deb.sh` adds `libwebkit2gtk-4.1-0` to Depends when the binary links it; the AppImage does not bundle WebKitGTK (fixed helper-process path) and `AppRun` names the missing package; the license list follows the feature. macOS and Windows packages are still built without the feature |
+| Packages | — | done (Linux, Windows) | `packages.yml` deb job installs `libwebkit2gtk-4.1-dev` and builds with `--features webview`; `build-deb.sh` adds `libwebkit2gtk-4.1-0` to Depends when the binary links it; the AppImage does not bundle WebKitGTK (fixed helper-process path) and `AppRun` names the missing package; the license list follows the feature. Windows builds always have the feature (`muxus-app`'s Windows dependencies; WebView2 comes with Windows); the macOS package is still built without it |
 
 ## Platforms
 
@@ -77,8 +77,10 @@ WebKitGTK; such a build opens pages the way the browser build of Muxus does.
   `muxus --web-window` from the app binary itself. The right-click menu was checked on page text,
   on a field with selected text (Cut, Copy and Paste on) and after following a link (Back on;
   choosing it goes back).
-- **Windows**: `cargo clippy -p muxus-webview --features webview --target x86_64-pc-windows-gnu`
-  passes; never run.
+- **Windows** (WebView2, every Windows build): both examples run on Windows 11 (2026-11-08): the
+  topology window draws a lab, selecting a node shows the bar and its button reaches the app and
+  closes the window; a page window opens, takes the page's title, focuses when opened again and
+  closes. The SOCKS5 proxy, popups and the injected shortcuts are unchecked.
 - **macOS**: not compiled here (a build script needs Apple's toolchain); never run. `mac-proxy`
   makes the SOCKS5 proxy need macOS 14.
 
@@ -87,5 +89,5 @@ WebKitGTK; such a build opens pages the way the browser build of Muxus does.
 - Untrusted certificates on macOS and Windows (no wry hook): the page does not load.
 - The right-click menu is the six items on Linux only; macOS and Windows show the engine's own.
 - WebKitGTK's own data layout per host; nothing migrates from Electron partitions.
-- A build without the `webview` feature (the default for `cargo build`, and the macOS/Windows
-  packages for now) behaves like the browser build of Muxus.
+- A build without the `webview` feature (the default for `cargo build` on Linux and macOS, and the
+  macOS package for now) behaves like the browser build of Muxus.

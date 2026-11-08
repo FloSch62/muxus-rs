@@ -6,20 +6,24 @@
 use std::borrow::Cow;
 use std::io::BufRead;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use tao::dpi::LogicalSize;
-use tao::event::{Event, WindowEvent};
+use tao::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
+use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tao::window::WindowBuilder;
+use tao::window::{Window, WindowBuilder};
 use wry::http::{Response, StatusCode, header::CONTENT_TYPE};
-use wry::{NewWindowResponse, PermissionResponse, WebViewBuilder};
+use wry::{NewWindowResponse, PageLoadEvent, PermissionResponse, WebViewBuilder};
 
 use super::{UserEvent, fail, read_commands};
 use crate::protocol::{WebWindowCommand, WebWindowEvent};
 use crate::report;
 use crate::topology::{
-    TopologyTheme, TopologyWindowRequest, is_valid_topology_request, node_to_open,
+    TopologyTheme, TopologyWindowRequest, WindowPlacement, is_valid_topology_request, node_to_open,
 };
+
+/// A window whose page has not said it finished loading by then shows anyway.
+const SHOW_AT_THE_LATEST: Duration = Duration::from_secs(3);
 
 /// The scheme the window's pages come from.
 const SCHEME: &str = "muxus-topology";
@@ -128,6 +132,17 @@ fn open_in_browser(url: &str) {
     }
 }
 
+/// Put the page area at `placement`, with the frame and title bar around it.
+fn place(window: &Window, placement: WindowPlacement) {
+    let (Ok(outer), Ok(inner)) = (window.outer_position(), window.inner_position()) else {
+        return;
+    };
+    window.set_outer_position(PhysicalPosition::new(
+        placement.x - (inner.x - outer.x),
+        placement.y - (inner.y - outer.y),
+    ));
+}
+
 /// The page's call to follow a new theme.
 fn theme_script(theme: &TopologyTheme) -> String {
     let theme = serde_json::to_string(theme).unwrap_or_else(|_| "null".into());
@@ -148,20 +163,33 @@ pub(crate) fn run(request: TopologyWindowRequest, commands: impl BufRead + Send 
     let proxy = event_loop.create_proxy();
     read_commands(commands, proxy.clone());
 
-    let window = match WindowBuilder::new()
+    // Hidden until its page is drawn: the app's dialog stays up until then, and the window
+    // then shows where the dialog was, rather than blank and wherever the system puts it.
+    let mut builder = WindowBuilder::new()
         .with_title(&request.title)
-        .with_inner_size(LogicalSize::new(1100., 760.))
-        .build(&event_loop)
-    {
+        .with_visible(false);
+    builder = match request.placement {
+        Some(placement) => builder
+            .with_position(PhysicalPosition::new(placement.x, placement.y))
+            .with_inner_size(PhysicalSize::new(placement.width, placement.height)),
+        None => builder.with_inner_size(LogicalSize::new(1100., 760.)),
+    };
+    let window = match builder.build(&event_loop) {
         Ok(window) => window,
         Err(error) => return fail(format!("Cannot open a window for the topology: {error}")),
     };
+    if let Some(placement) = request.placement {
+        place(&window, placement);
+    }
+    #[cfg(windows)]
+    super::set_app_icon(&window);
 
     let lab = Arc::new(Mutex::new(request.clone()));
     let served = lab.clone();
     let base = base_url();
     let inside = base.clone();
     let closing = proxy.clone();
+    let loaded = proxy.clone();
     let builder = WebViewBuilder::new()
         // The viewer keeps nothing between windows.
         .with_incognito(true)
@@ -187,6 +215,11 @@ pub(crate) fn run(request: TopologyWindowRequest, commands: impl BufRead + Send 
             NewWindowResponse::Deny
         })
         .with_permission_handler(|_| PermissionResponse::Deny)
+        .with_on_page_load_handler(move |event, _| {
+            if matches!(event, PageLoadEvent::Finished) {
+                let _ = loaded.send_event(UserEvent::PageLoaded);
+            }
+        })
         .with_ipc_handler(move |message| {
             // "SSH as admin" / "Open shell": the app opens the node, and the dialog closes.
             if let Some(name) = node_to_open(&request, message.body()) {
@@ -214,11 +247,27 @@ pub(crate) fn run(request: TopologyWindowRequest, commands: impl BufRead + Send 
         Ok(webview) => webview,
         Err(error) => return fail(format!("Cannot show the topology: {error}")),
     };
-    report(&WebWindowEvent::Opened);
 
+    let show_by = Instant::now() + SHOW_AT_THE_LATEST;
+    let mut shown = false;
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
+        *control_flow = if shown {
+            ControlFlow::Wait
+        } else {
+            ControlFlow::WaitUntil(show_by)
+        };
         match event {
+            Event::UserEvent(UserEvent::PageLoaded)
+            | Event::NewEvents(StartCause::ResumeTimeReached { .. })
+                if !shown =>
+            {
+                shown = true;
+                *control_flow = ControlFlow::Wait;
+                window.set_visible(true);
+                window.set_focus();
+                // The app closes its dialog now.
+                report(&WebWindowEvent::Opened);
+            }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..

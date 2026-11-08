@@ -22,9 +22,10 @@ name = "muxus-hidden-cmd"
 path = "src/bin/muxus-hidden-cmd.rs"
 
 [features]
-# Saved web pages in Muxus browser windows (wry; WebKitGTK 4.1 on Linux, see
-# crates/muxus-webview). Release packages build with it; without it pages open in the
-# system browser.
+# Saved web pages, and lab topologies in the containerlab viewer, in Muxus browser windows
+# (wry; WebKitGTK 4.1 on Linux, see crates/muxus-webview). The Linux packages build with it
+# and Windows builds always have it (see the Windows dependencies); without it pages open in
+# the system browser and topologies are drawn natively.
 webview = ["muxus-webview/webview"]
 
 [dependencies]
@@ -70,6 +71,9 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 # The single-instance named pipe (features/desktop).
 tokio = { version = "1", features = ["io-util", "net", "rt"] }
+# Windows comes with WebView2, so the browser windows (and the containerlab viewer) need
+# nothing installed: every Windows build has the `webview` feature.
+muxus-webview = { workspace = true, features = ["webview"] }
 
 [dev-dependencies]
 tempfile = "3"
@@ -87,6 +91,10 @@ ironrdp-server = { git = "https://github.com/Devolutions/IronRDP", rev = "f1e218
 async-trait = "0.1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+
+[build-dependencies]
+# The app icon in muxus.exe (Windows; already in the tree via gpui).
+embed-resource = "3"
 
 [lints]
 workspace = true

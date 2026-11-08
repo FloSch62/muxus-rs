@@ -733,6 +733,42 @@ topology:
 }
 
 #[test]
+fn fits_two_saved_nodes_side_by_side_as_the_viewer_does() {
+    let topology = parse_topology(
+        r#"topology:
+  nodes:
+    client1:
+      kind: linux
+    client2:
+      kind: linux
+  links:
+    - endpoints: ["client1:eth1", "client2:eth1"]
+"#,
+    );
+    let saved = annotation_positions(Some(
+        r#"{"nodeAnnotations":[{"id":"client1","position":{"x":100,"y":200}},{"id":"client2","position":{"x":400,"y":180}}]}"#,
+    ));
+    let placed = layout(&topology, &saved, 1200., 640.);
+    let (left, right) = (placed["client1"], placed["client2"]);
+    // Centered with room on both sides (`fitView`, padding 0.6), not against the edges.
+    assert!((left.0 + right.0 - 1200.).abs() < 0.01);
+    assert!(left.0 > 200. && right.0 < 1000.);
+    // One zoom for both axes: the slope between them survives.
+    assert!(((right.1 - left.1) / (right.0 - left.0) + 20. / 300.).abs() < 0.001);
+    // A lone node sits in the middle.
+    let lone = parse_topology("topology:\n  nodes:\n    a:\n      kind: linux\n");
+    let at = layout(
+        &lone,
+        &annotation_positions(Some(
+            r#"{"nodeAnnotations":[{"id":"a","position":{"x":5,"y":5}}]}"#,
+        )),
+        400.,
+        300.,
+    )["a"];
+    assert_eq!(at, (200., 150.));
+}
+
+#[test]
 fn sizes_a_logo_to_its_square() {
     let sized = super::logos::sized_svg(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="360" height="360" viewBox="0 0 95 95"><path/></svg>"#,
