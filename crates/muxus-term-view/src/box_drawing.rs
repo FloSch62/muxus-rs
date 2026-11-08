@@ -25,6 +25,9 @@ pub(crate) enum Shape {
     Shade(f32),
     /// A stroked path (diagonals, rounded corners), clipped to the cell.
     Stroke { segments: Vec<Segment>, width: f32 },
+    /// Filled subpaths (Powerline symbols), nonzero winding as the canvas fills them, clipped to
+    /// the cell.
+    Fill { subpaths: Vec<Vec<Segment>> },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,13 +39,21 @@ pub(crate) enum Segment {
         c2: (f32, f32),
         to: (f32, f32),
     },
+    Quad {
+        c: (f32, f32),
+        to: (f32, f32),
+    },
+    Close,
 }
 
-/// The glyph for `text` when it is one character this module draws.
+/// The glyph for `text` when it is one character drawn on the grid: here, or by
+/// [`powerline`](crate::powerline).
 pub(crate) fn box_glyph_char(text: &str) -> Option<char> {
     let mut chars = text.chars();
     let c = chars.next()?;
-    (chars.next().is_none() && ('\u{2500}'..='\u{259f}').contains(&c)).then_some(c)
+    (chars.next().is_none()
+        && (('\u{2500}'..='\u{259f}').contains(&c) || crate::powerline::is_powerline(c)))
+    .then_some(c)
 }
 
 // ---- definitions ----------------------------------------------------------------------------
@@ -375,13 +386,6 @@ fn parse_path(path: &str, width: f32, height: f32) -> Vec<Subpath> {
     subpaths
 }
 
-fn end_point(segment: &Segment) -> (f32, f32) {
-    match *segment {
-        Segment::Move(x, y) | Segment::Line(x, y) => (x, y),
-        Segment::Cubic { to, .. } => to,
-    }
-}
-
 /// A rectangle snapped outward-or-inward to whole pixels inside the cell, at least one pixel
 /// thick.
 fn pixel_rect(x0: f32, y0: f32, x1: f32, y1: f32, width: f32, height: f32) -> Option<Shape> {
@@ -403,14 +407,14 @@ fn pixel_rect(x0: f32, y0: f32, x1: f32, y1: f32, width: f32, height: f32) -> Op
 /// A subpath of horizontal and vertical lines as rectangles: butt ends, square (miter) joins,
 /// as the canvas strokes them.
 fn line_rects(subpath: &[Segment], stroke: f32, width: f32, height: f32) -> Option<Vec<Shape>> {
-    if subpath
-        .iter()
-        .any(|segment| matches!(segment, Segment::Cubic { .. }))
-    {
-        return None;
-    }
     let half = stroke / 2.;
-    let points: Vec<(f32, f32)> = subpath.iter().map(end_point).collect();
+    let points = subpath
+        .iter()
+        .map(|segment| match *segment {
+            Segment::Move(x, y) | Segment::Line(x, y) => Some((x, y)),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
     let lines = points.len().saturating_sub(1);
     let mut shapes = Vec::new();
     for index in 0..lines {
@@ -480,20 +484,28 @@ pub(crate) fn glyph_shapes(c: char, width: f32, height: f32, css_pixel: f32) -> 
     Some(shapes)
 }
 
-type CacheKey = (char, u32, u32, u32);
+type CacheKey = (char, u32, u32, u32, u32);
 
 thread_local! {
     static SHAPES: RefCell<HashMap<CacheKey, Option<Rc<Vec<Shape>>>>> = RefCell::new(HashMap::new());
 }
 
-/// [`glyph_shapes`], remembered per cell size (a frame draws the same few glyphs many times).
+/// [`glyph_shapes`] or [`powerline::shapes`](crate::powerline::shapes), remembered per cell and
+/// font size (a frame draws the same few glyphs many times). `font_size` is in device pixels.
 pub(crate) fn cached_glyph_shapes(
     c: char,
     width: f32,
     height: f32,
     css_pixel: f32,
+    font_size: f32,
 ) -> Option<Rc<Vec<Shape>>> {
-    let key = (c, width.to_bits(), height.to_bits(), css_pixel.to_bits());
+    let key = (
+        c,
+        width.to_bits(),
+        height.to_bits(),
+        css_pixel.to_bits(),
+        font_size.to_bits(),
+    );
     SHAPES.with(|cache| {
         let mut cache = cache.borrow_mut();
         if let Some(shapes) = cache.get(&key) {
@@ -502,7 +514,9 @@ pub(crate) fn cached_glyph_shapes(
         if cache.len() > 4096 {
             cache.clear();
         }
-        let shapes = glyph_shapes(c, width, height, css_pixel).map(Rc::new);
+        let shapes = crate::powerline::shapes(c, width, height, font_size)
+            .or_else(|| glyph_shapes(c, width, height, css_pixel))
+            .map(Rc::new);
         cache.insert(key, shapes.clone());
         shapes
     })
@@ -608,9 +622,9 @@ mod tests {
 
     #[test]
     fn the_cache_returns_the_same_shapes() {
-        let first = cached_glyph_shapes('┼', 8., 17., 1.).unwrap();
-        let again = cached_glyph_shapes('┼', 8., 17., 1.).unwrap();
+        let first = cached_glyph_shapes('┼', 8., 17., 1., 13.).unwrap();
+        let again = cached_glyph_shapes('┼', 8., 17., 1., 13.).unwrap();
         assert!(Rc::ptr_eq(&first, &again));
-        assert_eq!(cached_glyph_shapes('a', 8., 17., 1.), None);
+        assert_eq!(cached_glyph_shapes('a', 8., 17., 1., 13.), None);
     }
 }

@@ -16,6 +16,7 @@
 mod box_drawing;
 mod keys;
 mod paint;
+mod powerline;
 mod scrollbar;
 mod view;
 
