@@ -52,7 +52,8 @@ pub fn save_into_folder(folder: &Path, name: &str, bytes: &[u8]) -> io::Result<S
         let path = folder.join(&candidate);
         let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            // Windows answers "access denied", not "already exists", for a name a folder holds.
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists || path.exists() => continue,
             Err(error) => return Err(error),
         };
         if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
