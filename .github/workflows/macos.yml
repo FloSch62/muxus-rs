@@ -1,0 +1,63 @@
+name: macOS
+
+# An optional check on a real Mac: the workspace tests, and screenshots of the app and its
+# examples, light and dark (hack/mac-shots.sh). Run it by hand (Actions → macOS → Run
+# workflow); the screenshots are the run's artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: Run the workspace tests
+        type: boolean
+        default: true
+      screenshots:
+        description: Take screenshots
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # .cargo/config.toml keeps local builds to 3 jobs; a runner has the machine to itself.
+  CARGO_BUILD_JOBS: 4
+
+jobs:
+  tests:
+    name: Tests
+    if: inputs.tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked --workspace
+
+  screenshots:
+    name: Screenshots
+    if: inputs.screenshots
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: |
+          cargo build --locked -p muxus-app --bin muxus \
+            --example settings --example host_editor --example launcher \
+            --example workspaces --example sftp --example remote_desktop
+      - run: hack/mac-shots.sh --out shots
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Screenshots"
+            echo
+            for png in shots/*.png; do echo "- $(basename "$png")"; done
+            echo
+            echo "Download them from the run's \`macos-screenshots\` artifact."
+          } >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-screenshots
+          path: shots
+          if-no-files-found: error
