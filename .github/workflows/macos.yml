@@ -44,6 +44,17 @@ jobs:
           cargo build --locked -p muxus-app --bin muxus \
             --example settings --example host_editor --example launcher \
             --example workspaces --example sftp --example remote_desktop
+      # The runner's screen is about 1024x768, smaller than the 1420x880 windows: switch to
+      # the largest mode its display offers.
+      - name: Screen size
+        continue-on-error: true
+        run: |
+          brew install --quiet displayplacer
+          displayplacer list
+          id=$(displayplacer list | awk '/^Persistent screen id:/ {print $4; exit}')
+          res=$(displayplacer list | awk '/^ *mode [0-9]+: res:/ {split($3, r, ":"); split(r[2], wh, "x"); if (wh[1] * wh[2] > best) {best = wh[1] * wh[2]; pick = r[2]}} END {print pick}')
+          displayplacer "id:$id res:$res"
+          displayplacer list | grep -E '^(Resolution|Scaling):'
       - run: hack/mac-shots.sh --out shots
       - name: Summary
         if: always()

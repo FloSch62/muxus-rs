@@ -76,7 +76,9 @@ shot_one() {
   local path="$bin/$program"
   [[ -x "$path" ]] || path="$bin/examples/$program"
   mkdir -p "$data"
-  env MUXUS_DATA_DIR="$data" MUXUS_WINDOW=1420x880 "$@" "$path" >"$log" 2>&1 &
+  # macOS's bash (the runner's login shell) otherwise opens with a note that zsh is the default.
+  env MUXUS_DATA_DIR="$data" MUXUS_WINDOW=1420x880 BASH_SILENCE_DEPRECATION_WARNING=1 "$@" \
+    "$path" >"$log" 2>&1 &
   local pid=$! id="" waited=0
   while [[ -z "$id" && $waited -lt 60 ]] && kill -0 "$pid" 2>/dev/null; do
     sleep 1
