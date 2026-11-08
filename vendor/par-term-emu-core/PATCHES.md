@@ -109,6 +109,22 @@ an edit of a frame that does not exist, is an error.
 
 Frames are not played on a timer: nothing in Muxus calls `update_animations`, as before.
 
+## The pen around the alternate screen (DECSET 1049)
+
+xterm (and xterm.js, `saveCursor`/`restoreCursor` around `activateAltBuffer`) saves the cursor
+as DECSC does when 1049 switches to the alternate screen and restores it as DECRC does when it
+switches back, the SGR pen with it. The engine swapped the position only, so a program that
+leaves colors set on exit kept them on the shell's screen, and the next erase (with background
+color erase) painted them over it: DOOM-fire-zig leaves black on light yellow, and `clear` made
+the whole screen yellow. The position stays with the screen swap (which a resize moves along
+with the lines); the pen saved on entering comes back on leaving. 47 and 1047 do not save it,
+as in xterm.
+
+| File | Change |
+|---|---|
+| `src/terminal/sequences/csi/mode.rs`, `src/terminal/mod.rs` | `Terminal::alt_entry_attrs`: set by DECSET 1049 on the primary screen, restored by DECRST 1049 when it leaves the alternate screen. |
+| `src/terminal/tests/modes.rs` | `test_alt_screen_1049_restores_the_pen`. |
+
 ## Kitty keyboard pop without a count
 
 `CSI < u` pops one entry off the keyboard flags stack when it has no count, as kitty and

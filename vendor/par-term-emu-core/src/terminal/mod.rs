@@ -210,6 +210,9 @@ pub struct Terminal {
     pub(crate) cursor: Cursor,
     /// Saved cursor for alternate screen
     pub(crate) alt_cursor: Cursor,
+    /// Muxus patch: the SGR pen DECSET 1049 saved on the primary screen, restored by DECRST
+    /// 1049 (xterm's DECSC/DECRC around the alternate screen)
+    pub(crate) alt_entry_attrs: Option<TextAttributes>,
     /// Current SGR pen: fg/bg/underline color + cell flags (ARC-002 sub-struct)
     pub(crate) attrs: TextAttributes,
     /// DECSC/DECRC saved terminal state: cursor + SGR colors/flags (ARC-001 sub-struct)
@@ -372,6 +375,7 @@ impl Terminal {
             alt_screen_active: false,
             cursor: Cursor::new(),
             alt_cursor: Cursor::new(),
+            alt_entry_attrs: None,
             attrs: TextAttributes::default(),
             saved_state: SavedCursorState::default(),
             title_state: TitleState::default(),

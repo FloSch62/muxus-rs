@@ -180,10 +180,22 @@ impl Terminal {
                 }
             }
             1049 => {
+                // Muxus patch: xterm (and xterm.js) save the cursor as DECSC does before
+                // switching to the alternate screen and restore it as DECRC does after
+                // switching back. The screen swap keeps the position; the SGR pen comes back
+                // here, or a program that leaves colors set (DOOM-fire-zig) paints them over
+                // the shell's screen with the next erase.
                 if enabled {
+                    if !self.alt_screen_active {
+                        self.alt_entry_attrs = Some(self.attrs);
+                    }
                     self.use_alt_screen();
                 } else {
+                    let leaving = self.alt_screen_active;
                     self.use_primary_screen();
+                    if let Some(attrs) = self.alt_entry_attrs.take().filter(|_| leaving) {
+                        self.attrs = attrs;
+                    }
                 }
             }
             1004 => self.modes.focus_tracking = enabled,
