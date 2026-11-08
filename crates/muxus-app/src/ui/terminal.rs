@@ -811,7 +811,21 @@ impl AppShell {
             let mut slice = Instant::now();
             let mut last_update: Option<Instant> = None;
             let mut queue: VecDeque<LinkEvent> = VecDeque::new();
-            while let Some(first) = reader.next_event().await {
+            loop {
+                let first = match reader.try_next_event() {
+                    Some(event) => event,
+                    None => {
+                        // Waiting for the session hands the thread back as it is, and is
+                        // no work: the slice starts with what arrives. Counting the wait
+                        // made the first batch after any pause (a connect, a quiet shell)
+                        // yield for nothing.
+                        let Some(event) = reader.next_event().await else {
+                            break;
+                        };
+                        slice = Instant::now();
+                        event
+                    }
+                };
                 push_split(&mut queue, first);
                 if last_update.is_some_and(|at| at.elapsed() < OUTPUT_MERGE) {
                     let mut quiet = 0;
