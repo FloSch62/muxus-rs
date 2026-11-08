@@ -55,6 +55,9 @@ jobs:
           res=$(displayplacer list | awk '/^ *mode [0-9]+: res:/ {split($3, r, ":"); split(r[2], wh, "x"); if (wh[1] * wh[2] > best) {best = wh[1] * wh[2]; pick = r[2]}} END {print pick}')
           displayplacer "id:$id res:$res"
           displayplacer list | grep -E '^(Resolution|Scaling):'
+      # App Nap throttles the timers of an app that is not in front, and the scenes pace
+      # their steps with timers: without this their last steps came after the shot.
+      - run: defaults write NSGlobalDomain NSAppSleepDisabled -bool YES
       - run: hack/mac-shots.sh --out shots
       - name: Summary
         if: always()
