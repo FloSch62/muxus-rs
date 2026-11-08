@@ -404,6 +404,12 @@ pub fn run() {
                 })
             })
             .expect("open the main window");
+            // Started from a terminal (`cargo run`, a script) rather than from the app bundle,
+            // macOS leaves the app in the background: its window opens behind the terminal
+            // without focus, and a background app's timers and frames are held back.
+            if cfg!(target_os = "macos") {
+                cx.activate(true);
+            }
         });
 }
 
