@@ -1,6 +1,8 @@
 //! Terminal implementation tests
 
 #[cfg(test)]
+mod arc001_observer_dispatch;
+#[cfg(test)]
 mod attributes;
 #[cfg(test)]
 mod basic;
@@ -50,6 +52,8 @@ mod tmux;
 mod tui;
 #[cfg(test)]
 mod vt520;
+#[cfg(test)]
+mod xterm_resize;
 
 #[cfg(test)]
 mod metrics;

@@ -26,11 +26,23 @@ pub struct Size {
     pub height: f64,
 }
 
-/// Where a window was last left: its restored (not maximized) bounds.
+/// How the settings window was last left: its restored (not maximized) size.
+/// It always reopens centered over the window it was opened from, so the
+/// position is not kept.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindowPlacement {
-    pub bounds: Rectangle,
+    pub width: f64,
+    pub height: f64,
     pub maximized: bool,
+}
+
+impl WindowPlacement {
+    pub fn size(&self) -> Size {
+        Size {
+            width: self.width,
+            height: self.height,
+        }
+    }
 }
 
 /// What the main window reopens with (`WindowState` in `main.ts`): a size,
@@ -66,36 +78,45 @@ fn finite(value: Option<&Value>) -> Option<f64> {
 }
 
 /// A stored placement, or `None` when the value holds anything else
-/// (`parseWindowPlacement`).
+/// (`parseWindowPlacement`). Placements saved by earlier versions also carry
+/// a position, which is dropped.
 pub fn parse_window_placement(value: &Value) -> Option<WindowPlacement> {
     let placement = value.as_object()?;
-    let x = finite(placement.get("x"))?;
-    let y = finite(placement.get("y"))?;
     let width = finite(placement.get("width"))?;
     let height = finite(placement.get("height"))?;
     if width <= 0.0 || height <= 0.0 {
         return None;
     }
     Some(WindowPlacement {
-        bounds: Rectangle {
-            x,
-            y,
-            width,
-            height,
-        },
+        width,
+        height,
         maximized: placement.get("maximized") == Some(&Value::Bool(true)),
     })
 }
 
-/// The placement as `{ ...bounds, maximized }` JSON (`JSON.stringify`).
+/// The placement as `{ width, height, maximized }` JSON (`JSON.stringify`).
 pub fn format_window_placement(placement: &WindowPlacement) -> String {
     let mut map = Map::new();
-    map.insert("x".into(), js::js_number(placement.bounds.x));
-    map.insert("y".into(), js::js_number(placement.bounds.y));
-    map.insert("width".into(), js::js_number(placement.bounds.width));
-    map.insert("height".into(), js::js_number(placement.bounds.height));
+    map.insert("width".into(), js::js_number(placement.width));
+    map.insert("height".into(), js::js_number(placement.height));
     map.insert("maximized".into(), Value::Bool(placement.maximized));
     Value::Object(map).to_string()
+}
+
+/// The main window's state as `{ ...bounds, maximized }` JSON (`saveWindowState`).
+pub fn format_window_state(bounds: Rectangle, maximized: bool) -> String {
+    let mut map = Map::new();
+    map.insert("x".into(), js::js_number(bounds.x));
+    map.insert("y".into(), js::js_number(bounds.y));
+    map.insert("width".into(), js::js_number(bounds.width));
+    map.insert("height".into(), js::js_number(bounds.height));
+    map.insert("maximized".into(), Value::Bool(maximized));
+    Value::Object(map).to_string()
+}
+
+/// `saveWindowState`: the main window's normal bounds and whether it is maximized.
+pub fn save_window_state(path: &Path, bounds: Rectangle, maximized: bool) -> io::Result<()> {
+    fs::write(path, format_window_state(bounds, maximized))
 }
 
 /// `loadWindowState`: the saved state when it has a numeric size, else the default.
@@ -121,9 +142,8 @@ pub fn load_window_state(path: &Path) -> WindowState {
     }
 }
 
-/// `saveWindowState` / `saveSettingsWindowPlacement`: the normal bounds and
-/// whether the window is maximized. Failures are the caller's to ignore; the
-/// state is a nicety.
+/// `saveSettingsWindowPlacement`: the normal size and whether the window is
+/// maximized. Failures are the caller's to ignore; the state is a nicety.
 pub fn save_window_placement(path: &Path, placement: &WindowPlacement) -> io::Result<()> {
     fs::write(path, format_window_placement(placement))
 }
@@ -134,34 +154,22 @@ pub fn load_window_placement(path: &Path) -> Option<WindowPlacement> {
     parse_window_placement(&serde_json::from_str(&text).ok()?)
 }
 
-/// Bounds for a window that remembers its placement, or only a size when the
-/// system should place it (`windowBounds`).
+/// Bounds for a window that opens centered over its owner, or only a size
+/// when the system should place it (`windowBounds`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WindowBounds {
     Placed(Rectangle),
     SizeOnly(Size),
 }
 
-/// Displays can be unplugged or rearranged between runs, so saved bounds move
-/// onto the display they overlap most and shrink to fit it. Without saved
-/// bounds, or when they no longer touch any display, the window opens
-/// centered over `owner`. Only the size comes back when neither is
-/// available, and the system places it.
+/// A window of `size` centered over `owner`, kept inside the display `owner`
+/// overlaps most and shrunk to fit it. Only the size comes back without an
+/// owner, and the system places it.
 pub fn window_bounds(
-    saved: Option<Rectangle>,
+    size: Size,
     owner: Option<Rectangle>,
     work_areas: &[Rectangle],
-    default_size: Size,
 ) -> WindowBounds {
-    if let Some(saved) = saved
-        && let Some(area) = most_overlapping(saved, work_areas)
-    {
-        return WindowBounds::Placed(fit_inside(saved, area));
-    }
-    let size = saved.map_or(default_size, |saved| Size {
-        width: saved.width,
-        height: saved.height,
-    });
     let Some(owner) = owner else {
         return WindowBounds::SizeOnly(size);
     };

@@ -16,8 +16,8 @@ use ironrdp::cliprdr::pdu::{ClipboardFormat, ClipboardFormatId, FormatDataRespon
 use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::sspi::generator::NetworkRequest;
 use ironrdp::connector::{
-    self, BitmapConfig, ClientConnector, ConnectionResult, ConnectorResult, Credentials,
-    DesktopSize, ServerName,
+    self, BitmapConfig, ClientConnector, ConnectionOutcome, ConnectionResult, ConnectorResult,
+    Credentials, DesktopSize, ServerName,
 };
 use ironrdp::core::{IntoOwned as _, WriteBuf};
 use ironrdp::displaycontrol::client::DisplayControlClient;
@@ -522,6 +522,13 @@ fn connector_config(options: &RdpConnectOptions) -> connector::Config {
         dig_product_id: String::new(),
         desktop_size: DesktopSize { width, height },
         monitor_layout: None,
+        desktop_physical_size: None,
+        desktop_orientation: None,
+        device_scale_factor: None,
+        monitor_extended_layout: None,
+        relative_mouse_input: false,
+        // What IronRDP announced before the version became configurable.
+        rdp_version: ironrdp::pdu::gcc::RdpVersion::V5_PLUS,
         bitmap: Some(BitmapConfig {
             color_depth: 16,
             lossy_compression: true,
@@ -620,6 +627,8 @@ async fn establish(
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
     let stream: RdpStream = Box::new(tls);
     let mut framed = TokioFramed::new_with_leftover(stream, leftover);
+    // A Server Redirection (an RD Connection Broker moving the client to another host) is not
+    // followed, as in the TypeScript build: the connection fails.
     let result = connect_finalize(
         upgraded,
         connector,
@@ -629,6 +638,7 @@ async fn establish(
         server_public_key,
     )
     .await
+    .and_then(ConnectionOutcome::into_connected)
     .map_err(|err| connector_error(&err))?;
     Ok((result, framed))
 }
@@ -818,7 +828,9 @@ impl SessionLoop {
                             );
                         }
                     };
-                    match stage.process(&mut image, action, &payload) {
+                    // When the frame arrived, for the server's bandwidth measurements.
+                    let received_at = reader.last_read_at();
+                    match stage.process(&mut image, action, &payload, received_at) {
                         Ok(outputs) => outputs,
                         Err(err) => return SessionEnd::Failed(
                             RdpError::General(error_chain(&err)).describe(),
@@ -1133,9 +1145,22 @@ impl SessionLoop {
                     RdpError::General("automatic reconnect rejected by server".into()).describe(),
                 ));
             }
+            ActiveStageOutput::ServerRedirection(redirection) => {
+                // Not followed, as during the connection sequence (see `establish`).
+                return Flow::End(SessionEnd::Failed(
+                    RdpError::General(format!(
+                        "server requested a redirection to session {}, which this client does not follow",
+                        redirection.session_id
+                    ))
+                    .describe(),
+                ));
+            }
             ActiveStageOutput::MonitorLayout(_)
             | ActiveStageOutput::WindowingOrders(_)
+            | ActiveStageOutput::WindowSurfaceUpdates(_)
             | ActiveStageOutput::SaveSessionInfo { .. }
+            | ActiveStageOutput::SessionId(_)
+            | ActiveStageOutput::LogonErrors(_)
             | ActiveStageOutput::MultitransportRequest(_)
             | ActiveStageOutput::AutoDetect(_)
             | ActiveStageOutput::AutoReconnectCookie(_) => {}
@@ -1184,7 +1209,7 @@ fn connect_finalize<'a>(
     network: &'a mut NoNetworkClient,
     server_name: ServerName,
     server_public_key: Vec<u8>,
-) -> BoxFuture<'a, ConnectorResult<ConnectionResult>> {
+) -> BoxFuture<'a, ConnectorResult<ConnectionOutcome>> {
     Box::pin(ironrdp_tokio::connect_finalize(
         upgraded,
         connector,

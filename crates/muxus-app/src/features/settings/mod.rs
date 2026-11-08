@@ -12,6 +12,7 @@ pub mod hooks;
 pub mod js;
 pub mod palette;
 pub mod prefs_model;
+pub mod search;
 pub mod section;
 pub mod texts;
 pub mod vault_secrets;

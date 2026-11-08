@@ -13,6 +13,7 @@ use par_term_emu_core_rust::cell::{Cell, UnderlineStyle as CoreUnderline};
 use par_term_emu_core_rust::color::{Color, NamedColor};
 use par_term_emu_core_rust::cursor::CursorStyle as CoreCursorStyle;
 use par_term_emu_core_rust::graphics::TerminalGraphic;
+use par_term_emu_core_rust::grid::BufferReflow;
 use par_term_emu_core_rust::terminal::Terminal as Core;
 
 use crate::buffer::{CellText, TextBuffer};
@@ -23,6 +24,10 @@ use crate::filter::{
 use crate::mouse::{MouseEncoding, MouseProtocol};
 use crate::osc52::{Osc52Action, handle_osc52};
 use crate::palette::{ResolvedPalette, TerminalTheme};
+use crate::program_status::{
+    PROGRAM_STATUS_OSC, PROGRAM_STATUS_QUERY_REPLY, ProgramStatusReport, ProgramStatusSignal,
+    parse_program_status,
+};
 use crate::shell_integration::{CommandMarkerHost, CommandTracker, CwdTracker};
 use crate::style::{
     CellColor, CellStyle, ColorOverrides, EffectiveColors, StyledCell, UnderlineStyle,
@@ -41,6 +46,9 @@ pub enum EmulatorEvent {
     CwdChanged(String),
     /// A program wrote the clipboard through OSC 52 (only when allowed).
     ClipboardWrite(String),
+    /// A program reported its status (OSC 7501, only while shown), or a prompt or reset ended
+    /// what programs reported.
+    ProgramStatus(ProgramStatusSignal),
 }
 
 /// The cursor shape.
@@ -80,6 +88,26 @@ pub struct ImagePlacement {
     /// Cells the image is stretched over when the program sized it in cells.
     pub cells: Option<(usize, usize)>,
     pub z_index: i32,
+}
+
+/// The image storage of the visible tab, in MB (`ACTIVE_IMAGE_STORAGE_MB` in
+/// `TerminalViewImpl.tsx`).
+pub const ACTIVE_IMAGE_STORAGE_MB: f64 = 64.0;
+/// The image storage of a tab in the background, in MB.
+pub const BACKGROUND_IMAGE_STORAGE_MB: f64 = 16.0;
+
+/// Pixels a storage limit in MB holds (4 bytes a pixel; the addon accepts 0.5 MB to 1 GB).
+fn image_pixel_limit(megabytes: f64) -> usize {
+    (megabytes.clamp(0.5, 1000.0) / 4.0 * 1_000_000.0) as usize
+}
+
+fn stored_image_pixels(core: &Core) -> usize {
+    core.all_graphics()
+        .iter()
+        .chain(core.all_scrollback_graphics())
+        .filter(|graphic| !graphic.is_virtual)
+        .map(|graphic| graphic.width * graphic.height)
+        .sum()
 }
 
 /// Settings a terminal is created with.
@@ -228,6 +256,8 @@ pub struct Emulator {
     palette: ResolvedPalette,
     theme: TerminalTheme,
     allow_osc52_write: bool,
+    /// Program status (OSC 7501) is shown: reports are passed on and the query is answered.
+    program_status: bool,
     /// Lines the viewport is scrolled up from the bottom.
     display_offset: usize,
     /// Cell size in logical pixels, for the pixel-size reports.
@@ -237,6 +267,10 @@ pub struct Emulator {
     /// Absolute top line of every image seen on screen, so it stays put in the scrollback.
     image_tops: HashMap<u64, (u64, usize)>,
     scrollback_limit: usize,
+    /// A received LF also returns to the start of the line (a host's implicit CR).
+    implicit_cr: bool,
+    /// Pixels the stored images may hold (the image addon's `storageLimit`).
+    image_pixel_limit: usize,
 }
 
 impl std::fmt::Debug for Emulator {
@@ -262,6 +296,10 @@ impl Emulator {
         // Readers already pad short lines (scrollback lines keep the width
         // they scrolled off at, so they are short after the screen widens).
         core.set_compact_scrollback(true);
+        // Resizes treat the scrollback and the screen as one buffer, as xterm.js does: the
+        // cursor follows its line, lines come back from the scrollback, and a width change
+        // rewraps everything but the cursor's line.
+        core.set_xterm_resize(true);
         let mut emulator = Self {
             core,
             filter: StreamFilter::new(),
@@ -277,12 +315,15 @@ impl Emulator {
             palette: ResolvedPalette::new(theme),
             theme: theme.clone(),
             allow_osc52_write: true,
+            program_status: true,
             display_offset: 0,
             cell_size: (8.0, 17.0),
             title: String::new(),
             bell_count: 0,
             image_tops: HashMap::new(),
             scrollback_limit: config.scrollback,
+            implicit_cr: false,
+            image_pixel_limit: image_pixel_limit(ACTIVE_IMAGE_STORAGE_MB),
         };
         emulator.init_pen();
         emulator.apply_palette();
@@ -331,6 +372,29 @@ impl Emulator {
         self.allow_osc52_write = allow;
     }
 
+    /// A host's implicit CR, xterm.js `convertEol`: a received LF also returns to the start of
+    /// the line. It is the terminal's LNM mode, so a device can still switch it with CSI 20 h/l.
+    pub fn set_implicit_cr(&mut self, on: bool) {
+        self.implicit_cr = on;
+        self.apply_implicit_cr();
+    }
+
+    fn apply_implicit_cr(&mut self) {
+        if self.core.line_feed_new_line_mode() != self.implicit_cr {
+            self.core.process(if self.implicit_cr {
+                b"\x1b[20h"
+            } else {
+                b"\x1b[20l"
+            });
+        }
+    }
+
+    /// Whether OSC 7501 reports are passed on and its support query answered. Off, the
+    /// terminal does not claim the protocol at all.
+    pub fn set_program_status(&mut self, enabled: bool) {
+        self.program_status = enabled;
+    }
+
     /// The cell size in logical pixels, for CSI 14/16 t reports and images.
     pub fn set_cell_size(&mut self, width: f32, height: f32) {
         self.cell_size = (width, height);
@@ -349,6 +413,67 @@ impl Emulator {
         self.scrollback_limit
     }
 
+    /// Change the scrollback size of the running terminal (xterm's `options.scrollback`). A
+    /// smaller size drops the oldest lines as trimming does, so absolute line numbers hold.
+    pub fn set_scrollback_limit(&mut self, lines: usize) {
+        if lines == self.scrollback_limit {
+            return;
+        }
+        let before = self.lines_trimmed();
+        self.scrollback_limit = lines;
+        self.core.set_max_scrollback(lines);
+        self.after_change(before);
+    }
+
+    /// How much image data the terminal keeps, in MB (the image addon's `storageLimit`:
+    /// 4 bytes a pixel). The oldest images go first when new ones need the room, and when the
+    /// limit shrinks.
+    pub fn set_image_storage_limit(&mut self, megabytes: f64) {
+        let limit = image_pixel_limit(megabytes);
+        if limit == self.image_pixel_limit {
+            return;
+        }
+        self.image_pixel_limit = limit;
+        self.enforce_image_limit();
+        self.track_images();
+    }
+
+    /// The image storage limit in MB.
+    pub fn image_storage_limit(&self) -> f64 {
+        self.image_pixel_limit as f64 * 4.0 / 1_000_000.0
+    }
+
+    /// Image data held, in MB (the image addon's `storageUsage`).
+    pub fn image_storage_usage(&self) -> f64 {
+        stored_image_pixels(&self.core) as f64 * 4.0 / 1_000_000.0
+    }
+
+    /// The image addon's `_evictOldest`: drop the oldest images until the rest fit the limit.
+    /// The newest image always stays, as the addon stores it after making room.
+    fn enforce_image_limit(&mut self) {
+        let mut images: Vec<(u64, usize)> = self
+            .core
+            .all_graphics()
+            .iter()
+            .chain(self.core.all_scrollback_graphics())
+            .filter(|graphic| !graphic.is_virtual)
+            .map(|graphic| (graphic.id, graphic.width * graphic.height))
+            .collect();
+        let mut stored: usize = images.iter().map(|(_, pixels)| pixels).sum();
+        if stored <= self.image_pixel_limit {
+            return;
+        }
+        images.sort_by_key(|(id, _)| *id);
+        let store = self.core.graphics_store_mut();
+        for (id, pixels) in &images[..images.len() - 1] {
+            if stored <= self.image_pixel_limit {
+                break;
+            }
+            store.remove_graphic_everywhere(*id);
+            stored -= pixels;
+        }
+    }
+
     // ---- geometry ------------------------------------------------------------------------
 
     pub fn cols(&self) -> usize {
@@ -359,43 +484,71 @@ impl Emulator {
         self.core.size().1
     }
 
-    /// Resize the grid (the screen reflows; the scrollback keeps its line widths).
+    /// Resize the terminal as xterm.js resizes its buffer (`Buffer.resize`): the screen and the
+    /// scrollback reflow as one, the cursor stays on its line, and the viewport moves by xterm's
+    /// rules (at the bottom it stays there; scrolled back it keeps its index, one line up for
+    /// every row the screen gains while the cursor sits on the last line).
     pub fn resize(&mut self, cols: u16, rows: u16) {
         let (cols, rows) = (usize::from(cols.max(2)), usize::from(rows.max(1)));
         if (cols, rows) == self.core.size() {
             return;
         }
         let before = self.lines_trimmed();
-        self.keep_cursor_on_shorter_screen(rows);
-        self.core.resize(cols, rows);
+        let alternate = self.core.is_alt_screen_active();
+        let primary = self.core.grid();
+        let floor = (primary.total_lines_scrolled() - primary.scrollback_len()) as u64;
+        // The alternate screen has no scrollback: the primary viewport is at its bottom.
+        let viewed = if alternate {
+            primary.scrollback_len()
+        } else {
+            self.viewport_top()
+        };
+        let top = self.core.resize_with_viewport(cols, rows, viewed);
+        if let Some(reflow) = self.core.take_buffer_reflow() {
+            self.follow_reflow(floor, &reflow);
+        }
+        if !alternate {
+            self.display_offset = self.scrollback_len().saturating_sub(top);
+        }
         self.set_cell_size(self.cell_size.0, self.cell_size.1);
         self.after_change(before);
     }
 
-    /// xterm's `Buffer.resize` when the screen gets shorter: the rows below
-    /// the cursor go first, then the top rows scroll into the scrollback so
-    /// the cursor's line stays on screen. The engine instead cuts the bottom
-    /// rows off and clamps the cursor, which drops the output between the
-    /// new bottom and the cursor. Scrolling the screen up beforehand (the
-    /// whole screen, so the lines reach the scrollback) gives xterm's result;
-    /// the engine resets the scroll region on resize anyway. The alternate
-    /// screen has no scrollback and its program redraws on SIGWINCH.
-    fn keep_cursor_on_shorter_screen(&mut self, rows: usize) {
-        if self.core.is_alt_screen_active() {
-            return;
+    /// The buffer was resized: what the emulator marks on lines follows them, as xterm's
+    /// markers do. Marks on a line that went away (a row emptied by joining a wrapped line, or a
+    /// line trimmed off the top) are disposed; an image keeps the line its top moved into.
+    /// `floor` is the primary screen's first absolute line before the resize.
+    fn follow_reflow(&mut self, floor: u64, reflow: &BufferReflow) {
+        let first = floor + reflow.trimmed as u64;
+        let old_len = reflow.lines.len() as u64;
+        let marker = |line: u64| -> Option<u64> {
+            match line.checked_sub(floor) {
+                Some(index) if index < old_len => {
+                    reflow.lines[index as usize].map(|line| first + line as u64)
+                }
+                // Past the buffer's end: not a line any more.
+                Some(_) => None,
+                None => Some(line),
+            }
+        };
+        self.failed_commands = self
+            .failed_commands
+            .iter()
+            .filter_map(|line| marker(*line))
+            .collect();
+        self.failed_commands.dedup();
+        self.commands.map_marker(|line| marker(*line));
+        let image = |line: u64| -> u64 {
+            match line.checked_sub(floor) {
+                Some(index) if index < old_len => reflow
+                    .follow(index as usize)
+                    .map_or(first, |line| first + line as u64),
+                _ => line,
+            }
+        };
+        for (top, _) in self.image_tops.values_mut() {
+            *top = image(*top);
         }
-        let cursor = *self.core.cursor();
-        if cursor.row < rows {
-            return;
-        }
-        let shift = cursor.row + 1 - rows;
-        // DECSTBM homes the cursor, so it is placed back explicitly.
-        let sequence = format!(
-            "\x1b[r\x1b[{shift}S\x1b[{};{}H",
-            cursor.row - shift + 1,
-            cursor.col + 1
-        );
-        self.core.process(sequence.as_bytes());
     }
 
     // ---- input ---------------------------------------------------------------------------
@@ -410,7 +563,14 @@ impl Emulator {
                 Segment::Osc { code, data } => self.handle_osc(code, &data),
                 Segment::EraseDisplay => self.erase_display(),
                 Segment::Reset { hard } => {
+                    if hard && self.implicit_cr {
+                        // The option outlives a reset, as xterm.js's does.
+                        self.apply_implicit_cr();
+                    }
                     if hard {
+                        // RIS clears what programs reported.
+                        self.events
+                            .push(EmulatorEvent::ProgramStatus(ProgramStatusSignal::Reset));
                         self.mouse_protocol = MouseProtocol::None;
                         self.mouse_encoding = MouseEncoding::Default;
                         self.cursor_shape = None;
@@ -432,6 +592,7 @@ impl Emulator {
             self.display_offset += (after - before) as usize;
         }
         self.display_offset = self.display_offset.min(self.scrollback_len());
+        self.enforce_image_limit();
         self.track_images();
     }
 
@@ -467,6 +628,12 @@ impl Emulator {
     }
 
     fn reply(&mut self, data: impl Into<Vec<u8>>) {
+        // Answers the engine queued for earlier sequences go first, so a program that fences
+        // a query with DA1 reads the replies in the order it asked.
+        let earlier = self.core.drain_responses();
+        if !earlier.is_empty() {
+            self.events.push(EmulatorEvent::Reply(earlier));
+        }
         self.events.push(EmulatorEvent::Reply(data.into()));
     }
 
@@ -486,6 +653,12 @@ impl Emulator {
                 Osc52Action::Ignore => {}
             },
             133 | 633 => {
+                // A new prompt means the foreground program ended; shell integration still
+                // sees the same sequence.
+                if data == "A" || data.starts_with("A;") {
+                    self.events
+                        .push(EmulatorEvent::ProgramStatus(ProgramStatusSignal::Prompt));
+                }
                 let line = self.absolute_cursor_line();
                 let first = self.lines_trimmed();
                 let mut marks = Marks {
@@ -503,6 +676,16 @@ impl Emulator {
                 }
             }
             10..=12 => self.dynamic_colors(code, data),
+            PROGRAM_STATUS_OSC if self.program_status => match parse_program_status(data) {
+                Some(ProgramStatusReport::Query) => self.reply(PROGRAM_STATUS_QUERY_REPLY),
+                Some(report) => {
+                    self.events
+                        .push(EmulatorEvent::ProgramStatus(ProgramStatusSignal::Report(
+                            report,
+                        )))
+                }
+                None => {}
+            },
             _ => {}
         }
     }
@@ -839,20 +1022,11 @@ impl Emulator {
         self.collect_core_events();
     }
 
-    /// Plain text of the scrollback and screen, trailing blank lines dropped, each line ending in
-    /// a newline ("Export as text").
+    /// Plain text of the scrollback and screen, trailing blank lines dropped, soft-wrapped rows
+    /// joined, each line ending in a newline ("Copy all output", "Export as text", "Compare
+    /// with…").
     pub fn buffer_text(&self) -> String {
-        let mut lines: Vec<String> = (0..self.length())
-            .map(|line| crate::buffer::line_text(self, line).unwrap_or_default())
-            .collect();
-        while lines.last().is_some_and(String::is_empty) {
-            lines.pop();
-        }
-        if lines.is_empty() {
-            String::new()
-        } else {
-            format!("{}\n", lines.join("\n"))
-        }
+        crate::buffer::buffer_text(self)
     }
 
     /// The last non-blank lines at or above the cursor — usually the prompt and the output just
@@ -1199,6 +1373,160 @@ mod tests {
         assert_eq!(images[0].line, 1);
     }
 
+    fn kitty_image(id: u32, side: usize) -> String {
+        use base64::Engine;
+        let pixels = base64::engine::general_purpose::STANDARD.encode(vec![255u8; side * side * 4]);
+        format!("\x1b_Ga=T,i={id},f=32,s={side},v={side},C=1;{pixels}\x1b\\")
+    }
+
+    #[test]
+    fn keeps_images_within_the_storage_limit_dropping_the_oldest() {
+        let mut term = emulator(20, 4);
+        term.set_cell_size(8.0, 16.0);
+        assert_eq!(term.image_storage_limit(), ACTIVE_IMAGE_STORAGE_MB);
+        // Three images of 250×250 pixels: 0.25 MB each.
+        for id in 1..=3 {
+            term.write(kitty_image(id, 250).as_bytes());
+        }
+        assert_eq!(term.images().len(), 3);
+        assert!((term.image_storage_usage() - 0.75).abs() < 1e-9);
+        // The smallest limit the addon takes holds two of them: the oldest goes.
+        term.set_image_storage_limit(0.5);
+        let ids: Vec<u64> = term.images().iter().map(|image| image.id).collect();
+        assert_eq!(ids.len(), 2);
+        let newest = *ids.iter().max().unwrap();
+        // A new image makes room by dropping the oldest again.
+        term.write(kitty_image(4, 250).as_bytes());
+        let after: Vec<u64> = term.images().iter().map(|image| image.id).collect();
+        assert_eq!(after.len(), 2);
+        assert!(after.contains(&newest));
+        assert!(!after.contains(&ids.iter().copied().min().unwrap()));
+        // An image larger than the whole limit is still shown, alone.
+        term.write(kitty_image(5, 400).as_bytes());
+        assert_eq!(term.images().len(), 1);
+        assert_eq!(term.images()[0].width, 400);
+        // A background tab's limit is a quarter of the visible one's.
+        assert_eq!(BACKGROUND_IMAGE_STORAGE_MB * 4.0, ACTIVE_IMAGE_STORAGE_MB);
+    }
+
+    #[test]
+    fn rewraps_the_scrollback_with_the_width_and_keeps_marks_on_their_lines() {
+        let mut term = emulator(10, 3);
+        term.write(b"0123456789abcdef\r\n");
+        term.write(b"\x1b]133;C\x07false\r\n\x1b]133;D;1\x07");
+        for i in 0..5 {
+            term.write(format!("line {i}\r\n").as_bytes());
+        }
+        let failed = term.failed_command_lines();
+        assert_eq!(failed.len(), 1);
+        assert!(failed[0] < term.scrollback_len());
+        assert_eq!(line_text(&term, failed[0]).unwrap(), "false");
+        // Wider: the line the old width wrapped joins; the lines below move up with their marks.
+        term.resize(20, 3);
+        assert_eq!(line_text(&term, 0).unwrap(), "0123456789abcdef");
+        let failed = term.failed_command_lines();
+        assert_eq!(line_text(&term, failed[0]).unwrap(), "false");
+        // Narrower: stored lines wrap instead of being clipped.
+        term.resize(4, 3);
+        assert_eq!(line_text(&term, 0).unwrap(), "0123");
+        assert!(term.is_wrapped(1));
+        assert_eq!(term.buffer_text().lines().next(), Some("0123456789abcdef"));
+        let failed = term.failed_command_lines();
+        assert_eq!(line_text(&term, failed[0]).unwrap(), "fals");
+        assert_eq!(line_text(&term, failed[0] + 1).unwrap(), "e");
+    }
+
+    #[test]
+    fn a_scrolled_back_viewport_keeps_its_index_through_a_rewrap_as_xterm_does() {
+        let mut term = emulator(10, 3);
+        for i in 0..20 {
+            term.write(format!("{i:02}-abcdefghij\r\n").as_bytes());
+        }
+        // Each line takes two rows; scroll back to the one starting "05-".
+        let target = (0..term.length())
+            .find(|line| line_text(&term, *line).unwrap().starts_with("05-"))
+            .unwrap();
+        assert_eq!(target, 10);
+        term.scroll_to_line(target);
+        // xterm's ydisp stays where it is while the rows above it join.
+        term.resize(20, 3);
+        assert_eq!(term.viewport_top(), 10);
+        assert!(line_text(&term, 10).unwrap().starts_with("10-"));
+        assert_eq!(term.display_offset(), 8);
+        // At the bottom the viewport stays at the bottom.
+        term.scroll_to_bottom();
+        term.resize(5, 3);
+        assert_eq!(term.display_offset(), 0);
+    }
+
+    #[test]
+    fn the_screen_and_the_scrollback_reflow_as_one_buffer() {
+        let mut term = emulator(10, 3);
+        term.write(b"$ echo 0123456789abcdefghij\r\nout\r\n$ ");
+        // The command line takes three rows, the first two in the scrollback.
+        assert_eq!(term.scrollback_len(), 2);
+        assert_eq!(screen(&term), ["defghij", "out", "$ "]);
+        term.resize(30, 3);
+        // The line comes back from the scrollback whole, and the cursor keeps its line.
+        assert_eq!(term.scrollback_len(), 0);
+        assert_eq!(screen(&term), ["$ echo 0123456789abcdefghij", "out", "$ "]);
+        assert_eq!((term.cursor().line, term.cursor().col), (2, 2));
+        term.write(b"ls");
+        assert_eq!(screen(&term)[2], "$ ls");
+        // Narrower again: the line wraps back into the scrollback, the cursor stays on its own.
+        term.resize(10, 3);
+        assert_eq!(screen(&term), ["defghij", "out", "$ ls"]);
+        assert_eq!(line_text(&term, 0).unwrap(), "$ echo 012");
+        assert!(term.is_wrapped(1));
+    }
+
+    #[test]
+    fn a_taller_screen_brings_lines_back_from_the_scrollback() {
+        let mut term = emulator(10, 3);
+        term.write(b"one\r\ntwo\r\nthree\r\nfour\r\n$ ");
+        assert_eq!(term.scrollback_len(), 2);
+        term.resize(10, 5);
+        assert_eq!(term.scrollback_len(), 0);
+        assert_eq!(screen(&term), ["one", "two", "three", "four", "$ "]);
+        assert_eq!((term.cursor().line, term.cursor().col), (4, 2));
+    }
+
+    #[test]
+    fn a_mark_on_a_row_that_joins_the_line_above_is_disposed() {
+        let mut term = emulator(4, 4);
+        // A failed command whose mark sits on the second row of a wrapped line.
+        term.write(b"abcde\x1b]133;C\x07fgh\r\n\x1b]133;D;1\x07$ ");
+        assert_eq!(term.failed_command_lines(), [1]);
+        term.resize(8, 4);
+        assert_eq!(line_text(&term, 0).unwrap(), "abcdefgh");
+        assert!(term.failed_command_lines().is_empty());
+    }
+
+    #[test]
+    fn changes_the_scrollback_size_of_a_running_terminal() {
+        let mut term = emulator(10, 3);
+        for i in 0..50 {
+            term.write(format!("{i}\r\n").as_bytes());
+        }
+        assert_eq!(term.scrollback_len(), 48);
+        let trimmed = term.lines_trimmed();
+        term.scroll_to_top();
+        term.set_scrollback_limit(10);
+        assert_eq!(term.scrollback_limit(), 10);
+        assert_eq!(term.scrollback_len(), 10);
+        // The dropped lines count as trimmed; the viewport stays inside the buffer.
+        assert_eq!(term.lines_trimmed(), trimmed + 38);
+        assert_eq!(term.display_offset(), 10);
+        assert_eq!(line_text(&term, 0).unwrap(), "38");
+        // More scrollback keeps what is there and lets more in.
+        term.set_scrollback_limit(100);
+        for i in 50..70 {
+            term.write(format!("{i}\r\n").as_bytes());
+        }
+        assert_eq!(term.scrollback_len(), 30);
+        assert_eq!(line_text(&term, 0).unwrap(), "38");
+    }
+
     #[test]
     fn places_sixel_and_iterm2_images() {
         use base64::Engine;
@@ -1223,5 +1551,96 @@ mod tests {
         term.write(b"one\r\n\r\ntwo\r\n$ ");
         assert_eq!(term.buffer_text(), "one\n\ntwo\n$ \n");
         assert_eq!(term.recent_lines(2), ["two", "$ "]);
+    }
+
+    #[test]
+    fn an_implicit_cr_returns_each_received_line_feed_to_the_start_of_the_line() {
+        let mut term = emulator(10, 3);
+        term.write(b"ab\ncd");
+        assert_eq!(screen(&term)[1], "  cd");
+        let mut term = emulator(10, 3);
+        term.set_implicit_cr(true);
+        term.write(b"ab\ncd");
+        assert_eq!(screen(&term)[1], "cd");
+        // It outlives a reset, and switches off again.
+        term.write(b"\x1bcx\ny");
+        assert_eq!(screen(&term)[1], "y");
+        term.set_implicit_cr(false);
+        term.write(b"\nz");
+        assert_eq!(screen(&term)[2], " z");
+    }
+
+    fn program_status(term: &mut Emulator) -> Vec<ProgramStatusSignal> {
+        term.take_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                EmulatorEvent::ProgramStatus(signal) => Some(signal),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn replies(term: &mut Emulator) -> String {
+        let bytes: Vec<u8> = term
+            .take_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                EmulatorEvent::Reply(reply) => Some(reply),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn passes_program_status_reports_on_and_answers_the_query_on_the_session() {
+        use crate::program_status::{ProgramState, ProgramStatusRecord};
+        let mut term = emulator(20, 3);
+        term.write(b"\x1b]7501;state=working:app=make\x1b\\");
+        assert_eq!(
+            program_status(&mut term),
+            [ProgramStatusSignal::Report(ProgramStatusReport::Report(
+                ProgramStatusRecord {
+                    app: Some("make".into()),
+                    ..ProgramStatusRecord::new("", ProgramState::Working)
+                }
+            ))]
+        );
+        // The support query is answered in order with the engine's own replies (DA1 here).
+        term.write(b"\x1b]7501;?\x07\x1b[c");
+        let answer = replies(&mut term);
+        assert!(answer.starts_with(PROGRAM_STATUS_QUERY_REPLY), "{answer:?}");
+        assert!(
+            answer.len() > PROGRAM_STATUS_QUERY_REPLY.len(),
+            "DA1 answered too"
+        );
+        // Garbage is dropped; nothing reaches the screen.
+        term.write(b"\x1b]7501;state=sleeping\x07");
+        assert_eq!(program_status(&mut term), []);
+        assert_eq!(screen(&term), ["", "", ""]);
+    }
+
+    #[test]
+    fn ignores_program_status_and_stays_silent_when_turned_off() {
+        let mut term = emulator(20, 3);
+        term.set_program_status(false);
+        term.write(b"\x1b]7501;?\x07\x1b]7501;state=working\x07");
+        assert_eq!(term.take_events(), []);
+    }
+
+    #[test]
+    fn reports_a_new_prompt_and_a_reset_without_hiding_them_from_shell_integration() {
+        let mut term = emulator(20, 3);
+        term.write(b"\x1b]133;C\x07");
+        assert_eq!(program_status(&mut term), []);
+        term.write(b"\x1b]133;A\x07$ \x1b]633;A;x\x07");
+        assert_eq!(
+            program_status(&mut term),
+            [ProgramStatusSignal::Prompt, ProgramStatusSignal::Prompt]
+        );
+        assert_eq!(screen(&term)[0], "$ ");
+        term.write(b"\x1bc");
+        assert_eq!(program_status(&mut term), [ProgramStatusSignal::Reset]);
     }
 }

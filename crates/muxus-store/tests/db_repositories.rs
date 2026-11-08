@@ -3,16 +3,18 @@
 
 use muxus_core::api::ForwardType;
 use muxus_core::api::{
-    FolderAuthSettings, HostKeywordHighlightConfig, KeywordHighlightRule, LoginSendStep,
+    AntiIdle, FolderAuthSettings, HostKeywordHighlightConfig, KeywordHighlightRule, LoginSendStep,
     LoginSequence, LoginSequenceStep, LoginWaitStep, ManagedHostRef, OpenSshMetadataPatch,
-    SavedHostProfileInput, SessionHistorySettings, SessionLogFileSettings,
-    SessionLoggingPolicyInput, TunnelInput, TunnelSshOptions, WorkspaceMultiExecGroup,
+    SavedHostKind, SavedHostProfileInput, SavedScriptInput, SessionHistorySettings,
+    SessionLogFileSettings, SessionLoggingPolicyInput, TerminalBackspaceKey, TerminalEnterKey,
+    TunnelInput, TunnelSshOptions, WorkspaceMultiExecGroup,
 };
 use muxus_core::js::Patch;
 use muxus_core::management::{ManagementProtocol, SavedManagementRequestInput};
+use muxus_core::paste_pacing::PastePromptWaitSetting;
 use muxus_core::protocol::{
     GnmiProfile, NetconfProfile, RdpProfile, SavedHostSessionProfile, SerialFlowControl,
-    SerialProfile, SshGateway, SshProfile, TelnetProfile, VncProfile,
+    SerialProfile, SshGateway, SshProfile, TelnetProfile, VncProfile, WebProfile,
 };
 use muxus_store::Database;
 use muxus_store::db::{
@@ -117,6 +119,14 @@ mod migrations {
             "login-sequences",
             "host-paste-pacing",
             "management-hosts",
+            "host-paste-prompt-wait",
+            "host-anti-idle",
+            "host-terminal-input-modes",
+            "host-environment-discovery",
+            "host-jump-fallbacks",
+            "scripts",
+            "web-hosts",
+            "host-system-openssh",
         ];
         let expected: Vec<(i64, String)> = expected
             .iter()
@@ -224,7 +234,7 @@ mod migrations {
             let conn = Connection::open(&path).unwrap();
             downgrade_kinds(
                 &conn,
-                "'telnet', 'rdp', 'vnc', 'gnmi', 'netconf')",
+                "'telnet', 'rdp', 'vnc', 'gnmi', 'netconf', 'web')",
                 "'telnet')",
                 "connection_profiles_v21",
                 "DROP TABLE remote_desktop_certificates;
@@ -248,7 +258,7 @@ mod migrations {
         }
 
         let db = Database::open(&path).unwrap();
-        assert_eq!(db.applied_migrations().unwrap().last().unwrap().version, 29);
+        assert_eq!(db.applied_migrations().unwrap().last().unwrap().version, 37);
         let restored = db.saved_host_profile(&telnet_host.id).unwrap().unwrap();
         assert_eq!(restored.name, "Core switch");
         assert_eq!(restored.metadata.group.as_deref(), Some("Lab"));
@@ -271,6 +281,7 @@ mod migrations {
                         profile_id: None,
                     }),
                     share_clipboard: None,
+                    ssh_gateway_fallbacks: None,
                 }),
             ))
             .unwrap();
@@ -286,6 +297,7 @@ mod migrations {
                     resize_remote: None,
                     view_only: Some(true),
                     share_clipboard: None,
+                    ssh_gateway_fallbacks: None,
                 }),
             ))
             .unwrap();
@@ -354,6 +366,7 @@ mod migrations {
                     domain: None,
                     ssh_gateway: None,
                     share_clipboard: None,
+                    ssh_gateway_fallbacks: None,
                 }),
             ))
             .unwrap();
@@ -371,7 +384,7 @@ mod migrations {
             let conn = Connection::open(&path).unwrap();
             downgrade_kinds(
                 &conn,
-                "'vnc', 'gnmi', 'netconf')",
+                "'vnc', 'gnmi', 'netconf', 'web')",
                 "'vnc')",
                 "connection_profiles_v28",
                 "DROP TABLE management_requests;
@@ -395,7 +408,7 @@ mod migrations {
         let db = Database::open(&path).unwrap();
         assert_eq!(
             db.applied_migrations().unwrap().last().unwrap().name,
-            "management-hosts"
+            "host-system-openssh"
         );
         assert_eq!(
             db.saved_host_profile(&rdp.id)
@@ -421,6 +434,7 @@ mod migrations {
                     key_file: None,
                     ssh_gateway: None,
                     encoding: None,
+                    ssh_gateway_fallbacks: None,
                 }),
             ))
             .unwrap();
@@ -436,6 +450,7 @@ mod migrations {
                         target: "bastion".into(),
                         profile_id: None,
                     }),
+                    ssh_gateway_fallbacks: None,
                 }),
             ))
             .unwrap();
@@ -552,6 +567,399 @@ mod migrations {
     }
 
     #[test]
+    fn saves_web_pages_with_their_ssh_gateways() {
+        let db = memory();
+        let profile = WebProfile {
+            profile_id: None,
+            url: "https://grafana.internal:3000".into(),
+            ssh_gateway: Some(SshGateway {
+                target: "bastion-a".into(),
+                profile_id: None,
+            }),
+        };
+        let web = db
+            .save_saved_host_profile(&saved(
+                "Grafana",
+                SavedHostSessionProfile::Web(profile.clone()),
+            ))
+            .unwrap();
+        let stored = db.saved_host_profile(&web.id).unwrap().unwrap();
+        assert_eq!(stored.kind, SavedHostKind::Web);
+        assert_eq!(stored.name, "Grafana");
+        assert_eq!(
+            stored.profile,
+            SavedHostSessionProfile::Web(WebProfile {
+                profile_id: Some(web.id.clone()),
+                ..profile
+            })
+        );
+        let kinds: Vec<SavedHostKind> = db
+            .list_saved_host_profiles()
+            .unwrap()
+            .into_iter()
+            .map(|host| host.kind)
+            .collect();
+        assert_eq!(kinds, [SavedHostKind::Web]);
+    }
+
+    #[test]
+    fn keeps_saved_scripts() {
+        let db = memory();
+        let script = db
+            .save_script(&SavedScriptInput {
+                id: None,
+                name: "Disk space".into(),
+                body: "df -h\n".into(),
+            })
+            .unwrap();
+        assert_eq!(db.list_scripts().unwrap(), vec![script.clone()]);
+        let renamed = db
+            .save_script(&SavedScriptInput {
+                id: Some(script.id.clone()),
+                name: "Free space".into(),
+                body: "df -h /\n".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            (
+                renamed.id.as_str(),
+                renamed.name.as_str(),
+                renamed.body.as_str()
+            ),
+            (script.id.as_str(), "Free space", "df -h /\n")
+        );
+        assert!(db.delete_script(&script.id).unwrap());
+        assert!(!db.delete_script(&script.id).unwrap());
+        assert!(db.list_scripts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn lists_scripts_by_name_and_refuses_an_empty_name() {
+        let db = memory();
+        for name in ["uptime", "Disk space", " backup "] {
+            db.save_script(&SavedScriptInput {
+                id: None,
+                name: name.into(),
+                body: String::new(),
+            })
+            .unwrap();
+        }
+        let names: Vec<String> = db
+            .list_scripts()
+            .unwrap()
+            .into_iter()
+            .map(|script| script.name)
+            .collect();
+        assert_eq!(names, ["backup", "Disk space", "uptime"]);
+        assert!(
+            db.save_script(&SavedScriptInput {
+                id: None,
+                name: "  ".into(),
+                body: String::new(),
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn keeps_fallback_jump_routes_for_an_openssh_alias() {
+        let db = memory();
+        let routes = || {
+            vec![
+                vec!["bastion-b".to_owned()],
+                vec!["edge".into(), "bastion-c".into()],
+            ]
+        };
+        let fallbacks = |patch: Patch<Vec<Vec<String>>>| OpenSshMetadataPatch {
+            proxy_jump_fallbacks: patch,
+            ..Default::default()
+        };
+        assert!(db.jump_fallbacks_for_alias("app").unwrap().is_empty());
+        db.update_open_ssh_metadata("app", &fallbacks(Patch::Set(routes())))
+            .unwrap();
+        assert_eq!(db.jump_fallbacks_for_alias("app").unwrap(), routes());
+        assert_eq!(
+            db.open_ssh_metadata(&["app"]).unwrap()[0]
+                .1
+                .proxy_jump_fallbacks,
+            Some(routes())
+        );
+        // Other metadata changes leave them alone; null or an empty list removes them.
+        db.update_open_ssh_metadata(
+            "app",
+            &OpenSshMetadataPatch {
+                color: Patch::Set("#336699".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(db.jump_fallbacks_for_alias("app").unwrap().len(), 2);
+        db.update_open_ssh_metadata("app", &fallbacks(Patch::Set(Vec::new())))
+            .unwrap();
+        assert!(db.jump_fallbacks_for_alias("app").unwrap().is_empty());
+        db.update_open_ssh_metadata("app", &fallbacks(Patch::Set(routes())))
+            .unwrap();
+        db.update_open_ssh_metadata("app", &fallbacks(Patch::Clear))
+            .unwrap();
+        assert!(db.jump_fallbacks_for_alias("app").unwrap().is_empty());
+    }
+
+    /// A file database with an OpenSSH alias and a Telnet host, closed.
+    fn legacy_hosts() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let (dir, path) = file_db();
+        let db = Database::open(&path).unwrap();
+        db.update_open_ssh_metadata(
+            "legacy",
+            &OpenSshMetadataPatch {
+                group: Patch::Set("Core".into()),
+                paste_line_delay_ms: Patch::Set(250),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let telnet = db
+            .save_saved_host_profile(&saved("Core switch", telnet("switch.lab", 23)))
+            .unwrap();
+        db.close().unwrap();
+        (dir, path, telnet.id)
+    }
+
+    fn assert_legacy_alias(db: &Database) -> muxus_core::api::OpenSshProfileMetadata {
+        let metadata = db.open_ssh_metadata(&["legacy"]).unwrap().remove(0).1;
+        assert_eq!(metadata.group.as_deref(), Some("Core"));
+        assert_eq!(metadata.paste_line_delay_ms, Some(250));
+        metadata
+    }
+
+    #[test]
+    fn keeps_version_29_hosts_with_prompt_waiting_off_when_adding_its_column() {
+        let (_dir, path, telnet) = legacy_hosts();
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "DELETE FROM schema_migrations WHERE version = 30;
+        ALTER TABLE connection_profiles DROP COLUMN paste_prompt_wait_json;
+        PRAGMA user_version = 29;",
+            )
+            .unwrap();
+        let db = Database::open(&path).unwrap();
+        assert_eq!(assert_legacy_alias(&db).paste_prompt_wait, None);
+        let saved = db.saved_host_profile(&telnet).unwrap().unwrap();
+        assert_eq!(saved.metadata.paste_prompt_wait, None);
+    }
+
+    #[test]
+    fn keeps_version_30_hosts_with_anti_idle_off_when_adding_the_anti_idle_column() {
+        let (_dir, path, telnet) = legacy_hosts();
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "DELETE FROM schema_migrations WHERE version = 31;
+        ALTER TABLE connection_profiles DROP COLUMN anti_idle_json;
+        PRAGMA user_version = 30;",
+            )
+            .unwrap();
+        let db = Database::open(&path).unwrap();
+        assert_eq!(assert_legacy_alias(&db).anti_idle, None);
+        let saved = db.saved_host_profile(&telnet).unwrap().unwrap();
+        assert_eq!(saved.metadata.anti_idle, None);
+        assert_eq!(
+            db.host_anti_idle(HostRef::ProfileId(&telnet)).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn keeps_version_29_hosts_with_xterms_keys_and_no_echo_when_adding_input_modes() {
+        let (_dir, path, telnet) = legacy_hosts();
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "DELETE FROM schema_migrations WHERE version >= 30;
+        DROP TABLE scripts;
+        ALTER TABLE connection_profiles DROP COLUMN proxy_jump_fallbacks_json;
+        ALTER TABLE connection_profiles DROP COLUMN discover_environments;
+        ALTER TABLE connection_profiles DROP COLUMN system_openssh;
+        ALTER TABLE connection_profiles DROP COLUMN paste_prompt_wait_json;
+        ALTER TABLE connection_profiles DROP COLUMN anti_idle_json;
+        ALTER TABLE connection_profiles DROP COLUMN backspace_key;
+        ALTER TABLE connection_profiles DROP COLUMN enter_key;
+        ALTER TABLE connection_profiles DROP COLUMN implicit_cr;
+        ALTER TABLE connection_profiles DROP COLUMN local_echo;
+        PRAGMA user_version = 29;",
+            )
+            .unwrap();
+        let db = Database::open(&path).unwrap();
+        let applied: Vec<(i64, String)> = db
+            .applied_migrations()
+            .unwrap()
+            .into_iter()
+            .skip(29)
+            .map(|m| (m.version, m.name))
+            .collect();
+        assert_eq!(
+            applied,
+            [
+                (30, "host-paste-prompt-wait"),
+                (31, "host-anti-idle"),
+                (32, "host-terminal-input-modes"),
+                (33, "host-environment-discovery"),
+                (34, "host-jump-fallbacks"),
+                (35, "scripts"),
+                (36, "web-hosts"),
+                (37, "host-system-openssh"),
+            ]
+            .map(|(version, name)| (version, name.to_owned()))
+        );
+        let alias = assert_legacy_alias(&db);
+        let saved = db.saved_host_profile(&telnet).unwrap().unwrap().metadata;
+        for host in [alias, saved] {
+            assert_eq!(host.paste_prompt_wait, None);
+            assert_eq!(host.anti_idle, None);
+            assert_eq!(host.backspace_key, None);
+            assert_eq!(host.enter_key, None);
+            assert_eq!(host.implicit_cr, None);
+            assert_eq!(host.local_echo, None);
+        }
+        assert_eq!(
+            db.host_input_keys(HostRef::Alias("legacy")).unwrap(),
+            (None, None)
+        );
+        assert_eq!(
+            db.host_input_keys(HostRef::ProfileId(&telnet)).unwrap(),
+            (None, None)
+        );
+        assert_eq!(
+            db.host_anti_idle(HostRef::ProfileId(&telnet)).unwrap(),
+            None
+        );
+        db.close().unwrap();
+
+        let upgraded = Connection::open(&path).unwrap();
+        let row: (Option<String>, Option<String>, Option<String>, Option<String>, i64, i64) =
+            upgraded
+                .query_row(
+                    "SELECT paste_prompt_wait_json, anti_idle_json, backspace_key, enter_key, implicit_cr,
+               local_echo
+             FROM connection_profiles WHERE id = ?",
+                    [&telnet],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )
+                .unwrap();
+        assert_eq!(row, (None, None, None, None, 0, 0));
+    }
+
+    #[test]
+    fn keeps_a_hosts_own_environment_discovery_choice_and_clears_it_back_to_settings() {
+        let db = memory();
+        let discover = |patch: Patch<bool>| OpenSshMetadataPatch {
+            discover_environments: patch,
+            ..Default::default()
+        };
+        let lab = |db: &Database| db.open_ssh_metadata(&["lab"]).unwrap().remove(0).1;
+        db.update_open_ssh_metadata(
+            "lab",
+            &OpenSshMetadataPatch {
+                group: Patch::Set("Lab".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(lab(&db).discover_environments, None);
+        db.update_open_ssh_metadata("lab", &discover(Patch::Set(false)))
+            .unwrap();
+        assert_eq!(lab(&db).discover_environments, Some(false));
+        db.update_open_ssh_metadata(
+            "lab",
+            &OpenSshMetadataPatch {
+                color: Patch::Set("#00ff00".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(lab(&db).discover_environments, Some(false));
+        db.update_open_ssh_metadata("lab", &discover(Patch::Clear))
+            .unwrap();
+        assert_eq!(lab(&db).discover_environments, None);
+
+        let hypervisor = db
+            .save_saved_host_profile(&saved(
+                "Hypervisor",
+                SavedHostSessionProfile::Ssh(SshProfile {
+                    use_config: Some(false),
+                    user: Some("root".into()),
+                    ..SshProfile::new("hv.lab")
+                }),
+            ))
+            .unwrap();
+        let updated = db
+            .update_saved_host_metadata(&hypervisor.id, &discover(Patch::Set(true)))
+            .unwrap();
+        assert_eq!(updated.metadata.discover_environments, Some(true));
+        assert_eq!(
+            db.saved_host_profile(&hypervisor.id)
+                .unwrap()
+                .unwrap()
+                .metadata
+                .discover_environments,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn connects_a_saved_ssh_host_through_system_openssh_only_when_set() {
+        let db = memory();
+        let host = db
+            .save_saved_host_profile(&saved(
+                "Router",
+                SavedHostSessionProfile::Ssh(SshProfile {
+                    use_config: Some(false),
+                    ..SshProfile::new("router.lab")
+                }),
+            ))
+            .unwrap();
+        assert!(!db.system_open_ssh_for_saved_host(&host.id).unwrap());
+        let updated = db
+            .update_saved_host_metadata(
+                &host.id,
+                &OpenSshMetadataPatch {
+                    system_open_ssh: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.metadata.system_open_ssh, Some(true));
+        assert!(db.system_open_ssh_for_saved_host(&host.id).unwrap());
+        assert!(!db.system_open_ssh_for_saved_host("missing").unwrap());
+        // A saved host keeps fallback routes in its profile, not its metadata.
+        db.update_saved_host_metadata(
+            &host.id,
+            &OpenSshMetadataPatch {
+                proxy_jump_fallbacks: Patch::Set(vec![vec!["bastion-b".into()]]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            db.saved_host_profile(&host.id)
+                .unwrap()
+                .unwrap()
+                .metadata
+                .proxy_jump_fallbacks,
+            None
+        );
+    }
+
+    #[test]
     fn upgrades_the_draft_version_13_vault_without_deleting_credentials() {
         let (_dir, path) = file_db();
         let db = Database::open(&path).unwrap();
@@ -631,7 +1039,7 @@ mod migrations {
         }
 
         let db = Database::open(&path).unwrap();
-        assert_eq!(db.applied_migrations().unwrap().last().unwrap().version, 29);
+        assert_eq!(db.applied_migrations().unwrap().last().unwrap().version, 37);
         let config = db.password_vault_config().unwrap().unwrap().config;
         assert_eq!(config.format_version, 2);
         assert_eq!(
@@ -1040,6 +1448,19 @@ mod metadata {
         )
         .unwrap();
         assert!(!db.console_compatibility_for_alias("production").unwrap());
+
+        let system_open_ssh = |value: bool| OpenSshMetadataPatch {
+            system_open_ssh: Some(value),
+            ..Default::default()
+        };
+        assert!(!db.system_open_ssh_for_alias("production").unwrap());
+        db.update_open_ssh_metadata("production", &system_open_ssh(true))
+            .unwrap();
+        assert!(db.system_open_ssh_for_alias("production").unwrap());
+        assert_eq!(get(&db, "production").system_open_ssh, Some(true));
+        db.update_open_ssh_metadata("production", &system_open_ssh(false))
+            .unwrap();
+        assert!(!db.system_open_ssh_for_alias("production").unwrap());
         assert!(db.sftp_disabled_for_alias("production").unwrap());
         db.update_open_ssh_metadata(
             "production",
@@ -1207,6 +1628,219 @@ mod metadata {
                 .metadata
                 .paste_char_delay_ms,
             None
+        );
+    }
+
+    fn rack_console(db: &Database) -> String {
+        db.save_saved_host_profile(&saved("Rack console", serial("/dev/ttyUSB0")))
+            .unwrap()
+            .id
+    }
+
+    fn color() -> OpenSshMetadataPatch {
+        OpenSshMetadataPatch {
+            color: Patch::Set("#ef4444".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn stores_and_clears_prompt_waiting_of_openssh_and_saved_hosts() {
+        let db = memory();
+        let serial = rack_console(&db);
+        let own = PastePromptWaitSetting {
+            prompt_pattern: Some("[>#\\]]\\s*$".into()),
+            timeout_ms: Some(20_000),
+            error_pattern: None,
+        };
+        let wait = |patch: Patch<PastePromptWaitSetting>| OpenSshMetadataPatch {
+            paste_prompt_wait: patch,
+            ..Default::default()
+        };
+
+        // Empty is on with every default.
+        let alias = db
+            .update_open_ssh_metadata("core-01", &wait(Patch::Set(Default::default())))
+            .unwrap();
+        assert_eq!(
+            alias.paste_prompt_wait,
+            Some(PastePromptWaitSetting::default())
+        );
+        let saved_host = db
+            .update_saved_host_metadata(&serial, &wait(Patch::Set(own.clone())))
+            .unwrap();
+        assert_eq!(saved_host.metadata.paste_prompt_wait, Some(own.clone()));
+
+        // Other metadata edits leave it alone; null turns it off.
+        db.update_saved_host_metadata(&serial, &color()).unwrap();
+        let metadata = |db: &Database| db.saved_host_profile(&serial).unwrap().unwrap().metadata;
+        assert_eq!(metadata(&db).paste_prompt_wait, Some(own));
+        db.update_open_ssh_metadata("core-01", &wait(Patch::Clear))
+            .unwrap();
+        db.update_saved_host_metadata(&serial, &wait(Patch::Clear))
+            .unwrap();
+        assert_eq!(get(&db, "core-01").paste_prompt_wait, None);
+        assert_eq!(metadata(&db).paste_prompt_wait, None);
+    }
+
+    #[test]
+    fn stores_looks_up_and_clears_the_anti_idle_setting_of_openssh_and_saved_hosts() {
+        let db = memory();
+        let serial = rack_console(&db);
+        let space = AntiIdle {
+            interval_seconds: 240,
+            text: " ".into(),
+            enter: false,
+        };
+        let enter = AntiIdle {
+            interval_seconds: 60,
+            text: String::new(),
+            enter: true,
+        };
+        let anti_idle = |patch: Patch<AntiIdle>| OpenSshMetadataPatch {
+            anti_idle: patch,
+            ..Default::default()
+        };
+
+        let alias = db
+            .update_open_ssh_metadata("core-01", &anti_idle(Patch::Set(space.clone())))
+            .unwrap();
+        assert_eq!(alias.anti_idle, Some(space.clone()));
+        let saved_host = db
+            .update_saved_host_metadata(&serial, &anti_idle(Patch::Set(enter.clone())))
+            .unwrap();
+        assert_eq!(saved_host.metadata.anti_idle, Some(enter.clone()));
+        assert_eq!(
+            db.host_anti_idle(HostRef::Alias("core-01")).unwrap(),
+            Some(space.clone())
+        );
+        assert_eq!(
+            db.host_anti_idle(HostRef::ProfileId(&serial)).unwrap(),
+            Some(enter)
+        );
+        assert_eq!(db.host_anti_idle(HostRef::Alias("unknown")).unwrap(), None);
+
+        // Other metadata edits leave it alone; null turns it off.
+        db.update_open_ssh_metadata("core-01", &color()).unwrap();
+        assert_eq!(get(&db, "core-01").anti_idle, Some(space));
+        db.update_open_ssh_metadata("core-01", &anti_idle(Patch::Clear))
+            .unwrap();
+        db.update_saved_host_metadata(&serial, &anti_idle(Patch::Clear))
+            .unwrap();
+        assert_eq!(get(&db, "core-01").anti_idle, None);
+        assert_eq!(
+            db.saved_host_profile(&serial)
+                .unwrap()
+                .unwrap()
+                .metadata
+                .anti_idle,
+            None
+        );
+        assert_eq!(
+            db.host_anti_idle(HostRef::ProfileId(&serial)).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn stores_looks_up_and_clears_the_input_modes_of_openssh_and_saved_hosts() {
+        let db = memory();
+        let serial = rack_console(&db);
+        let modes = OpenSshMetadataPatch {
+            backspace_key: Patch::Set(TerminalBackspaceKey::CtrlH),
+            enter_key: Patch::Set(TerminalEnterKey::Crlf),
+            implicit_cr: Patch::Set(true),
+            local_echo: Patch::Set(true),
+            ..Default::default()
+        };
+        let has_modes = |host: &muxus_core::api::OpenSshProfileMetadata| {
+            (
+                host.backspace_key,
+                host.enter_key,
+                host.implicit_cr,
+                host.local_echo,
+            ) == (
+                Some(TerminalBackspaceKey::CtrlH),
+                Some(TerminalEnterKey::Crlf),
+                Some(true),
+                Some(true),
+            )
+        };
+
+        assert!(has_modes(
+            &db.update_open_ssh_metadata("core-01", &modes).unwrap()
+        ));
+        let saved_host = db
+            .update_saved_host_metadata(
+                &serial,
+                &OpenSshMetadataPatch {
+                    enter_key: Patch::Set(TerminalEnterKey::Lf),
+                    local_echo: Patch::Set(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(saved_host.metadata.enter_key, Some(TerminalEnterKey::Lf));
+        assert_eq!(saved_host.metadata.local_echo, Some(true));
+        assert_eq!(saved_host.metadata.backspace_key, None);
+        assert_eq!(
+            db.host_input_keys(HostRef::Alias("core-01")).unwrap(),
+            (
+                Some(TerminalBackspaceKey::CtrlH),
+                Some(TerminalEnterKey::Crlf)
+            )
+        );
+        assert_eq!(
+            db.host_input_keys(HostRef::ProfileId(&serial)).unwrap(),
+            (None, Some(TerminalEnterKey::Lf))
+        );
+        assert_eq!(
+            db.host_input_keys(HostRef::Alias("unknown")).unwrap(),
+            (None, None)
+        );
+
+        // Other metadata edits leave them alone; null goes back to xterm.js's keys and no echo.
+        db.update_open_ssh_metadata("core-01", &color()).unwrap();
+        assert!(has_modes(&get(&db, "core-01")));
+        db.update_open_ssh_metadata(
+            "core-01",
+            &OpenSshMetadataPatch {
+                backspace_key: Patch::Clear,
+                enter_key: Patch::Clear,
+                implicit_cr: Patch::Clear,
+                local_echo: Patch::Clear,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        db.update_saved_host_metadata(
+            &serial,
+            &OpenSshMetadataPatch {
+                enter_key: Patch::Clear,
+                local_echo: Patch::Set(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let saved_metadata = db.saved_host_profile(&serial).unwrap().unwrap().metadata;
+        for host in [get(&db, "core-01"), saved_metadata] {
+            assert_eq!(
+                (
+                    host.backspace_key,
+                    host.enter_key,
+                    host.implicit_cr,
+                    host.local_echo
+                ),
+                (None, None, None, None)
+            );
+        }
+        assert_eq!(
+            db.host_input_keys(HostRef::Alias("core-01")).unwrap(),
+            (None, None)
+        );
+        assert_eq!(
+            db.host_input_keys(HostRef::ProfileId(&serial)).unwrap(),
+            (None, None)
         );
     }
 

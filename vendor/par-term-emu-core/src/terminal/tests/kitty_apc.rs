@@ -449,7 +449,7 @@ fn virtual_placement_does_not_advance_cursor() {
 /// graphics_added and the streaming server's graphics subscribers never hear
 /// kitty placements (a=t is transmit-only and displays nothing, so it stays
 /// silent). The event carries the placement row, captured before the cursor
-/// advance.
+/// advance, plus the store id the frame's pixels are fetched by.
 #[test]
 fn display_paths_emit_graphics_added() {
     use crate::terminal::TerminalEvent;
@@ -459,36 +459,44 @@ fn display_paths_emit_graphics_added() {
 
     // a=T: transmit a 2x2 image and display it at the cursor (0, 0).
     term.process(b"\x1b_Ga=T,f=24,i=42,s=2,v=2;AAAAAAAAAAAAAAAA\x1b\\");
-    let row = term
+    let (image_id, row) = term
         .poll_events()
         .into_iter()
         .find_map(|e| match e {
-            TerminalEvent::GraphicsAdded(row) => Some(row),
+            TerminalEvent::GraphicsAdded { image_id, row } => Some((image_id, row)),
             _ => None,
         })
         .expect("a=T must emit GraphicsAdded");
     assert_eq!(row, 0, "a=T at cursor (0, 0) reports the placement row");
+    assert!(
+        term.all_graphics().iter().any(|g| g.id == image_id),
+        "the event's image_id must resolve to the stored graphic"
+    );
 
     // a=p: re-displaying the stored image is a new placement at the
     // current cursor row.
     let row_before = term.cursor().row;
     term.process(b"\x1b_Ga=p,i=42\x1b\\");
-    let row = term
+    let (image_id, row) = term
         .poll_events()
         .into_iter()
         .find_map(|e| match e {
-            TerminalEvent::GraphicsAdded(row) => Some(row),
+            TerminalEvent::GraphicsAdded { image_id, row } => Some((image_id, row)),
             _ => None,
         })
         .expect("a=p must emit GraphicsAdded");
     assert_eq!(row, row_before, "a=p reports the placement row");
+    assert!(
+        term.all_graphics().iter().any(|g| g.id == image_id),
+        "the re-display's image_id must resolve too"
+    );
 }
 
 /// Card 01a0d9e6f012, criterion 3: after displaying an image the cursor row
 /// must match between a daemon-side terminal and the client-side mirror
 /// rendering it. Both derive rows from the cell size, so a terminal whose
-/// host reported real text-area pixels (`set_pixel_size`, what
-/// `refresh-client -p` drives through `resize_with_cell_pixels`) advances
+/// host reported real text-area pixels (`set_pixel_size`, what the daemon's
+/// cell-pixel resize drives on `refresh-client -p`) advances
 /// by pixel-height / cell-height — not by the (1, 2) no-information default,
 /// which would put the daemon dozens of rows past the mirror.
 #[test]
@@ -540,7 +548,7 @@ fn w1_h24_exact_payload_stores_graphic_and_emits_event() {
     assert!(
         term.poll_events()
             .into_iter()
-            .any(|e| matches!(e, TerminalEvent::GraphicsAdded(_))),
+            .any(|e| matches!(e, TerminalEvent::GraphicsAdded { .. })),
         "a=T must emit GraphicsAdded for the 1x24 shape"
     );
     assert_eq!(
@@ -577,7 +585,7 @@ fn short_payload_for_declared_dims_is_silently_rejected() {
         !term
             .poll_events()
             .into_iter()
-            .any(|e| matches!(e, TerminalEvent::GraphicsAdded(_))),
+            .any(|e| matches!(e, TerminalEvent::GraphicsAdded { .. })),
         "no GraphicsAdded for a rejected graphic"
     );
     assert_eq!(
@@ -585,4 +593,56 @@ fn short_payload_for_declared_dims_is_silently_rejected() {
         (0, 0),
         "a rejected graphic never moves the cursor"
     );
+}
+
+/// Muxus patch: a program that animates one image by editing its root frame, as kitty-doom
+/// does (`a=T` sized in cells with `C=1`, then `a=f,r=1` and `a=a,c=1` for every frame, all
+/// sent in chunks), keeps one placement at home with its cell size, and the cursor stays.
+#[test]
+fn root_frame_edits_repaint_the_placement_in_place() {
+    const ST: &str = "\x1b\\";
+    let mut term = Terminal::new(80, 24);
+    term.set_cell_dimensions(10, 20);
+    // A 4×2 RGB image is 24 bytes, 32 base64 characters: two chunks of 12 bytes each.
+    let chunks = |value: u8| {
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [value; 24]);
+        (b64[..16].to_string(), b64[16..].to_string())
+    };
+    let (first, rest) = chunks(1);
+    term.process(b"\x1b[2J\x1b[H");
+    term.process(
+        format!("\x1b_Ga=T,i=9,f=24,s=4,v=2,q=2,c=80,r=24,C=1,m=1;{first}{ST}\x1b_Gm=0;{rest}{ST}")
+            .as_bytes(),
+    );
+    let placed = term.graphics.graphics_store.all_graphics()[0].id;
+
+    for value in 2..=4u8 {
+        let (first, rest) = chunks(value);
+        term.process(
+            format!(
+                "\x1b_Ga=f,r=1,i=9,f=24,q=2,x=0,y=0,s=4,v=2,m=1;{first}{ST}\
+                 \x1b_Ga=f,r=1,q=2,m=0;{rest}{ST}\x1b_Ga=a,q=2,c=1,i=9;{ST}"
+            )
+            .as_bytes(),
+        );
+        let graphics = term.graphics.graphics_store.all_graphics();
+        assert_eq!(graphics.len(), 1, "frame {value}: still one placement");
+        let graphic = &graphics[0];
+        assert_eq!(graphic.id, placed);
+        assert_eq!(graphic.position, (0, 0));
+        assert_eq!(
+            (graphic.placement.columns, graphic.placement.rows),
+            (Some(80), Some(24))
+        );
+        assert!(
+            graphic
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [value, value, value, 255]),
+            "frame {value} shows"
+        );
+        assert_eq!((term.cursor().col, term.cursor().row), (0, 0));
+    }
 }

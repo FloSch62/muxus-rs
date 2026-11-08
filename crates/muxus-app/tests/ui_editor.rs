@@ -99,3 +99,54 @@ fn the_open_file_takes_the_keyboard_once_not_on_every_sync(cx: &mut TestAppConte
     assert!(editor_focused(cx));
     let _ = window.update(cx, |scene, _, cx| scene.editor.focus_handle(cx));
 }
+
+/// A script with a syntax error: the parse the editor highlights with marks it (once the
+/// editor has parsed the newly loaded text), F8 opens the marker widget on it with the
+/// cursor there, Shift+F8 stays on the only problem and Escape closes the widget.
+#[gpui::test]
+fn f8_opens_the_problem_widget_on_a_syntax_error(cx: &mut TestAppContext) {
+    let fx = Fixture::start(|root| {
+        std::fs::write(root.join("app.js"), "const a = 1;\nfoo(1, 2;\nbar();\n").unwrap();
+    });
+    allow_backend_threads(cx);
+    cx.update(|cx| {
+        init_ui(&fx.backend, cx);
+    });
+    let conn = fx.conn_id.clone();
+    let window = cx.add_window(|window, cx| {
+        let mut options = RemoteEditorOptions::new("tab-1", EditorSource::Sftp(Some(conn)));
+        options.paths = vec!["/app.js".into()];
+        options.active_path = Some("/app.js".into());
+        options.active = true;
+        let editor = cx.new(|cx| RemoteEditorWorkspace::new(options, window, cx));
+        Scene {
+            editor,
+            elsewhere: cx.focus_handle(),
+        }
+    });
+    let problems = |cx: &mut TestAppContext| {
+        window
+            .update(cx, |scene, _, cx| scene.editor.read(cx).problems())
+            .unwrap()
+    };
+    wait_until(
+        cx,
+        Duration::from_secs(20),
+        "the file to load and its syntax error to be found",
+        |cx| problems(cx).is_some_and(|(counts, _)| counts == (1, 0)),
+    );
+    cx.simulate_keystrokes(window.into(), "f8");
+    settle(cx, Duration::from_millis(20));
+    // `')' expected.` marks the `;` that came instead (offset 21).
+    assert_eq!(problems(cx).unwrap().1, Some((1, 21)));
+    let cursor = window
+        .update(cx, |scene, _, cx| scene.editor.read(cx).cursor_offset(cx))
+        .unwrap();
+    assert_eq!(cursor, Some(21));
+    cx.simulate_keystrokes(window.into(), "shift-f8");
+    settle(cx, Duration::from_millis(20));
+    assert_eq!(problems(cx).unwrap().1, Some((1, 21)));
+    cx.simulate_keystrokes(window.into(), "escape");
+    settle(cx, Duration::from_millis(20));
+    assert_eq!(problems(cx).unwrap().1, None);
+}

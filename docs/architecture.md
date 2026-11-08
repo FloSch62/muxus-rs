@@ -7,8 +7,12 @@ TypeScript disagree, the TypeScript wins.
 
 ## Stack
 
-- **UI:** [GPUI](https://www.gpui.rs) through `gpui-component` (pinned: `gpui-component = "=0.7.3"`,
-  which pins `gpui = { package = "gpui-pre", version = "=0.3.9" }`). No webview.
+- **UI:** [GPUI](https://www.gpui.rs) through `gpui-component` (pinned: `gpui-kit = "=0.9.0"`,
+  the facade over `gpui-component` and `gpui-base` 0.9.0, which pins
+  `gpui = { package = "gpui-pre", version = "=0.3.11" }`; the code editors' `tree-sitter`
+  follows gpui-component's, 0.26). No webview in the app's windows. Saved web pages, and lab
+  topologies in the containerlab viewer, open in windows of their own: `muxus --web-window`
+  processes running wry (WebKitGTK 4.1 on Linux) behind the `webview` feature (`muxus-webview`).
 - **Async backend:** tokio, owned by `muxus-session`. The UI never blocks on I/O. It talks to the
   backend through executor-agnostic channels (`async-channel`), so GPUI's executor and tokio never need
   to share a runtime.
@@ -26,10 +30,10 @@ A crate may depend only on crates in lower layers. `cargo xtask layering` enforc
 |---|---|---|
 | L0 | `muxus-core` | `shared/src` |
 | L1 | `muxus-store` | `server/src/persistence`, `server/src/security` (secret storage), settings/prefs |
-| L2 | `muxus-ssh`, `muxus-local`, `muxus-telnet`, `muxus-serial`, `muxus-rdp`, `muxus-vnc`, `muxus-mgmt`, `muxus-import`, `muxus-term` | `server/src/{ssh,forwards,x11,local,telnet,serial,remote-desktop,management}`, client import modules, `client/src/terminal` |
+| L2 | `muxus-ssh`, `muxus-local`, `muxus-telnet`, `muxus-serial`, `muxus-rdp`, `muxus-vnc`, `muxus-mgmt`, `muxus-import`, `muxus-term`, `muxus-os` | `server/src/{ssh,forwards,x11,local,telnet,serial,remote-desktop,management}`, client import modules, `client/src/terminal`; `muxus-os`: the Windows/macOS calls Node and Electron made (`os.cpus()`, `app.setJumpList`) |
 | L3 | `muxus-session` | `server/src/{ws,routes,session-logging,login-sequence,diagnostics,stats}` |
 | L4 | `muxus-ui` | `client/src/theme.ts`, the shared MUI look |
-| L5 | `muxus-term-view` | `client/src/components/TerminalViewImpl.tsx` and its addons |
+| L5 | `muxus-term-view`, `muxus-webview` | `client/src/components/TerminalViewImpl.tsx` and its addons; `electron/src/web-windows.ts` |
 | L6 | `muxus-app` | `client/src` components and state, `electron/src` |
 
 L2 crates depend on `muxus-core` only. Terminal transports speak the byte-stream contract in
@@ -90,9 +94,23 @@ active tab is not bolded.
 
 ```bash
 cargo run                       # the app (default member: muxus-app)
+cargo run -p muxus-app --features webview  # with web page windows (needs libwebkit2gtk-4.1-dev)
 cargo test -p muxus-ssh         # one crate
 cargo xtask ci                  # fmt, clippy, tests, layering, style
 ```
+
+The Linux packages build with `--features webview`, and Windows builds always have it (WebView2 comes
+with Windows); without it saved web pages open in the system
+browser, lab topologies are drawn natively, and nothing needs WebKitGTK.
+
+## Checking Windows and macOS code from Linux
+
+`hack/cross-check.sh` runs clippy for `x86_64-pc-windows-gnu` and `x86_64-apple-darwin` (rustup
+targets, no C toolchain) on every crate without a C build step, and on `hack/cross-check`, which
+compiles the platform modules of the other crates on their own. Crates that build C (SQLite, zstd,
+ring, aws-lc, libz, tree-sitter, GPUI's shaders) cannot be checked that way, so new Windows or macOS
+code goes into a checkable crate (`muxus-os` holds what has no better home) or into a module the
+harness includes. It proves the code compiles, not that it works: none of it runs here.
 
 `.cargo/config.toml` caps build jobs. Use `CARGO_TARGET_DIR` to give independent builds their own
 target directory.

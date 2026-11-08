@@ -161,6 +161,11 @@ pub fn sanitize_preferences(input: &Map<String, Value>) -> Map<String, Value> {
     );
     keep(
         &mut output,
+        "pasteWarnLookalikes",
+        is_bool(get("pasteWarnLookalikes")),
+    );
+    keep(
+        &mut output,
         "pasteLineDelayMs",
         get("pasteLineDelayMs")
             .is_some_and(|value| valid_paste_delay(value, MAX_PASTE_LINE_DELAY_MS)),
@@ -173,6 +178,8 @@ pub fn sanitize_preferences(input: &Map<String, Value>) -> Map<String, Value> {
     );
     for key in [
         "confirmCloseConnected",
+        "closeTabOnCleanExit",
+        "showProgramStatus",
         "sshSessionSummary",
         "rememberPasswordsByDefault",
     ] {
@@ -203,6 +210,11 @@ pub fn sanitize_preferences(input: &Map<String, Value>) -> Map<String, Value> {
         get("commandButtons").unwrap_or(&Value::Null),
         groups.as_deref().unwrap_or(&fallback_groups),
     );
+    // A shortcut that is not a bindable chord, or that the shell owns, is dropped too.
+    let buttons = buttons.map(|mut buttons| {
+        crate::keymap::command_buttons::keep_bindable_shortcuts(&mut buttons);
+        buttons
+    });
     if let Some(buttons) = buttons
         && let Ok(value) = serde_json::to_value(buttons)
     {

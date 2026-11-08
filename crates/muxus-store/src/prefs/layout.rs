@@ -140,6 +140,27 @@ pub fn clamp_sftp_panel_width(width: f64, container_width: f64) -> f64 {
     MIN_SFTP_PANEL_WIDTH.max(max_sftp_panel_width(container_width).min(js_round(width)))
 }
 
+pub const DEFAULT_ENVIRONMENTS_PANEL_WIDTH: f64 = 460.0;
+pub const MIN_ENVIRONMENTS_PANEL_WIDTH: f64 = 340.0;
+/// Room the containers and VMs panel leaves for the host sidebar beside it
+/// and a usable workspace.
+const ENVIRONMENTS_RESERVED_WIDTH: f64 = 560.0;
+
+/// The panel shares its row with the sidebar and the panes: it may take most of
+/// the window, but never squeeze the panes below their practical minimum.
+pub fn max_environments_panel_width(container_width: f64) -> f64 {
+    MIN_ENVIRONMENTS_PANEL_WIDTH.max(
+        (container_width * 0.75)
+            .min(container_width - ENVIRONMENTS_RESERVED_WIDTH)
+            .floor(),
+    )
+}
+
+pub fn clamp_environments_panel_width(width: f64, container_width: f64) -> f64 {
+    MIN_ENVIRONMENTS_PANEL_WIDTH
+        .max(max_environments_panel_width(container_width).min(js_round(width)))
+}
+
 /// `Math.round`: halves round up, toward positive infinity.
 pub fn js_round(value: f64) -> f64 {
     (value + 0.5).floor()

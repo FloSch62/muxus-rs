@@ -296,7 +296,7 @@ mod tests {
 
     use super::*;
 
-    fn stroke(text: &str) -> Keystroke {
+    fn stroke(text: &'static str) -> Keystroke {
         Keystroke::parse(text).unwrap()
     }
 

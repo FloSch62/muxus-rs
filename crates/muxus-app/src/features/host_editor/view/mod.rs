@@ -4,12 +4,18 @@
 
 mod desktop;
 pub mod form;
+mod gateway_route;
 mod management;
 mod native;
+mod range;
+mod route_fallbacks;
+pub mod session_input;
 pub mod shared;
 mod ssh;
 pub mod ssh_access;
+mod system_openssh;
 mod terminal;
+mod web;
 
 pub use terminal::{custom_schemes, scheme_select, terminal_color_defaults};
 
@@ -34,8 +40,8 @@ use super::logic::desktop_draft::{
     desktop_draft_problem,
 };
 use super::logic::draft::{
-    HostDraft, Storage, blank_draft, draft_from_entry, draft_from_saved_ssh_profile, draft_problem,
-    identity_agent_for_detection,
+    EnvironmentDiscoveryDraft, HostDraft, Storage, blank_draft, draft_from_entry,
+    draft_from_saved_ssh_profile, identity_agent_for_detection,
 };
 use super::logic::forwards::ForwardRuleDraft;
 use super::logic::management_draft::{
@@ -47,6 +53,9 @@ use super::logic::native_draft::{
     native_draft_problem,
 };
 use super::logic::session_logging::{HostSessionLoggingDraft, host_session_logging_draft};
+use super::logic::web_draft::{
+    WebHostDraft, blank_web_draft, web_draft_from_profile, web_draft_problem,
+};
 use super::services::{self, ConnectTarget, EditorData};
 use super::widgets::inputs::{InputCache, Menus};
 use super::widgets::shell::{SectionTab, ShellProps, confirm_paper, editor_shell};
@@ -69,8 +78,13 @@ pub struct NewHost {
     pub prefill_target: Option<String>,
     /// Name for the new host, e.g. when adding a gNMI host for an SSH one.
     pub prefill_name: Option<String>,
+    /// The SSH gateway a new gNMI or NETCONF host is reached through, carried over from the
+    /// SSH host's jump host.
+    pub prefill_gateway: Option<muxus_core::protocol::SshGateway>,
     pub group: Option<String>,
     pub kind: Option<SavedHostKind>,
+    /// A new SSH host already filled in, e.g. a container found on a host.
+    pub draft: Option<Box<HostDraft>>,
 }
 
 /// What the editor tells its owner.
@@ -153,6 +167,7 @@ pub struct HostEditor {
     pub(super) native: NativeHostDraft,
     pub(super) desktop: DesktopHostDraft,
     pub(super) management: ManagementHostDraft,
+    pub(super) web: WebHostDraft,
     pub(super) section: Section,
     pub(super) data: EditorData,
     pub(super) data_loaded: bool,
@@ -170,6 +185,8 @@ pub struct HostEditor {
     /// `savedProfile.current`: the profile this dialog saved, so a second save updates it.
     saved_profile: Option<muxus_core::api::SavedHostProfile>,
     pub(super) busy: bool,
+    /// A range save's progress, while it runs; the dialog stays open meanwhile.
+    pub(super) range_progress: Option<String>,
     delete_pending: bool,
     confirm_delete: bool,
     pub(super) inputs: InputCache,
@@ -279,6 +296,7 @@ impl HostEditor {
             native: NativeHostDraft::default(),
             desktop: DesktopHostDraft::default(),
             management: ManagementHostDraft::default(),
+            web: WebHostDraft::default(),
             section: Section::General,
             data: EditorData::default(),
             data_loaded: false,
@@ -294,6 +312,7 @@ impl HostEditor {
             _preview_task: None,
             saved_profile: None,
             busy: false,
+            range_progress: None,
             delete_pending: false,
             confirm_delete: false,
             inputs: InputCache::default(),
@@ -331,10 +350,17 @@ impl HostEditor {
                 self.native = blank_native_draft(prefill, group);
                 self.desktop = blank_desktop_draft(prefill, group);
                 self.management = blank_management_draft(prefill, group);
+                self.web = blank_web_draft(prefill, group, new.prefill_gateway.clone());
                 if let Some(name) = &new.prefill_name
                     && !name.is_empty()
                 {
                     self.management.name = name.clone();
+                }
+                if new.prefill_gateway.is_some() {
+                    self.management.ssh_gateway = new.prefill_gateway.clone();
+                }
+                if let Some(draft) = &new.draft {
+                    self.ssh = (**draft).clone();
                 }
             }
             HostEditorTarget::Edit(host) | HostEditorTarget::Duplicate(host) => {
@@ -353,6 +379,9 @@ impl HostEditor {
                         }
                         if let Some(draft) = management_draft_from_profile(entry, duplicate) {
                             self.management = draft;
+                        }
+                        if let Some(draft) = web_draft_from_profile(entry, duplicate) {
+                            self.web = draft;
                         }
                     }
                 }
@@ -477,13 +506,13 @@ impl HostEditor {
             return;
         }
         let previous = self.editing_entry().map(|e| e.alias.clone());
-        let request = super::logic::draft::draft_to_request(&self.ssh, previous.as_deref());
+        let draft = self.preview_draft();
+        let request = super::logic::draft::draft_to_request(&draft, previous.as_deref());
         if self.preview_for.as_ref() == Some(&request) {
             return;
         }
         self.preview_for = Some(request);
         let backend = self.backend.clone();
-        let draft = self.ssh.clone();
         self._preview_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(350))
@@ -549,7 +578,7 @@ impl HostEditor {
             return None;
         }
         match self.kind {
-            SavedHostKind::Ssh => draft_problem(&self.ssh),
+            SavedHostKind::Ssh => self.ssh_problem(),
             SavedHostKind::Telnet | SavedHostKind::Serial => {
                 native_draft_problem(&self.native, self.native_kind())
             }
@@ -559,6 +588,7 @@ impl HostEditor {
             SavedHostKind::Gnmi | SavedHostKind::Netconf => {
                 management_draft_problem(&self.management, self.management_kind())
             }
+            SavedHostKind::Web => web_draft_problem(&self.web),
         }
     }
 
@@ -604,17 +634,17 @@ impl HostEditor {
                           font: &Option<String>,
                           bg: &Option<String>,
                           group: &Option<String>,
-                          paste: bool| {
+                          typing: usize| {
             let count = [
                 scheme.is_some(),
                 font.is_some(),
                 bg.is_some(),
                 group.is_some(),
-                paste,
             ]
             .iter()
             .filter(|v| **v)
-            .count();
+            .count()
+                + typing;
             (count > 0).then_some(count)
         };
         let login = |draft: &LoginSequenceDraft| {
@@ -638,7 +668,12 @@ impl HostEditor {
                             &d.terminal_font_color,
                             &d.terminal_background_color,
                             &d.command_button_group,
-                            d.paste_line_delay_ms.is_some() || d.paste_char_delay_ms.is_some(),
+                            session_input::typing_settings_count(
+                                d.paste_line_delay_ms.is_some() || d.paste_char_delay_ms.is_some(),
+                                &d.paste_prompt_wait,
+                                &d.anti_idle,
+                                &d.input_modes,
+                            ),
                         ),
                     ),
                     tab(Section::Auth, "Authentication", "KeyOutlined", None),
@@ -678,7 +713,11 @@ impl HostEditor {
                         Some(
                             d.extras.len()
                                 + usize::from(d.disable_sftp)
-                                + usize::from(d.console_compatibility),
+                                + usize::from(d.console_compatibility)
+                                + usize::from(d.system_open_ssh)
+                                + usize::from(
+                                    d.discover_environments != EnvironmentDiscoveryDraft::Default,
+                                ),
                         ),
                     ),
                 ]
@@ -706,7 +745,12 @@ impl HostEditor {
                             &d.terminal_font_color,
                             &d.terminal_background_color,
                             &d.command_button_group,
-                            d.paste_line_delay_ms.is_some() || d.paste_char_delay_ms.is_some(),
+                            session_input::typing_settings_count(
+                                d.paste_line_delay_ms.is_some() || d.paste_char_delay_ms.is_some(),
+                                &d.paste_prompt_wait,
+                                &d.anti_idle,
+                                &d.input_modes,
+                            ),
                         ),
                     ),
                 ];
@@ -782,6 +826,15 @@ impl HostEditor {
                 }
                 sections
             }
+            SavedHostKind::Web => vec![
+                tab(Section::General, "General", "PublicOutlined", None),
+                tab(
+                    Section::Route,
+                    "Connection route",
+                    "AltRoute",
+                    self.web.ssh_gateway.as_ref().map(|_| 1),
+                ),
+            ],
         }
     }
 
@@ -824,6 +877,7 @@ impl HostEditor {
             SavedHostKind::Telnet | SavedHostKind::Serial => 1,
             SavedHostKind::Rdp | SavedHostKind::Vnc => 2,
             SavedHostKind::Gnmi | SavedHostKind::Netconf => 3,
+            SavedHostKind::Web => 4,
         };
         if family(kind) != family(self.kind) {
             self.section = Section::General;
@@ -834,6 +888,10 @@ impl HostEditor {
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
+        // A range save keeps running after its dialog is gone; keep it open.
+        if self.range_progress.is_some() {
+            return;
+        }
         cx.emit(HostEditorEvent::Close);
     }
 
@@ -850,6 +908,9 @@ impl HostEditor {
     /// Save, then close (and connect with `connect`).
     pub fn save(&mut self, connect: bool, cx: &mut Context<Self>) {
         if self.busy || self.problem().is_some() || self.loading().is_some() {
+            return;
+        }
+        if self.kind == SavedHostKind::Ssh && self.save_range(connect, cx) {
             return;
         }
         self.busy = true;
@@ -892,6 +953,7 @@ impl HostEditor {
                 let native = (self.native.clone(), self.native_kind());
                 let desktop = (self.desktop.clone(), self.desktop_kind());
                 let management = (self.management.clone(), self.management_kind());
+                let web = self.web.clone();
                 let task = cx.spawn(async move |this, cx| {
                     let result = match kind {
                         SavedHostKind::Telnet | SavedHostKind::Serial => {
@@ -911,6 +973,9 @@ impl HostEditor {
                                 existing.as_deref(),
                             )
                             .await
+                        }
+                        SavedHostKind::Web => {
+                            services::save_web_host(&backend, &web, existing.as_deref()).await
                         }
                         _ => {
                             services::save_management_host(
@@ -1027,6 +1092,10 @@ impl HostEditor {
                 Section::Route => self.management_route(window, cx),
                 Section::Options => self.management_options(window, cx),
                 _ => self.management_general(window, cx),
+            },
+            SavedHostKind::Web => match section {
+                Section::Route => self.web_route(window, cx),
+                _ => self.web_general(window, cx),
             },
         }
     }

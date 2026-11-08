@@ -3,12 +3,15 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 use muxus_core::stream::{TerminalSize, TransportChannels, TransportEvent, TransportInput};
+#[cfg(unix)]
+use muxus_local::pty::spawn_local_pty;
 use muxus_local::pty::{
-    LocalEnvironment, local_pty_args, local_shell_prompt_ready, local_startup_input,
-    plan_local_pty, spawn_local_pty,
+    LocalEnvironment, local_pty_args, local_shell_prompt_ready, local_startup_input, plan_local_pty,
 };
 use muxus_local::shell_integration::write_integration_files;
 use muxus_local::{LocalProfile, Platform};
@@ -103,12 +106,46 @@ fn plans_the_environment_of_a_local_shell() {
     assert!(plan.env["ZDOTDIR"].ends_with("shell-integration/zsh"));
 }
 
+/// A container, pod or console session runs its tool directly, without shell integration.
+#[test]
+fn enters_a_container_instead_of_starting_a_shell() {
+    use muxus_core::environments::{ContainerRuntime, ContainerShell, EnvironmentTarget};
+    let home = tempfile::tempdir().unwrap();
+    let mut environment = scratch_environment(home.path());
+    environment
+        .vars
+        .insert("ZDOTDIR".into(), "/home/u/.config/zsh".into());
+    let plan = plan_local_pty(
+        &LocalProfile {
+            shell: Some("/bin/zsh".into()),
+            environment: Some(EnvironmentTarget::Container {
+                runtime: ContainerRuntime::Docker,
+                container: "web".into(),
+                shell: Some(ContainerShell::Sh),
+            }),
+            ..LocalProfile::default()
+        },
+        &environment,
+    );
+    assert_eq!(plan.program, "docker");
+    assert_eq!(
+        plan.args,
+        ["exec", "-it", "-e", "TERM=xterm-256color", "web", "sh"]
+    );
+    assert_eq!(plan.env["TERM"], "xterm-256color");
+    assert!(!plan.env.contains_key("MUXUS_USER_ZDOTDIR"));
+    assert_eq!(plan.env["ZDOTDIR"], "/home/u/.config/zsh");
+}
+
+// The live sessions run on Unix only.
+#[cfg(unix)]
 struct Collected {
     output: String,
     exit: Option<TransportEvent>,
 }
 
 /// Read events until `until` matches the output or the session ends.
+#[cfg(unix)]
 fn collect(
     channels: &TransportChannels,
     until: impl Fn(&str) -> bool,
@@ -141,6 +178,7 @@ fn collect(
     Collected { output, exit: None }
 }
 
+#[cfg(unix)]
 fn size() -> TerminalSize {
     TerminalSize {
         cols: 100,

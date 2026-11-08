@@ -163,33 +163,63 @@ pub struct LocalPtyPlan {
     pub env: HashMap<String, String>,
 }
 
-/// Resolve the shell, arguments, working directory and environment of a local terminal.
-pub fn plan_local_pty(profile: &LocalProfile, environment: &LocalEnvironment) -> LocalPtyPlan {
-    let program = profile
-        .shell
-        .as_deref()
-        .map(str::trim)
-        .filter(|shell| !shell.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| default_shell(&environment.vars, environment.platform));
-    let integration = shell_integration(
-        &program,
-        &environment.vars,
-        environment.integration_root.as_deref(),
-        environment.platform,
-    );
-    let args = local_pty_args(profile, &integration.args);
+/// The environment of a program running in a terminal Muxus owns (`ptyEnvironment`): this
+/// computer's, without the host terminal's own variables, advertising Muxus's terminal.
+pub fn pty_environment(environment: &LocalEnvironment) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = environment
         .vars
         .iter()
         .filter(|(key, _)| !is_host_terminal_env(key))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
+    env.extend(pty_environment_overrides());
+    env
+}
+
+fn pty_environment_overrides() -> [(String, String); 3] {
+    [
+        ("TERM".into(), DEFAULT_TERM.into()),
+        // Muxus renders 24-bit color; advertise it independently of terminfo.
+        ("COLORTERM".into(), "truecolor".into()),
+        ("TERM_PROGRAM".into(), "muxus".into()),
+    ]
+}
+
+/// Resolve the shell, arguments, working directory and environment of a local terminal.
+pub fn plan_local_pty(profile: &LocalProfile, environment: &LocalEnvironment) -> LocalPtyPlan {
+    // A container, pod or console session runs its tool directly, with no
+    // shell integration: the shell it ends up in belongs to the container.
+    let entered = profile
+        .environment
+        .as_ref()
+        .and_then(|target| muxus_core::environments::environment_argv(target).ok());
+    let program = match &entered {
+        Some(argv) => argv[0].clone(),
+        None => profile
+            .shell
+            .as_deref()
+            .map(str::trim)
+            .filter(|shell| !shell.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| default_shell(&environment.vars, environment.platform)),
+    };
+    let integration = match &entered {
+        Some(_) => crate::shell_integration::ShellIntegration::default(),
+        None => shell_integration(
+            &program,
+            &environment.vars,
+            environment.integration_root.as_deref(),
+            environment.platform,
+        ),
+    };
+    let args = match &entered {
+        Some(argv) => argv[1..].to_vec(),
+        None => local_pty_args(profile, &integration.args),
+    };
+    let mut env = pty_environment(environment);
     env.extend(integration.env);
-    env.insert("TERM".into(), DEFAULT_TERM.into());
-    // Muxus renders 24-bit color; advertise it independently of terminfo.
-    env.insert("COLORTERM".into(), "truecolor".into());
-    env.insert("TERM_PROGRAM".into(), "muxus".into());
+    // The terminal's own variables win over anything the integration set.
+    env.extend(pty_environment_overrides());
     let cwd = profile
         .cwd
         .as_deref()
@@ -240,6 +270,24 @@ pub fn spawn_local_pty(
     environment: &LocalEnvironment,
 ) -> io::Result<LocalPty> {
     let plan = plan_local_pty(profile, environment);
+    spawn_pty(
+        plan,
+        size,
+        local_startup_input(profile.startup_command.as_deref()),
+    )
+}
+
+/// Start any program on a new pseudo-terminal, as [`spawn_local_pty`] starts a shell: the
+/// system `ssh` of a host set to use it, for one.
+pub fn spawn_pty_program(plan: LocalPtyPlan, size: TerminalSize) -> io::Result<LocalPty> {
+    spawn_pty(plan, size, None)
+}
+
+fn spawn_pty(
+    plan: LocalPtyPlan,
+    size: TerminalSize,
+    startup_input: Option<String>,
+) -> io::Result<LocalPty> {
     let pair = native_pty_system()
         .openpty(pty_size(size))
         .map_err(io::Error::other)?;
@@ -275,7 +323,7 @@ pub fn spawn_local_pty(
         reader,
         ends.events.clone(),
         write_tx.clone(),
-        local_startup_input(profile.startup_command.as_deref()),
+        startup_input,
         ended.clone(),
         reader_done_tx,
     );

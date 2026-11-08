@@ -6,5 +6,10 @@
 mod ui;
 
 fn main() {
+    // `muxus --web-window`: a saved web page's window, which the app starts as a process of
+    // its own (see muxus_webview).
+    if let Some(code) = muxus_webview::run_if_requested() {
+        std::process::exit(code);
+    }
     ui::run();
 }

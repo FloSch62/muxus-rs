@@ -26,12 +26,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config dpkg-dev desktop-file-utils \
             libfontconfig-dev libfreetype-dev libwayland-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev
+            libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev \
+            libwebkit2gtk-4.1-dev
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       # Every platform's crates: the license list reads `cargo metadata --offline`.
       - run: cargo fetch --locked
-      - run: cargo build --release --locked -p muxus-app
+      # Saved web pages open in Muxus windows (WebKitGTK; the package depends on it).
+      - run: cargo build --release --locked -p muxus-app --features webview
       - run: packaging/build-deb.sh
         env:
           MUXUS_PACKAGE_DIR: dist
@@ -43,7 +45,7 @@ jobs:
 
   dmg:
     name: macOS (.dmg)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
@@ -78,13 +80,18 @@ jobs:
       # Every platform's crates: the license list reads `cargo metadata --offline`.
       - run: cargo fetch --locked
       - run: cargo build --release --locked -p muxus-app
+      # The X server for X11 forwarding, which muxus.exe finds next to it. VcXsrv is GPLv3:
+      # its corresponding source travels with the zip, as the bundled NOTICE.txt promises.
+      - run: cargo xtask vcxsrv
+      - run: cargo xtask vcxsrv --source dist
       - name: Package
         shell: pwsh
         run: |
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"$').Matches[0].Groups[1].Value
           $stage = "dist/Muxus"
           New-Item -ItemType Directory -Force $stage | Out-Null
-          Copy-Item target/release/muxus.exe $stage
+          Copy-Item target/release/muxus.exe, target/release/muxus-hidden-cmd.exe $stage
+          Copy-Item -Recurse vendor/vcxsrv "$stage/vcxsrv"
           Copy-Item packaging/LICENSE, ATTRIBUTION.md $stage
           Get-ChildItem assets/fonts/*-LICENSE.txt, assets/icons/LICENSE-*.txt | Copy-Item -Destination $stage
           python -I -X utf8 packaging/third_party_licenses.py "$stage/THIRD_PARTY_LICENSES.txt" --target x86_64-pc-windows-msvc
@@ -92,5 +99,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: muxus-windows-zip
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/vcxsrv-*-source.tar.gz
           if-no-files-found: error

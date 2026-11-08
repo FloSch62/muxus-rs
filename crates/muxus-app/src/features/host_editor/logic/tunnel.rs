@@ -189,7 +189,7 @@ fn custom_draft(tunnel: Option<&TunnelRecord>, prefill_target: Option<&str>) -> 
             AuthMode::Default
         },
         identity_files: options.identity_files.clone().unwrap_or_default(),
-        identities_only: options.identities_only.unwrap_or(false),
+        identities_only: Some(options.identities_only.unwrap_or(false)),
         forward_agent: options.forward_agent.unwrap_or(false),
         proxy_jump: options.proxy_jump.clone().unwrap_or_default(),
         ..draft
@@ -213,7 +213,7 @@ fn custom_ssh_options(draft: &HostDraft) -> TunnelSshOptions {
                 .filter(|f| !f.is_empty())
                 .collect()
         }),
-        identities_only: (key && draft.identities_only).then_some(true),
+        identities_only: (key && draft.identities_only == Some(true)).then_some(true),
         forward_agent: draft.forward_agent.then_some(true),
         proxy_jump: (!draft.proxy_jump.is_empty()).then(|| draft.proxy_jump.clone()),
         password_only: (draft.auth_mode == AuthMode::Password).then_some(true),

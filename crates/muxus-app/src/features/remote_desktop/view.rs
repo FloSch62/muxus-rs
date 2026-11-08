@@ -23,7 +23,7 @@ use muxus_ui::gpui_kit::{
     Entity, EventEmitter, FocusHandle, Focusable, HitboxBehavior, InteractiveElement, IntoElement,
     KeyDownEvent, KeyUpEvent, ModifiersChangedEvent, MouseButton as GpuiButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, NavigationDirection, ParentElement, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window,
+    ScrollEvent, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window,
     canvas, div, px, relative,
 };
 use muxus_ui::icon::icon;
@@ -395,7 +395,7 @@ impl RemoteDesktopView {
         self.dialed.as_ref().unwrap_or(&self.profile)
     }
 
-    /// The pointer the server last asked for. GPUI 0.3.9 can neither show an image cursor
+    /// The pointer the server last asked for. GPUI 0.3.11 can neither show an image cursor
     /// nor hide the pointer, so the view keeps the system arrow over the desktop.
     pub fn cursor(&self) -> &DesktopCursor {
         &self.cursor
@@ -953,7 +953,7 @@ impl RemoteDesktopView {
         }
     }
 
-    fn on_scroll(&mut self, event: &ScrollWheelEvent) {
+    fn on_scroll(&mut self, event: &ScrollEvent) {
         if self.view_only() {
             return;
         }
@@ -1286,7 +1286,7 @@ impl RemoteDesktopView {
                     }
                 });
                 let target = view.clone();
-                window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
                     if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
                         target.update(cx, |this, _| this.on_scroll(event));
                     }

@@ -12,6 +12,7 @@ fn button(id: &str, label: &str, command: &str, send_enter: bool) -> CommandButt
         group_id: None,
         color: None,
         secret_id: None,
+        shortcut: None,
     }
 }
 

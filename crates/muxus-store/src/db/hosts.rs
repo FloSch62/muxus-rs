@@ -5,13 +5,15 @@
 use std::collections::HashSet;
 
 use muxus_core::api::{
-    HostKeywordHighlightConfig, LoginSequence, ManagedHostRef, OpenSshMetadataPatch,
+    AntiIdle, HostKeywordHighlightConfig, LoginSequence, ManagedHostRef, OpenSshMetadataPatch,
     OpenSshProfileMetadata, SavedHostKind, SavedHostProfile, SavedHostProfileInput,
+    TerminalBackspaceKey, TerminalEnterKey,
 };
 use muxus_core::js::Patch;
 use muxus_core::management::{
     ManagementProtocol, SavedManagementRequest, SavedManagementRequestInput,
 };
+use muxus_core::paste_pacing::PastePromptWaitSetting;
 use muxus_core::protocol::SavedHostSessionProfile;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde_json::{Map, Value};
@@ -20,7 +22,8 @@ use super::{Database, DbError, DbResult, assert_secret_free, optional_string, re
 use crate::ids::nanoid;
 
 /// Kinds stored as Muxus-owned saved hosts (everything but OpenSSH metadata rows).
-const SAVED_HOST_KINDS_SQL: &str = "('ssh', 'serial', 'telnet', 'rdp', 'vnc', 'gnmi', 'netconf')";
+const SAVED_HOST_KINDS_SQL: &str =
+    "('ssh', 'serial', 'telnet', 'rdp', 'vnc', 'gnmi', 'netconf', 'web')";
 
 const METADATA_BY_ALIAS_SQL: &str = "
       SELECT
@@ -38,9 +41,18 @@ const METADATA_BY_ALIAS_SQL: &str = "
         profiles.command_button_group,
         profiles.paste_line_delay_ms,
         profiles.paste_char_delay_ms,
+        profiles.paste_prompt_wait_json,
+        profiles.anti_idle_json,
+        profiles.backspace_key,
+        profiles.enter_key,
+        profiles.implicit_cr,
+        profiles.local_echo,
         profiles.disable_sftp,
         profiles.console_compatibility,
+        profiles.system_openssh,
+        profiles.discover_environments,
         profiles.login_sequence_json,
+        profiles.proxy_jump_fallbacks_json,
         profiles.last_connected_at,
         profiles.connect_count,
         groups.name AS group_name
@@ -77,9 +89,18 @@ struct MetadataRow {
     command_button_group: Option<String>,
     paste_line_delay_ms: Option<i64>,
     paste_char_delay_ms: Option<i64>,
+    paste_prompt_wait_json: Option<String>,
+    anti_idle_json: Option<String>,
+    backspace_key: Option<String>,
+    enter_key: Option<String>,
+    implicit_cr: bool,
+    local_echo: bool,
     disable_sftp: bool,
     console_compatibility: bool,
+    system_openssh: bool,
+    discover_environments: Option<i64>,
     login_sequence_json: Option<String>,
+    proxy_jump_fallbacks_json: Option<String>,
     last_connected_at: Option<String>,
     connect_count: i64,
     group_name: Option<String>,
@@ -101,9 +122,18 @@ fn metadata_row(row: &Row<'_>) -> rusqlite::Result<MetadataRow> {
         command_button_group: row.get("command_button_group")?,
         paste_line_delay_ms: row.get("paste_line_delay_ms")?,
         paste_char_delay_ms: row.get("paste_char_delay_ms")?,
+        paste_prompt_wait_json: row.get("paste_prompt_wait_json")?,
+        anti_idle_json: row.get("anti_idle_json")?,
+        backspace_key: row.get("backspace_key")?,
+        enter_key: row.get("enter_key")?,
+        implicit_cr: row.get::<_, i64>("implicit_cr")? == 1,
+        local_echo: row.get::<_, i64>("local_echo")? == 1,
         disable_sftp: row.get::<_, i64>("disable_sftp")? == 1,
         console_compatibility: row.get::<_, i64>("console_compatibility")? == 1,
+        system_openssh: row.get::<_, i64>("system_openssh")? == 1,
+        discover_environments: row.get("discover_environments")?,
         login_sequence_json: row.get("login_sequence_json")?,
+        proxy_jump_fallbacks_json: row.get("proxy_jump_fallbacks_json")?,
         last_connected_at: row.get("last_connected_at")?,
         connect_count: row.get("connect_count")?,
         group_name: row.get("group_name")?,
@@ -111,8 +141,10 @@ fn metadata_row(row: &Row<'_>) -> rusqlite::Result<MetadataRow> {
 }
 
 impl MetadataRow {
-    /// `metadataFromRow` (with a display name) / the metadata of `savedHostFromRow`.
-    fn metadata(&self, with_display_name: bool) -> OpenSshProfileMetadata {
+    /// `metadataFromRow` (an OpenSSH alias: with a display name and fallback
+    /// jump routes) / the metadata of `savedHostFromRow`.
+    fn metadata(&self, open_ssh: bool) -> OpenSshProfileMetadata {
+        let with_display_name = open_ssh;
         OpenSshProfileMetadata {
             profile_id: self.id.clone(),
             sort_order: self.sort_order,
@@ -137,12 +169,115 @@ impl MetadataRow {
             paste_char_delay_ms: self
                 .paste_char_delay_ms
                 .map(|value| value.clamp(0, i64::from(u32::MAX)) as u32),
+            paste_prompt_wait: paste_prompt_wait_from_json(self.paste_prompt_wait_json.as_deref()),
+            anti_idle: anti_idle_from_json(self.anti_idle_json.as_deref()),
+            backspace_key: self.backspace_key(),
+            enter_key: self.enter_key(),
+            implicit_cr: self.implicit_cr.then_some(true),
+            local_echo: self.local_echo.then_some(true),
             disable_sftp: self.disable_sftp.then_some(true),
             console_compatibility: self.console_compatibility.then_some(true),
+            system_open_ssh: self.system_openssh.then_some(true),
+            // NULL follows the global setting and is left out.
+            discover_environments: self.discover_environments.map(|value| value == 1),
             login_sequence: login_sequence_from_json(self.login_sequence_json.as_deref()),
+            proxy_jump_fallbacks: if open_ssh {
+                jump_fallbacks_from_json(self.proxy_jump_fallbacks_json.as_deref())
+            } else {
+                None
+            },
             last_connected_at: optional_string(self.last_connected_at.clone()),
             connect_count: self.connect_count.max(0) as u64,
         }
+    }
+}
+
+impl MetadataRow {
+    /// Stored keys were validated when written; anything else keeps what xterm.js does.
+    fn backspace_key(&self) -> Option<TerminalBackspaceKey> {
+        self.backspace_key
+            .as_deref()
+            .and_then(TerminalBackspaceKey::parse)
+    }
+
+    fn enter_key(&self) -> Option<TerminalEnterKey> {
+        self.enter_key.as_deref().and_then(TerminalEnterKey::parse)
+    }
+}
+
+/// Stored settings were validated when written; a field of another type uses
+/// the default. A timeout that is not a whole number of milliseconds is left
+/// out as well (the TypeScript keeps any number; only whole ones are written).
+fn paste_prompt_wait_from_json(value: Option<&str>) -> Option<PastePromptWaitSetting> {
+    let parsed: Value = serde_json::from_str(value?).ok()?;
+    let object = parsed.as_object()?;
+    let text = |key: &str| object.get(key).and_then(Value::as_str).map(str::to_owned);
+    Some(PastePromptWaitSetting {
+        prompt_pattern: text("promptPattern"),
+        timeout_ms: object
+            .get("timeoutMs")
+            .and_then(Value::as_u64)
+            .and_then(|ms| u32::try_from(ms).ok()),
+        error_pattern: text("errorPattern"),
+    })
+}
+
+/// Stored settings were validated when written; anything unreadable counts as off.
+fn anti_idle_from_json(value: Option<&str>) -> Option<AntiIdle> {
+    let parsed: Value = serde_json::from_str(value?).ok()?;
+    let object = parsed.as_object()?;
+    Some(AntiIdle {
+        interval_seconds: object
+            .get("intervalSeconds")
+            .and_then(Value::as_u64)
+            .and_then(|seconds| u32::try_from(seconds).ok())?,
+        text: object.get("text").and_then(Value::as_str)?.to_owned(),
+        enter: object.get("enter").and_then(Value::as_bool)?,
+    })
+}
+
+/// Fallback jump routes: the routes that are non-empty lists of non-empty
+/// names; none at all reads as unset.
+fn jump_fallbacks_from_json(value: Option<&str>) -> Option<Vec<Vec<String>>> {
+    let parsed: Value = serde_json::from_str(value?).ok()?;
+    let routes: Vec<Vec<String>> = parsed
+        .as_array()?
+        .iter()
+        .filter_map(|route| {
+            let hops = route.as_array()?;
+            if hops.is_empty() {
+                return None;
+            }
+            hops.iter()
+                .map(|hop| {
+                    hop.as_str()
+                        .filter(|hop| !hop.is_empty())
+                        .map(str::to_owned)
+                })
+                .collect::<Option<Vec<String>>>()
+        })
+        .collect();
+    (!routes.is_empty()).then_some(routes)
+}
+
+/// A JSON column a patch sets, clears or keeps.
+fn json_column<T: serde::Serialize>(
+    patch: &Patch<T>,
+    current: Option<String>,
+) -> DbResult<Option<String>> {
+    Ok(match patch {
+        Patch::Keep => current,
+        Patch::Clear => None,
+        Patch::Set(value) => Some(serde_json::to_string(value)?),
+    })
+}
+
+/// A 0/1 flag a patch sets or keeps; `null` is off.
+fn flag_column(patch: &Patch<bool>, current: bool) -> bool {
+    match patch {
+        Patch::Keep => current,
+        Patch::Clear => false,
+        Patch::Set(value) => *value,
     }
 }
 
@@ -313,12 +448,15 @@ fn group_id_for_name(conn: &Connection, name: Option<&str>) -> DbResult<Option<S
     Ok(Some(id))
 }
 
-/// Write every metadata column of one row from a patch over its current values.
+/// Write every metadata column of one row from a patch over its current
+/// values. Fallback jump routes are only written for OpenSSH aliases; a saved
+/// host keeps them in its profile.
 fn apply_metadata_patch(
     conn: &Connection,
     current: &MetadataRow,
     name: &str,
     patch: &OpenSshMetadataPatch,
+    open_ssh: bool,
 ) -> DbResult<()> {
     let group_id = match &patch.group {
         Patch::Keep => current.group_id.clone(),
@@ -344,9 +482,18 @@ fn apply_metadata_patch(
             command_button_group = ?,
             paste_line_delay_ms = ?,
             paste_char_delay_ms = ?,
+            paste_prompt_wait_json = ?,
+            anti_idle_json = ?,
+            backspace_key = ?,
+            enter_key = ?,
+            implicit_cr = ?,
+            local_echo = ?,
             disable_sftp = ?,
             console_compatibility = ?,
+            system_openssh = ?,
+            discover_environments = ?,
             login_sequence_json = ?,
+            proxy_jump_fallbacks_json = ?,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       ",
@@ -379,11 +526,42 @@ fn apply_metadata_patch(
                 Patch::Clear => None,
                 Patch::Set(value) => Some(i64::from(value)),
             },
+            json_column(
+                &patch.paste_prompt_wait,
+                current.paste_prompt_wait_json.clone()
+            )?,
+            json_column(&patch.anti_idle, current.anti_idle_json.clone())?,
+            match patch.backspace_key {
+                Patch::Keep => current.backspace_key.clone(),
+                Patch::Clear => None,
+                Patch::Set(key) => Some(key.as_str().to_owned()),
+            },
+            match patch.enter_key {
+                Patch::Keep => current.enter_key.clone(),
+                Patch::Clear => None,
+                Patch::Set(key) => Some(key.as_str().to_owned()),
+            },
+            flag_column(&patch.implicit_cr, current.implicit_cr),
+            flag_column(&patch.local_echo, current.local_echo),
             patch.disable_sftp.unwrap_or(current.disable_sftp),
             patch
                 .console_compatibility
                 .unwrap_or(current.console_compatibility),
+            patch.system_open_ssh.unwrap_or(current.system_openssh),
+            match patch.discover_environments {
+                Patch::Keep => current.discover_environments,
+                Patch::Clear => None,
+                Patch::Set(value) => Some(i64::from(value)),
+            },
             login_sequence_column(&patch.login_sequence, current.login_sequence_json.clone())?,
+            match &patch.proxy_jump_fallbacks {
+                // Null or an empty list removes them.
+                Patch::Set(routes) if open_ssh && !routes.is_empty() => {
+                    Some(serde_json::to_string(routes)?)
+                }
+                Patch::Set(_) | Patch::Clear if open_ssh => None,
+                _ => current.proxy_jump_fallbacks_json.clone(),
+            },
             current.id,
         ],
     )?;
@@ -520,6 +698,53 @@ impl Database {
         self.saved_ssh_flag(id, "console_compatibility")
     }
 
+    /// Whether this OpenSSH alias connects through the computer's `ssh` program.
+    pub fn system_open_ssh_for_alias(&self, alias: &str) -> DbResult<bool> {
+        Ok(metadata_by_alias(&self.lock(), alias)?.is_some_and(|row| row.system_openssh))
+    }
+
+    /// Whether one Muxus-owned host connects through the computer's `ssh` program.
+    pub fn system_open_ssh_for_saved_host(&self, id: &str) -> DbResult<bool> {
+        self.saved_ssh_flag(id, "system_openssh")
+    }
+
+    /// Jump routes to try, in order, when this OpenSSH alias's ProxyJump fails.
+    pub fn jump_fallbacks_for_alias(&self, alias: &str) -> DbResult<Vec<Vec<String>>> {
+        Ok(metadata_by_alias(&self.lock(), alias)?
+            .and_then(|row| jump_fallbacks_from_json(row.proxy_jump_fallbacks_json.as_deref()))
+            .unwrap_or_default())
+    }
+
+    /// The row of an OpenSSH alias or a Muxus-owned host, for per-host settings.
+    fn host_row(&self, host: HostRef<'_>) -> DbResult<Option<MetadataRow>> {
+        let conn = self.lock();
+        match host {
+            HostRef::Alias(alias) => metadata_by_alias(&conn, alias),
+            HostRef::ProfileId(id) => Ok(conn
+                .query_row(&saved_host_sql("profiles.id = ?"), [id], metadata_row)
+                .optional()?),
+        }
+    }
+
+    /// What an OpenSSH alias or a Muxus-owned host types into its idle sessions, if anything.
+    pub fn host_anti_idle(&self, host: HostRef<'_>) -> DbResult<Option<AntiIdle>> {
+        Ok(self
+            .host_row(host)?
+            .and_then(|row| anti_idle_from_json(row.anti_idle_json.as_deref())))
+    }
+
+    /// What Backspace and Enter send on an OpenSSH alias or a Muxus-owned
+    /// host, where it sets them (`hostInputKeys`).
+    pub fn host_input_keys(
+        &self,
+        host: HostRef<'_>,
+    ) -> DbResult<(Option<TerminalBackspaceKey>, Option<TerminalEnterKey>)> {
+        Ok(self
+            .host_row(host)?
+            .map(|row| (row.backspace_key(), row.enter_key()))
+            .unwrap_or_default())
+    }
+
     fn saved_ssh_flag(&self, id: &str, column: &str) -> DbResult<bool> {
         let value: Option<i64> = self
             .lock()
@@ -553,7 +778,7 @@ impl Database {
                 }
             }
         };
-        apply_metadata_patch(&conn, &current, &display_name, patch)?;
+        apply_metadata_patch(&conn, &current, &display_name, patch, true)?;
         let row = metadata_by_alias(&conn, alias)?
             .ok_or_else(|| DbError::NotFound("OpenSSH profile not found".into()))?;
         Ok(row.metadata(true))
@@ -827,7 +1052,7 @@ impl Database {
                     }
                 }
             };
-            apply_metadata_patch(&conn, &current, &name, patch)?;
+            apply_metadata_patch(&conn, &current, &name, patch, false)?;
         }
         self.saved_host_profile(id)?
             .ok_or_else(|| DbError::NotFound("saved host not found".into()))

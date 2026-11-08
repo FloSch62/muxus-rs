@@ -17,29 +17,39 @@ use muxus_store::prefs::command_buttons::{
     without_command_button_group,
 };
 use muxus_store::prefs::state::CommandBarPosition;
-use muxus_ui::gpui_kit::base::input::{InputEvent, InputState};
+use muxus_ui::gpui_kit::base::input::{InputEvent, InputState, Textarea, TextareaState};
 use muxus_ui::gpui_kit::{
     AnyElement, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, ScrollHandle,
     StatefulInteractiveElement, Styled, Subscription, Window, div, px,
 };
 use muxus_ui::icon::{SMALL, icon};
+use muxus_ui::theme::Status;
 use muxus_ui::theme::{ActiveTheme, TextVariant, Theme};
 use muxus_ui::widgets::dialog::{dialog_actions, dialog_paper, dialog_title, modal};
 use muxus_ui::widgets::form_control::{FormControl, FormControlLabel, label_with_caption};
+use muxus_ui::widgets::form_field::{FieldBody, FormField};
 use muxus_ui::widgets::menu::{self, MenuItem, popover_paper};
 use muxus_ui::widgets::tabs::{self, Tab};
 use muxus_ui::widgets::toggle_button::{ToggleButton, ToggleButtonGroup};
 use muxus_ui::widgets::tooltip::{AnchorBounds, Placement, Tooltip, bounds_probe};
-use muxus_ui::widgets::{Button, ButtonColor, IconButton, Select, TextField};
+use muxus_ui::widgets::{Alert, Button, ButtonColor, Chip, IconButton, Select, TextField};
 
 use super::model::{CommandButtons, prefs, update_prefs};
 use super::palette::command_button_ink;
 use crate::features::launcher::kit::{AskAnswer, AskDialog, AskRequest, text};
 use crate::features::settings::vault_secrets::vault_secret_missing;
+use crate::features::settings::view::appearance::keybinding_overrides;
+use crate::features::settings::view::fields::style_textarea;
+use crate::features::settings::view::shortcuts::set_chord_capture;
 use crate::features::vault::secret_dialog::{
     VaultSecretDialog, VaultSecretEvent, open_vault_secret_dialog,
 };
+use crate::keymap::chords::{
+    chord_from_event, chord_to_string, format_chord_string, is_bindable_chord, is_modifier_code,
+};
+use crate::keymap::command_buttons::{command_button_shortcut_conflict, shell_owns};
+use crate::keymap::keystroke::chord_event;
 
 /// What the editor asks the window to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,6 +77,8 @@ pub struct CommandButtonsDialog {
     model: Entity<CommandButtons>,
     selected_group: String,
     inputs: HashMap<String, Entity<InputState>>,
+    /// Multi-line fields (a card's Command), by the same keys as `inputs`.
+    textareas: HashMap<String, Entity<TextareaState>>,
     anchors: HashMap<String, AnchorBounds>,
     popup: Option<Popup>,
     ask: Option<(Entity<AskDialog>, Pending)>,
@@ -74,6 +86,10 @@ pub struct CommandButtonsDialog {
     scroll: ScrollHandle,
     focus: FocusHandle,
     subscriptions: Vec<Subscription>,
+    /// The button whose shortcut is being recorded; one card at a time.
+    recording_shortcut: Option<String>,
+    /// Why the last chord pressed was refused, while recording.
+    shortcut_problem: Option<String>,
 }
 
 impl EventEmitter<CommandButtonsEvent> for CommandButtonsDialog {}
@@ -155,6 +171,7 @@ impl CommandButtonsDialog {
             model,
             selected_group,
             inputs: HashMap::new(),
+            textareas: HashMap::new(),
             anchors: HashMap::new(),
             popup: None,
             ask: None,
@@ -162,11 +179,73 @@ impl CommandButtonsDialog {
             scroll: ScrollHandle::new(),
             focus,
             subscriptions,
+            recording_shortcut: None,
+            shortcut_problem: None,
         }
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
+        self.stop_recording_shortcut(cx);
         cx.emit(CommandButtonsEvent::Close);
+    }
+
+    fn record_shortcut(&mut self, button_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.shortcut_problem = None;
+        self.recording_shortcut = Some(button_id.to_string());
+        set_chord_capture(true, cx);
+        // Keys go to the dialog itself while it records, not to a field.
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    fn stop_recording_shortcut(&mut self, cx: &mut Context<Self>) {
+        if self.recording_shortcut.take().is_some() {
+            set_chord_capture(false, cx);
+        }
+        self.shortcut_problem = None;
+        cx.notify();
+    }
+
+    /// A key while a shortcut is recorded (`useChordCapture`): Esc cancels, a chord that is
+    /// not bindable, belongs to the shell or is already in use is refused, any other is saved.
+    fn capture_shortcut(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let Some(button_id) = self.recording_shortcut.clone() else {
+            return;
+        };
+        cx.stop_propagation();
+        let Some(pressed) = chord_event(&event.keystroke) else {
+            return;
+        };
+        if is_modifier_code(&pressed.code) {
+            return;
+        }
+        if pressed.code == "Escape" {
+            self.stop_recording_shortcut(cx);
+            return;
+        }
+        let chord = chord_from_event(&pressed);
+        if !is_bindable_chord(&chord) {
+            self.shortcut_problem = Some(
+                "Add Ctrl, Alt, or Cmd \u{2014} Shift alone would swallow ordinary typing.".into(),
+            );
+            cx.notify();
+            return;
+        }
+        let shortcut = chord_to_string(&chord);
+        let prefs = prefs(cx);
+        let keybindings = keybinding_overrides(&prefs);
+        if let Some(conflict) = command_button_shortcut_conflict(
+            &shortcut,
+            &button_id,
+            &keybindings,
+            &prefs.command_buttons,
+        ) {
+            self.shortcut_problem = Some(conflict);
+            cx.notify();
+            return;
+        }
+        Self::update_button(&button_id, cx, |button| button.shortcut = Some(shortcut));
+        self.stop_recording_shortcut(cx);
     }
 
     fn anchor(&mut self, key: &str) -> AnchorBounds {
@@ -201,6 +280,41 @@ impl CommandButtonsDialog {
             }),
         );
         self.inputs.insert(key, input.clone());
+        input
+    }
+
+    /// A multi-line field for `key` that grows from one row to three and scrolls after
+    /// (`multiline maxRows={3}`), created with `value` the first time.
+    fn textarea(
+        &mut self,
+        key: String,
+        value: &str,
+        placeholder: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        apply: impl Fn(&str, &mut App) + 'static,
+    ) -> Entity<TextareaState> {
+        if let Some(input) = self.textareas.get(&key) {
+            return input.clone();
+        }
+        let value = value.to_owned();
+        let placeholder = placeholder.to_owned();
+        let input = cx.new(|cx| {
+            let mut state = TextareaState::new(window, cx)
+                .auto_grow(1, 3)
+                .placeholder(placeholder);
+            state.set_value(value, window, cx);
+            state
+        });
+        self.subscriptions.push(
+            cx.subscribe(&input, move |_, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let value = input.read(cx).value().to_string();
+                    apply(&value, cx);
+                }
+            }),
+        );
+        self.textareas.insert(key, input.clone());
         input
     }
 
@@ -262,6 +376,7 @@ impl CommandButtonsDialog {
             group_id: (!is_default).then(|| self.selected_group.clone()),
             color: None,
             secret_id: None,
+            shortcut: None,
         };
         let key = format!("label:{}", created.id);
         Self::set_buttons(cx, |buttons, _| buttons.push(created));
@@ -401,6 +516,10 @@ impl CommandButtonsDialog {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.recording_shortcut.is_some() {
+            self.capture_shortcut(event, cx);
+            return;
+        }
         if event.keystroke.key == "escape" && self.ask.is_none() && self.adding_secret.is_none() {
             cx.stop_propagation();
             if self.popup.take().is_some() {
@@ -807,9 +926,11 @@ impl CommandButtonsDialog {
                 .into_any_element()
         } else {
             let command_id = id.clone();
-            let command_input = self.input(
+            // `multiline maxRows={3}`: one row that grows to three, then scrolls.
+            let command_input = self.textarea(
                 format!("command:{id}"),
                 &button.command,
+                "systemctl status nginx",
                 window,
                 cx,
                 move |value, cx| {
@@ -817,23 +938,112 @@ impl CommandButtonsDialog {
                     Self::update_button(&command_id, cx, |button| button.command = value);
                 },
             );
+            style_textarea(&command_input, theme, cx);
+            let focus = command_input.read(cx).focus_handle(cx);
             div()
                 .flex_1()
                 .min_w_0()
                 .child(
-                    TextField::new(("command-text", index), &command_input)
-                        .label("Command")
-                        .placeholder("systemctl status nginx")
-                        .full_width(),
+                    FormField::new(
+                        ("command-text", index),
+                        FieldBody::Element(Textarea::new(&command_input).into_any_element()),
+                    )
+                    .multiline()
+                    .element_focus(focus)
+                    .label("Command")
+                    .shrink(true)
+                    .keep_placeholder(),
                 )
                 .into_any_element()
         };
 
         let weak = cx.entity().downgrade();
         let (up, down, copy, delete) = (id.clone(), id.clone(), id.clone(), button.clone());
+        let recording = self.recording_shortcut.as_deref() == Some(id.as_str());
+        // Saved by an earlier build or a hand edit; the dispatcher skips it.
+        let shell_shortcut = button
+            .shortcut
+            .as_deref()
+            .filter(|shortcut| !recording && shell_owns(shortcut));
+        let shortcut_control: AnyElement = if button.shortcut.is_some() || recording {
+            let record = weak.clone();
+            let record_id = id.clone();
+            let mut chip = Chip::new(match button.shortcut.as_deref() {
+                Some(shortcut) if !recording => format_chord_string(shortcut),
+                _ => "Press keys\u{2026}".to_string(),
+            })
+            .outlined()
+            .mono()
+            .height(24.)
+            .on_click(("command-shortcut", index), move |_, window, cx| {
+                let id = record_id.clone();
+                let _ = record.update(cx, |this, cx| this.record_shortcut(&id, window, cx));
+            })
+            .tooltip(
+                ("command-shortcut", index),
+                if recording {
+                    "Press the new shortcut"
+                } else {
+                    "Change the shortcut"
+                },
+            );
+            if recording {
+                chip = chip.color(p.primary.main);
+            } else if shell_shortcut.is_some() {
+                chip = chip.palette(p.warning);
+            }
+            if button.shortcut.is_some() && !recording {
+                let clear_id = id.clone();
+                chip = chip.on_delete(
+                    ("command-shortcut-delete", index),
+                    "CancelRounded",
+                    None,
+                    move |_, _, cx| {
+                        let id = clear_id.clone();
+                        Self::update_button(&id, cx, |button| button.shortcut = None);
+                    },
+                );
+            }
+            div().mr(Theme::spacing(0.5)).child(chip).into_any_element()
+        } else {
+            let record = weak.clone();
+            let record_id = id.clone();
+            IconButton::new(("command-shortcut-add", index), "KeyboardOutlined")
+                .tooltip("Add shortcut")
+                .on_click(move |_, window, cx| {
+                    let id = record_id.clone();
+                    let _ = record.update(cx, |this, cx| this.record_shortcut(&id, window, cx));
+                })
+                .into_any_element()
+        };
+        let shortcut_note: Option<AnyElement> = if recording {
+            Some(
+                Alert::new(
+                    Status::Info,
+                    self.shortcut_problem.clone().unwrap_or_else(|| {
+                        "Press the key combination you want. Esc cancels.".into()
+                    }),
+                )
+                .icon("KeyboardOutlined")
+                .into_any_element(),
+            )
+        } else {
+            shell_shortcut.map(|shortcut| {
+                Alert::new(
+                    Status::Warning,
+                    format!(
+                        "{} is kept for the shell, so it never runs this button. Replace or remove it.",
+                        format_chord_string(shortcut)
+                    ),
+                )
+                .into_any_element()
+            })
+        };
         let tools = div()
             .flex()
+            .items_center()
             .pt(Theme::spacing(0.25))
+            .child(shortcut_control)
             .child(
                 IconButton::new(("command-up", index), "ArrowUpward")
                     .tooltip("Move up")
@@ -999,6 +1209,7 @@ impl CommandButtonsDialog {
                     .child(tools),
             )
             .child(second)
+            .children(shortcut_note)
             .into_any_element()
     }
 
@@ -1204,6 +1415,13 @@ impl Render for CommandButtonsDialog {
                 name: DEFAULT_COMMAND_GROUP_NAME.into(),
             });
         let group_buttons = command_buttons_in_group(&buttons, &groups, &group.id);
+        // Recording ends once its card leaves the view: another group shown, the button moved
+        // to another group, or deleted. Keys are never taken unseen.
+        if let Some(recording) = &self.recording_shortcut
+            && !group_buttons.iter().any(|button| &button.id == recording)
+        {
+            self.stop_recording_shortcut(cx);
+        }
         let grouped = groups.len() > 1;
         let weak = cx.entity().downgrade();
 

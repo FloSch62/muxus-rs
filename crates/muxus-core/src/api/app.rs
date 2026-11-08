@@ -447,11 +447,24 @@ pub struct WslDistributionsResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum CommandLineLaunch {
-    Host { name: String },
-    Folder { name: String },
-    Workspace { name: String },
-    Connect { name: String },
-    Url { name: String },
+    Host {
+        name: String,
+    },
+    Folder {
+        name: String,
+    },
+    Workspace {
+        name: String,
+    },
+    Connect {
+        name: String,
+    },
+    Url {
+        name: String,
+    },
+    /// A running Muxus is asked for another, empty window.
+    #[serde(rename = "new-window")]
+    NewWindow,
 }
 
 /// One extra application window. Workspace windows either create a named

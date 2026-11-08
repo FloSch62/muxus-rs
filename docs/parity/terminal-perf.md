@@ -8,6 +8,8 @@ target: within 2× of xterm.js (`seq 1 2000000` in 2 s or less, a 50 MB `cat` in
 ```bash
 # The emulator alone, per stream (no UI), release:
 CARGO_TARGET_DIR=target-release cargo run --release -p muxus-term --example throughput -- --runs 3
+# What a filled emulator holds, and what a settled resize costs it (one stream per process):
+CARGO_TARGET_DIR=target-release cargo run --release -p muxus-term --example throughput -- log --resize
 # The app end to end (headless GNOME Shell, lavapipe):
 hack/perf.sh --binary target-release/release/muxus
 # The engine's own tests (it is excluded from the workspace):
@@ -33,10 +35,10 @@ bookkeeping, what a tab runs).
 | 50 MB `cat` within 3 s | same | done | 1.06–1.65 s in the app, was 9.8 s |
 | Frames during a flood | xterm.js render debouncer | done | frame gaps while output flows: p95 22 ms (`seq`), 34 ms (`cat`); the longest output batch on the UI thread is under 1 ms (8 ms once) |
 | Idle CPU after a flood | xterm.js | done | below what `hack/perf.sh` can resolve (under 0.3% of a core over 3 s), one tab and ten tabs |
-| Memory | xterm.js `CircularList` of `BufferLine`s | partial | scrollback lines store their written cells only; a cell is still 40 bytes (xterm.js: 12), see below |
+| Memory | xterm.js `CircularList` of `BufferLine`s | partial | scrollback lines store their written cells only, and a cell is 32 bytes (was 40; xterm.js: 12): its cached width moved into the byte its flags padded to (`vendor/par-term-emu-core/PATCHES.md`, "Cell size"). Measured with `throughput <stream> --resize` (an emulator filled at 200×50 with 10 000 lines of scrollback, release, the resident memory it added): plain log 46.1 → 37.2 MB, colored log 57.8 → 46.9 MB, `ls -la` 28.6 → 23.3 MB, `seq` 5.3 → 4.7 MB, 19–20% less; output is as fast or faster (interleaved runs on a loaded machine: log 87–91 → 109–130 MB/s, colored log 61–76 → 70–83 MB/s, `seq` 55–59 → 64–74 MB/s). `hack/perf.sh` was not rerun (this machine has no GNOME Shell). Not taken, see below: 24 bytes (the combining marks, the underline color and the hyperlink id out of line together) and xterm.js's 12 |
 | Engine benchmark | none | done | `crates/muxus-term/examples/throughput` |
 | Benchmark of the app | none | done | `hack/perf.sh`, now with the process's CPU per step |
-| Same behaviour as before | all of the above | done | the engine's 1890 tests plus 7 new ones (property tests against the per-character path), 285 + 2 terminal tests, and the final state after every benchmark stream is identical to the original engine's |
+| Same behaviour as before | all of the above | done | the engine's 1890 tests plus 7 new ones (property tests against the per-character path), 285 + 2 terminal tests, and the final state after every benchmark stream is identical to the original engine's (the engine has 1998 tests now on 0.80.0, 1932 of them upstream's) |
 
 ## Results
 
@@ -87,7 +89,8 @@ which output arrived; `hack/perf.sh`'s once-a-second ticks give the same numbers
 
 ### The engine: `vendor/par-term-emu-core`
 
-`par-term-emu-core` 0.60.0 (MIT) is vendored and patched in through
+`par-term-emu-core` (MIT; 0.60.0 when this work was done, 0.80.0 now, see
+"Rebased onto engine 0.79.0" and "… and 0.80.0" below) is vendored and patched in through
 `[patch.crates-io]` in the root `Cargo.toml`; `par-term-emu-core-rust` (the
 crate `muxus-term` depends on) re-exports it unchanged. The profile (a sampling
 profiler over the benchmark streams) showed where the time went; each change
@@ -125,11 +128,11 @@ describing whatever line moved there; xterm keeps `isWrapped` on the line).
 **Upstream.** The changes are self-contained and meant to be offered to
 `par-term-emu-core-rust`: `src/grid/{mod,scroll,edit,erase,zone}.rs`,
 `src/terminal/{write,perform,action,apc_filter}.rs`, the OSC guard and
-`set_compact_scrollback` in `src/terminal/mod.rs`, `memchr` in `Cargo.toml`, and
+`set_compact_scrollback` in `src/terminal/mod.rs` (its flag in
+`src/terminal/state.rs` since 0.79.0), `memchr` in `Cargo.toml`, and
 `src/terminal/tests/fast_paths.rs`. Local to this copy and not for upstream: the
 PTY backend (`pty_session`, which Muxus does not use; the feature now stops the
-build), the par-mux pane-roster notifications of the tmux control-mode parser,
-and the design notes are left out.
+build) and the design notes are left out.
 
 ### `muxus-term`
 
@@ -182,12 +185,30 @@ frames), and feeding the emulator about half of the UI thread during `seq`.
 - **Row building per frame.** During a flood every visible row is rebuilt each
   frame (1.4 ms). Reusing rows that only moved (the engine's scroll-aware damage,
   `Grid::scroll_damage_since`) would make that proportional to the new lines.
-- **Cell size.** A cell is 40 bytes (xterm.js packs one into 12). Compact
-  scrollback keeps short lines small, but full lines still cost 8 KB at 200
-  columns.
-- **Scrollback size changes.** With the scrollback a ring buffer, changing its
-  size on a running terminal is now straightforward in the engine
-  (`terminal.md` lists it as new terminals only).
+- **Cell size.** A cell is 32 bytes (xterm.js packs one into 12); compact
+  scrollback keeps short lines small, but full lines still cost 6.4 KB at 200
+  columns. The 32 come from the 8-byte pointer to the combining marks (which
+  sets the alignment), four 4-byte words (character, foreground, background,
+  underline color) and 8 bytes of flags (attribute bits, underline style,
+  width, hyperlink id). 24 bytes would take the combining marks, the underline
+  color and the hyperlink id out of line into one shared, reference-counted
+  record: rare per cell, but the write paths would clone it for every cell
+  written while a link or an underline color is set, and every user of
+  `CellFlags::hyperlink_id` (34 in the engine, the emulator's styling) and of
+  the underline color changes. 12 bytes is xterm.js's layout (the character
+  and its width in one word, colors and attributes in two, extended
+  attributes and combined characters in per-line maps), which reworks every
+  reader and writer of the grid. Both are left: the first saves a further
+  quarter for a broad, risky change to the write paths.
+- **Buffer reflow.** A resize now treats the scrollback and the screen as one
+  buffer, as xterm.js does (`vendor/par-term-emu-core/src/grid/reflow.rs`), so it
+  costs in proportion to the scrollback: resizing a filled 200×50 emulator with
+  10 000 lines to 150 columns, or back, takes about 1 ms with plain log lines
+  and 7–14 ms with the colored log's wrapped lines (release,
+  `throughput --resize`), once per settled resize. Rows the reflow does not
+  touch move by pointer.
+- **Scrollback size changes** are done: `Grid::set_max_scrollback` drops the
+  oldest lines from the ring buffer in one drain (`PATCHES.md` in the engine).
 - Non-ASCII text (CJK, emoji) still takes the per-character path.
 
 ## Attribution
@@ -217,3 +238,122 @@ at most; RSS 195 MiB with one tab, 197 MiB with ten; CPU idle 0.0%, ten idle tab
 after `seq` the process uses 2.5% of a core (0.0% before): the tab stores its scrollback
 snapshot 1.5 s after the output stops (`ui/terminal.rs`, `persist_snapshot`). Zoomed sizes cost
 one multiplication per `px`; the terminal's cell layout stays in layout space.
+
+## Rebased onto engine 0.79.0
+
+The vendored engine moved from 0.60.0 to 0.79.0, as the release as published followed by one
+commit per patch (`vendor/par-term-emu-core/PATCHES.md`). Upstream did not touch the paths this
+work changed: the grid's scrolling, printing and resize code and the cell are as in 0.60.0 but
+for three fixes (a full-screen erase clears the wrap flags, a snapshot truncates scrollback rows
+wider than the grid, the styled scrollback export keeps the newest lines and joins wrapped rows
+in order), and nothing in 0.79.0 does what a patch does. The rest of `Terminal` moved out of
+`terminal/mod.rs` into topic files (`state.rs`, `host_config.rs`, …), which only moved the
+patches' host-config flags into `terminal/state.rs`. Every patch was re-applied but the
+trimming of the tmux parser's par-mux roster notifications (Muxus never turns tmux control mode
+on).
+
+Checked: the engine's 1928 tests and the patches' 66 pass, as do the emulator's 357, the
+view's 19 and `cargo xtask ci`. The final state after every benchmark stream hashes the same
+on 0.60.0 and on 0.79.0 with the patches: both screens' cells with their widths and wrap flags,
+the scrollback padded to the width and the cursor, for the engine with compact scrollback on
+and off, for the emulator, and for the emulator after a resize to 150 columns and then to
+200×43.
+
+Release builds of `throughput` on both engines, run in turns on a shared machine (load 6–17).
+Instructions are user-space instructions of one run (`perf stat`, the stream's generation
+included, so the engine's own share fell a little more); MB/s are the lowest and highest best
+of three over three rounds:
+
+| Stream | Instructions, engine | Instructions, emulator | Engine MB/s | Emulator MB/s |
+|---|---|---|---|---|
+| `seq` | 5.08 → 4.99 G (−1.7%) | 5.10 → 5.01 G (−1.7%) | 73–76 → 76–78 | 75–76 → 74–78 |
+| `log` | 6.52 → 6.31 G (−3.3%) | 6.53 → 6.32 G (−3.2%) | 121–154 → 152–158 | 147–154 → 152–156 |
+| `ansi-log` | 7.26 → 7.08 G (−2.4%) | 9.12 → 8.94 G (−2.0%) | 100–112 → 108–114 | 86–88 → 87–92 |
+| `ls` | 3.35 → 3.27 G (−2.6%) | 3.58 → 3.49 G (−2.5%) | 108–128 → 106–128 | 111–115 → 92–98 |
+| `htop` | 2.92 → 2.86 G (−1.9%) | 3.79 → 3.73 G (−1.5%) | 261–272 → 260–266 | 160–168 → 161–173 |
+| `vim` | 2.72 → 2.69 G (−1.0%) | 3.34 → 3.31 G (−0.8%) | 187–192 → 171–186 | 148–157 → 151–154 |
+
+The `ls` emulator row is the machine's load: run on its own in turns (three rounds, best of
+ten) it reads 86.5–87.7 → 82.4–94.2 MB/s, and its instruction count fell like the others'.
+
+`throughput <stream> --resize` (one stream per process, three rounds): resident memory of the
+filled emulator plain log 37.1–37.3 → 37.1 MB, colored log 46.9–47.0 → 46.6–46.9 MB, `ls -la`
+23.2–23.3 → 23.1 MB, `seq` 4.6 → 4.4–4.5 MB; the settled resize to 150 columns and back
+0.9–1.3 / 0.4–0.6 ms → 0.9–1.0 / 0.4 ms (plain log) and 5.5–7.4 / 6.9–8.8 ms → 6.0–8.8 /
+7.1–8.6 ms (colored log).
+
+### … and 0.80.0
+
+0.80.0 changes none of the patched code either: it bounds iTerm2 multipart transfers (a restart
+fails the transfer it supersedes, at most eight run at once), writes the styled export's SGR
+parameters in place, and adds an OpenTelemetry module that is inert without its feature
+(`PATCHES.md`, "Kept as upstream has it"). The series went on unchanged; only the manifest edits
+were redone, as the published manifest is now the normalized one. The engine's 1932 tests and
+the patches' 66 pass, as do the emulator's 357, the view's 19 and `cargo xtask ci`, and the
+final states after the benchmark streams and resizes hash the same as on 0.79.0 (so as on
+0.60.0).
+
+Instructions of one feed alone (a run with three feeds minus a run with one, so the stream's
+generation cancels out), user space, release:
+
+| Stream | Engine 0.60.0 → 0.79.0 → 0.80.0 | Emulator 0.60.0 → 0.79.0 → 0.80.0 |
+|---|---|---|
+| `seq` | 4.60 → 4.51 → 4.60 G | 4.61 → 4.53 → 4.61 G |
+| `log` | 5.08 → 4.87 → 5.12 G | 5.09 → 4.88 → 5.14 G |
+| `ansi-log` | 6.36 → 6.18 → 6.33 G | 8.22 → 8.04 → 8.19 G |
+| `ls` | 2.39 → 2.30 → 2.39 G | 2.61 → 2.52 → 2.62 G |
+| `htop` | 1.70 → 1.64 → 1.69 G | 2.57 → 2.51 → 2.56 G |
+| `vim` | 2.10 → 2.07 → 2.12 G | 2.72 → 2.69 → 2.74 G |
+
+0.80.0 is within 1% of the 0.60.0 copy on every stream. The dip on 0.79.0 was the compiler, not
+the engine: the hot paths are the same source in 0.79.0 and 0.80.0, and a profile of `log`
+shows the same work split differently between functions (on 0.80.0 `Grid::write_ascii` is
+inlined into `Terminal::flush_print_run`, and freeing evicted rows moved out of
+`Grid::rotate_region` into its own function). Throughput in turns with the 0.79.0 build (two
+rounds, load 7–8) follows the counts, `log` a little slower than on 0.79.0 and the rest within
+the noise: `seq` 66–79 → 71–76 MB/s, `log` 134–159 →
+118–135 (engine) and 130–141 → 132–134 (emulator), `ansi-log` 101–110 → 101–111, `htop`
+254–256 → 228–252, `vim` 167–174 → 170–182. Resident memory of a filled emulator: plain log
+37.2–37.5 MB, colored log 46.9 MB, `ls -la` 23.2–23.4 MB, `seq` 4.4–4.9 MB (0.79.0 in the same
+runs: 37.1, 46.9, 23.1, 4.4–4.5); resizes to 150 columns and back as before.
+
+## Full-screen color redraws and kitty animation (Windows, over SSH)
+
+Two programs that write as fast as the terminal takes it, run in a release build on Windows 11
+over SSH into WSL (a 1600×1000 window, 149×44 cells, 20 s a run, three runs): DOOM-fire-zig
+(every frame a full screen of `▀` cells with 256-color foreground and background, 60–120 KB a
+frame) and kitty-doom (a 320×200 RGB image placed with `a=T,c=,r=,C=1`, then every frame as
+`a=f,r=1` plus `a=a,c=1`, 257 KB a frame). Each was patched to print the frames and bytes it
+got out in the run. The Electron build (xterm.js 6.1 with the image addon) is the reference;
+without a terminal the pty takes 604 and 393 frames a second.
+
+| | Before | After | Electron |
+|---|---|---|---|
+| DOOM-fire-zig | 147–154 fps, 17 MB/s, 42 frames painted a second | 464–485 fps, 54–56 MB/s, 71 frames painted | 587–606 fps, 73–75 MB/s |
+| kitty-doom | 316–328 fps, drawn at 320×200 px at the bottom left | 327–331 fps, drawn over all 149×44 cells, 154–156 frames painted | 293–299 fps, but only the first frame shown (`a=f` is not supported) |
+| GPU memory during kitty-doom | grew 48 MB/s (1.45 GB after 30 s), never freed | 39 MB throughout | |
+
+What changed:
+
+- **The grid is painted in layers** (`paint_frame`): one for the cells' backgrounds, one for
+  the text and drawn glyphs. Outside a layer every quad is placed in GPUI's bounds tree to find
+  its draw order; DOOM-fire's screen is some 13 000 quads, and painting took 16.4 ms a frame.
+  In layers it takes 0.8 ms. Images with a negative kitty z-index above `i32::MIN / 2` go
+  between the two layers, as kitty draws them.
+- **The output pump yields without a timer on Windows** (`yield_to_event_loop`): the 1 ms
+  timer it waited on every 12 ms of output fires at the next 15.6 ms timer tick there, and the
+  UI thread sat idle (0.73 of a core used) while output waited. GPUI's Windows loop paints and
+  takes input once its tasks have run 10 ms, so the task only goes to the back of the queue.
+  Frame gaps while output flows stay under 25 ms.
+- **A drawn glyph's placeholder space extends the text run** before it (`paint_text`): a
+  screen of differently colored `▀` built a run, and a font, per cell.
+- **kitty frames edit the image in place** (engine patch, `PATCHES.md`) and **the view makes a
+  placement's sprite again when its pixels change, retiring the old one from the atlas**. The
+  view used to keep every sprite it ever made, one per frame. Images painted larger than their
+  pixels are stretched by the GPU (bilinear, with a one-pixel border repeating the edge)
+  instead of being scaled on the CPU for every frame.
+
+What is left: the UI thread now spends most of its time parsing (the emulator takes
+DOOM-fire's stream at 72 MB/s on its own, `throughput` with a captured stream), and that keeps
+DOOM-fire below xterm.js; parsing off the UI thread would be the next step. kitty-doom is bound
+by the program and the pty.

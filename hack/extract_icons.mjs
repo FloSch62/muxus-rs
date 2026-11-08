@@ -108,5 +108,12 @@ for (const name of names) {
   fs.writeFileSync(path.join(out, `${name}.svg`), svg);
 }
 fs.copyFileSync(path.join(muxus, 'client', 'public', 'muxus.svg'), path.join(out, 'muxus.svg'));
+// The logos of the tools the containers and VMs panel finds keep their own colors; they are
+// drawn as images (features/environments/logos.rs), never tinted like the Material icons.
+const logos = path.join(muxus, 'client', 'src', 'components', 'environments', 'logos');
+for (const name of fs.readdirSync(logos).filter((file) => file.endsWith('.svg'))) {
+  fs.copyFileSync(path.join(logos, name), path.join(out, `env-${name}`));
+}
+fs.copyFileSync(path.join(logos, 'README.md'), path.join(out, 'README-env-logos.md'));
 fs.copyFileSync(path.join(pkgDir, 'LICENSE'), path.join(out, 'LICENSE-material-icons.txt'));
 console.log(`${names.length} icons written to ${out}`);

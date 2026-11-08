@@ -65,24 +65,31 @@ content (`palette.rs`) and test data.
 |---|---|---|---|
 | HostEditorDialog shell: type tabs, section rail, title/caption, Save / Save & connect / Delete with confirm, Escape/Enter, storage caption, dirty tracking, problem text | `HostEditorDialog.tsx`, `host-editor/*` | done | |
 | SSH General (alias, display name, hostname, user, port, folder autocomplete, file select for new hosts, description, colour, storage OpenSSH vs Muxus) | `host-editor/GeneralSection.tsx` | done | Description is a single-line field (TS multiline grows) |
-| SSH Authentication (default/key/password/agent/keyboard-interactive, key files with Browse, certificates, IdentitiesOnly, agent source + detection, forward agent) | `host-editor/AuthSection.tsx` | done | Browse uses the native file picker (`prompt_for_paths`) |
+| SSH Authentication (default/key/password/agent/keyboard-interactive, key files with Browse, certificates, IdentitiesOnly, agent source + detection, forward agent) | `host-editor/AuthSection.tsx` | done | Browse uses the native file picker (`prompt_for_paths`). IdentitiesOnly is kept as the host has it unless the key mode or key files change (`auth_choice`, `key_mode_help`, `key_files_caption`). |
 | SSH Route (direct, jump hops incl. saved-host hops, ProxyCommand) | `host-editor/RouteSection.tsx` | done | |
+| Fallback jump routes ("Add fallback route", reorder/delete, captions; hops the client cannot log in to greyed) | `host-editor/RouteSection.tsx` (`FallbackRoutes`) | done | `view/route_fallbacks.rs`. The autocomplete's listed-but-disabled options are a new `Suggestion::disabled`. |
+| Fallback SSH gateways for RDP/VNC/gNMI/NETCONF ("Then try", "Add fallback gateway"; system OpenSSH hosts not pickable) | `host-editor/SshGatewayRouteField.tsx`, `SshGatewayField.tsx` | done | `view/gateway_route.rs`. |
+| "Use system OpenSSH" in Advanced and bulk edit; console compatibility greyed (kept) for such hosts, SFTP on Windows | `host-editor/AdvancedSection.tsx`, `HostBulkEditDialog.tsx` | done | `view/system_openssh.rs`. The environment discovery select sits beside it in Advanced (`environments.md`). |
+| New gNMI/NETCONF host for an SSH host carries the jump host over as gateway | `management-draft.ts` (`managementHostPrefill`) | done | `logic/management_prefill.rs`. |
 | SSH Forwards (rule list, add/edit form, ForwardDiagram) + X11 | `host-editor/ForwardsSection.tsx`, `ForwardDiagram.tsx` | done | |
 | SSH Advanced (remote command, RequestTTY, host verification, keepalive, compression, legacy algorithm preset, extra options with unsupported warnings, live preview of the Host block) | `host-editor/AdvancedSection.tsx`, `advanced-options.ts` | done | |
 | Appearance (scheme select with previews and custom schemes, font/background colour overrides, command button group, paste delays, SFTP / console compatibility) | `host-editor/AppearanceSection.tsx` | done | Colour override is a swatch popover, not the OS colour input |
 | Login sequence editor | `LoginSequenceEditor.tsx`, `muxus_session::login_sequence::editor` | done | |
 | Session logging policy fields (inherit switch, enable, capture input, retention, log to file) | `SessionLoggingPolicyFields.tsx` | done | |
-| Keyword highlighting rules | `KeywordHighlightRulesEditor.tsx` | partial | Rule list editor only; the JSON mode is missing |
+| Keyword highlighting rules | `KeywordHighlightRulesEditor.tsx` | done | Rule rows and "Edit as JSON" (`shared::keyword_rules_editor`: a mono text area of 8 to 24 rows, Apply or Ctrl/Cmd+Enter, Cancel, the parse error in an outlined alert, the format note); the editor's text is kept in the form's `InputCache` |
 | Telnet / serial editors (port autocomplete with refresh, baud/data/parity/stop/flow) | `NativeHostEditor.tsx`, `native-draft.ts` | done | |
 | RDP / VNC editors (general, logon, gateway route, options) | `RemoteDesktopHostEditor.tsx`, `desktop-draft.ts` | done | |
 | gNMI / NETCONF editors (general, login, TLS security cards, files with Browse, route, options) | `ManagementHostEditor.tsx`, `management-draft.ts` | done | |
-| VaultSecretField | `VaultSecretField.tsx` | partial | Field, missing-secret state and helper texts done; "New secret…" is listed but does not open the vault secret dialog yet |
+| VaultSecretField | `VaultSecretField.tsx` | done | Field, missing-secret state and helper texts; "New secret…" opens the vault's secret dialog over the window (`secret_dialog::request_new_secret`, mounted by `ui/features.rs`) and the field takes the new secret |
 | TunnelEditorDialog (saved host or custom connection, rule, diagram, auto-start/reconnect, Save / Save & start) | `TunnelEditorDialog.tsx` | done | |
-| HostBulkEditDialog + plan | `HostBulkEditDialog.tsx`, `host-bulk-edit.ts` | done | |
+| HostBulkEditDialog + plan | `HostBulkEditDialog.tsx`, `host-bulk-edit.ts` | done | prompt waiting, anti-idle, Backspace/Enter, implicit CR and local echo in the appearance section (`dialogs/bulk_typing.rs`); system OpenSSH is not shown yet |
+| Prompt waiting, anti-idle, keyboard and echo controls | `PastePromptFields.tsx`, `AntiIdleFields.tsx`, `TerminalAppearanceSection.tsx` | done | `view/session_input.rs`, shared by the host editor (SSH, Telnet, serial) and the bulk editor; counted in the Terminal appearance badge |
 | HostOrganizationDialog | `HostOrganizationDialog.tsx`, `host-organization.ts` | done | helpers already in `hosts::organization` (shell) |
 | FolderDialog (new, edit with rename/re-parent/merge note, move hosts, style, shared credentials, folder password with master password, inherited login sequence) | `sidebar/FolderDialog.tsx` | done | |
 | LaunchGroupDialog (layout cards, live-session warning, launch toast) | `sidebar/LaunchGroupDialog.tsx` | done | |
 | Saved hosts helpers | `saved-hosts.ts` | done | already in `hosts::saved` (shell) |
+| v0.15 host settings in the drafts and bulk edit: prompt waiting, anti-idle, keys/echo, system OpenSSH, environment discovery, fallback jump routes and gateways | `draft.ts`, `native-draft.ts`, `desktop-draft.ts`, `management-draft.ts`, `host-bulk-edit.ts`, `SshGatewayRouteField.tsx` (`savedGatewayFallbacks`) | done | Loaded from the host, checked, saved (edit and duplicate keep them). System OpenSSH, fallback routes/gateways, prompt waiting, anti-idle and keys/echo have their controls (rows above); environment discovery has its Advanced select (see `environments.md`; the TS bulk editor has none). `name-range.ts` and `range-save.ts` are ported (next row); `web-draft.ts` is ported with the web host editor (see [web-hosts.md](web-hosts.md)) |
+| Duplicate into a numbered range: `web[2-10]` in the name of a new or duplicated SSH host creates one host per number; zero padding, HostName following the name or its own range, display name ranges; the name's help shows what will be created, a tip when duplicating, then the progress; the dialog stays open while it saves | `host-editor/name-range.ts`, `range-save.ts`, HostEditorDialog.tsx (v0.15 ef94bb7, f38c0e5) | done | `logic::name_range`, `logic::range_save` (host-name-range.test.ts and host-range-save.test.ts ported), `range_services::BackendRangeSteps`, `view/range.rs`. ssh_config hosts are written in one `Backend::create_ssh_hosts` call (`POST /api/ssh/config/hosts/batch`: every block checked as a single upsert is, one write per file, so `.muxus.bak` predates the save; `muxus_ssh::config::edit::create_hosts`); Muxus profiles are created one by one and stop at the first failure; settings failures are named in the toast. |
 
 ## Tests
 
@@ -165,10 +172,6 @@ examples use them); `services` can be called directly for writes without UI.
 
 ## Known differences
 
-- "New secret…" in VaultSecretField does not open the vault secret dialog
-  (`features::vault::open_vault_secret_dialog` exists; needs a callback from
-  the editor that mounts it and writes the new id back).
-- KeywordHighlightRulesEditor has no JSON mode.
 - Colour override uses a swatch popover instead of the browser's colour input.
 - Description is single-line.
 - Autocomplete fields have no clear (×) button; select menus have no arrow-key

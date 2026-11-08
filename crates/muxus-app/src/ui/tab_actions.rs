@@ -4,6 +4,7 @@
 
 use muxus_app::features::notices::tab_strip::{RenameTabEvent, open_rename_tab_dialog};
 use muxus_app::hosts::managed::editable_managed_host_for_profile;
+use muxus_app::hosts::system_openssh::SystemOpenSshMenuItem;
 use muxus_app::model::{ProfileKind, SessionProfile};
 use muxus_app::session::LinkInput;
 use muxus_app::state::tabs::{
@@ -444,6 +445,12 @@ impl AppShell {
                     }),
                 ),
             );
+        } else if tab.system_open_ssh == Some(true) {
+            paper = paper.child(
+                item("tab-sftp", "Open SFTP file browser", "FolderOpenOutlined")
+                    .detail("Not available for this system OpenSSH session")
+                    .disabled(true),
+            );
         }
         paper = paper
             .child(menu_divider(&theme))
@@ -723,13 +730,15 @@ impl AppShell {
         {
             let attached = tab.status == TabStatus::Connected
                 || (tab.status == TabStatus::Connecting && tab.conn_id.is_some());
+            let system_open_ssh = tab.system_open_ssh == Some(true);
             paper = paper.child(
                 item("tab-send-break", "Send BREAK", "PowerInputOutlined")
                     .chord(muxus_app::keymap::hints::chord_label(
                         "terminal.send-break",
                         &Default::default(),
                     ))
-                    .disabled(!attached)
+                    .unavailable_with_system_open_ssh(system_open_ssh)
+                    .disabled(!attached || system_open_ssh)
                     .on_click(cx.listener({
                         let id = id.clone();
                         move |this, _, _, cx| {
@@ -738,6 +747,26 @@ impl AppShell {
                             cx.notify();
                         }
                     })),
+            );
+            paper = paper.child(
+                item(
+                    "tab-send-text-file",
+                    "Send text file…",
+                    "UploadFileOutlined",
+                )
+                .chord(muxus_app::keymap::hints::chord_label(
+                    "terminal.send-text-file",
+                    &Default::default(),
+                ))
+                .disabled(!attached)
+                .on_click(cx.listener({
+                    let id = id.clone();
+                    move |this, _, window, cx| {
+                        this.menu = None;
+                        this.request_send_text_file(&id, window, cx);
+                        cx.notify();
+                    }
+                })),
             );
         }
         let others: Vec<String> = self
@@ -901,7 +930,10 @@ impl AppShell {
                 .profile
                 .as_ref()
                 .map(|profile| {
-                    if profile.kind() == ProfileKind::Local {
+                    if let Some(icon) = muxus_app::sidebar::kind_icon::environment_tab_icon(profile)
+                    {
+                        icon
+                    } else if profile.kind() == ProfileKind::Local {
                         "Terminal"
                     } else {
                         muxus_app::sidebar::kind_icon::host_kind_icon_name(profile.kind())

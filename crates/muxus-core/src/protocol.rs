@@ -14,8 +14,9 @@
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
-use crate::api::ConfigForward;
+use crate::api::{ConfigForward, TerminalEnterKey};
 use crate::connection_links::normalize_host_key_fingerprint;
+use crate::environments::EnvironmentTarget;
 use crate::management::{
     GNMI_DEFAULT_PORT, GnmiDataType, GnmiEncoding, GnmiSetEncoding, GnmiSubscriptionListMode,
     GnmiSubscriptionMode, GnmiTlsMode, ManagementSessionInfo, ManagementStreamMessage,
@@ -23,6 +24,8 @@ use crate::management::{
 };
 use crate::paste_pacing::{
     MAX_PACED_PASTE_LENGTH, MAX_PASTE_CHAR_DELAY_MS, MAX_PASTE_LINE_DELAY_MS,
+    MAX_PASTE_PATTERN_LENGTH, MAX_PASTE_PROMPT_TIMEOUT_MS, MIN_PASTE_PROMPT_TIMEOUT_MS,
+    PastePromptWait,
 };
 use crate::validate::{self, Validate, ValidationError, join};
 
@@ -35,6 +38,10 @@ pub const TERMINAL_SESSION_CLOSE_REASON: &str = "terminal session closed";
 
 /// Upper bound for the Muxus-wide ServerAliveInterval fallback, in seconds.
 pub const MAX_SSH_KEEPALIVE_INTERVAL_SECONDS: u32 = 3600;
+/// Alternative jump routes or gateways a host may list after its first.
+pub const MAX_JUMP_FALLBACKS: usize = 4;
+/// Hops in one ProxyJump chain.
+pub const MAX_JUMP_HOPS: usize = 8;
 /// The ServerAliveInterval fallback Muxus uses unless Settings say otherwise.
 pub const DEFAULT_SSH_KEEPALIVE_INTERVAL_SECONDS: u32 = 30;
 /// How long Send BREAK holds the line unless a serial host says otherwise (tcsendbreak's length).
@@ -67,6 +74,8 @@ pub struct LocalProfile {
     pub cwd: Option<String>,
     /// Text entered after the interactive shell starts, followed by Enter.
     pub startup_command: Option<String>,
+    /// Enter a container, pod or console on this computer instead of starting a shell.
+    pub environment: Option<EnvironmentTarget>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -116,11 +125,19 @@ pub struct SshProfile {
     #[serde(rename = "forwardX11")]
     pub forward_x11: Option<bool>,
     pub proxy_jump: Option<Vec<String>>,
+    /// Alternative jump routes, tried in order when `proxy_jump` (or the one
+    /// ssh_config gives) fails before the target is reached. Each is a whole
+    /// chain, like `proxy_jump`.
+    pub proxy_jump_fallbacks: Option<Vec<Vec<String>>>,
     pub proxy_command: Option<String>,
     pub forwards: Option<Vec<ConfigForward>>,
     pub password_only: Option<bool>,
     pub remote_command: Option<String>,
     pub request_tty: Option<RequestTty>,
+    /// Enter a container, pod or console on the host instead of its login
+    /// shell. Like a link's fingerprint it belongs to this session, never to a
+    /// saved host.
+    pub environment: Option<EnvironmentTarget>,
     pub strict_host_key_checking: Option<StrictHostKeyChecking>,
     /// Host key the target must present, from an ssh:// link's fingerprint, in
     /// canonical form. It only tightens verification and is never saved with a host.
@@ -283,6 +300,8 @@ pub struct RdpProfile {
     pub username: Option<String>,
     pub domain: Option<String>,
     pub ssh_gateway: Option<SshGateway>,
+    /// Further gateways tried in order when the one before fails.
+    pub ssh_gateway_fallbacks: Option<Vec<SshGateway>>,
     /// Text clipboard redirection; absent means on, as in mstsc.
     pub share_clipboard: Option<bool>,
 }
@@ -303,6 +322,8 @@ pub struct VncProfile {
     /// Only servers with user logins ask for one (VeNCrypt, Apple Remote Desktop, UltraVNC).
     pub username: Option<String>,
     pub ssh_gateway: Option<SshGateway>,
+    /// Further gateways tried in order when the one before fails.
+    pub ssh_gateway_fallbacks: Option<Vec<SshGateway>>,
     /// Ask the server to resize its desktop to the pane instead of scaling the picture.
     pub resize_remote: Option<bool>,
     /// Watch without sending keyboard or mouse input.
@@ -337,6 +358,8 @@ pub struct GnmiProfile {
     pub cert_file: Option<String>,
     pub key_file: Option<String>,
     pub ssh_gateway: Option<SshGateway>,
+    /// Further gateways tried in order when the one before fails.
+    pub ssh_gateway_fallbacks: Option<Vec<SshGateway>>,
     /// Preferred encoding; absent picks the best one the device supports.
     pub encoding: Option<GnmiEncoding>,
 }
@@ -359,6 +382,42 @@ pub struct NetconfProfile {
     pub port: u16,
     pub username: Option<String>,
     pub ssh_gateway: Option<SshGateway>,
+    /// Further gateways tried in order when the one before fails.
+    pub ssh_gateway_fallbacks: Option<Vec<SshGateway>>,
+}
+
+/// A web page, opened in a Muxus browser window. With an SSH gateway the
+/// window's traffic goes through a SOCKS proxy on that gateway, so names and
+/// addresses only the gateway can reach work, and HTTPS stays end to end.
+/// Saved hosts only: it has no session of its own.
+#[skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebProfile {
+    /// Stable Muxus database profile when this is a saved host.
+    pub profile_id: Option<String>,
+    pub url: String,
+    pub ssh_gateway: Option<SshGateway>,
+}
+
+/// `/^https?:\/\/[^\s/]+/i`: an http:// or https:// address with a host.
+pub fn is_web_url(value: &str) -> bool {
+    let has_prefix = |prefix: &str| {
+        value
+            .as_bytes()
+            .get(..prefix.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(prefix.as_bytes()))
+    };
+    let rest = if has_prefix("https://") {
+        &value[8..]
+    } else if has_prefix("http://") {
+        &value[7..]
+    } else {
+        return false;
+    };
+    rest.chars()
+        .next()
+        .is_some_and(|c| c != '/' && !crate::js::is_js_whitespace(c))
 }
 
 /// The `kind` of a session profile.
@@ -373,6 +432,9 @@ pub enum ProfileKind {
     Vnc,
     Gnmi,
     Netconf,
+    /// A saved web page. No [`SessionProfile`] has this kind: a web host
+    /// opens a browser window, not a session.
+    Web,
 }
 
 impl ProfileKind {
@@ -386,6 +448,7 @@ impl ProfileKind {
             ProfileKind::Vnc => "vnc",
             ProfileKind::Gnmi => "gnmi",
             ProfileKind::Netconf => "netconf",
+            ProfileKind::Web => "web",
         }
     }
 
@@ -399,6 +462,7 @@ impl ProfileKind {
             ProfileKind::Vnc,
             ProfileKind::Gnmi,
             ProfileKind::Netconf,
+            ProfileKind::Web,
         ]
         .into_iter()
         .find(|kind| kind.as_str() == value)
@@ -414,9 +478,15 @@ impl ProfileKind {
         matches!(self, ProfileKind::Gnmi | ProfileKind::Netconf)
     }
 
-    /// Sessions with a terminal: everything but remote desktops and management sessions.
+    /// Saved web pages.
+    pub fn is_web(self) -> bool {
+        self == ProfileKind::Web
+    }
+
+    /// Sessions with a terminal: everything but remote desktops, management
+    /// sessions and web pages.
     pub fn is_terminal(self) -> bool {
-        !self.is_desktop() && !self.is_management()
+        !self.is_desktop() && !self.is_management() && !self.is_web()
     }
 }
 
@@ -541,7 +611,7 @@ impl From<ManagementProfile> for SessionProfile {
     }
 }
 
-/// The profile of a saved host: every kind but local shells.
+/// The profile of a saved host: every session kind but local shells, and web pages.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum SavedHostSessionProfile {
@@ -552,6 +622,7 @@ pub enum SavedHostSessionProfile {
     Vnc(VncProfile),
     Gnmi(GnmiProfile),
     Netconf(NetconfProfile),
+    Web(WebProfile),
 }
 
 impl SavedHostSessionProfile {
@@ -565,6 +636,7 @@ impl SavedHostSessionProfile {
             SavedHostSessionProfile::Vnc(_) => SavedHostKind::Vnc,
             SavedHostSessionProfile::Gnmi(_) => SavedHostKind::Gnmi,
             SavedHostSessionProfile::Netconf(_) => SavedHostKind::Netconf,
+            SavedHostSessionProfile::Web(_) => SavedHostKind::Web,
         }
     }
 
@@ -577,7 +649,14 @@ impl SavedHostSessionProfile {
             SavedHostSessionProfile::Vnc(p) => p.profile_id.as_deref(),
             SavedHostSessionProfile::Gnmi(p) => p.profile_id.as_deref(),
             SavedHostSessionProfile::Netconf(p) => p.profile_id.as_deref(),
+            SavedHostSessionProfile::Web(p) => p.profile_id.as_deref(),
         }
+    }
+
+    /// The session this host opens; `None` for a web page, which opens a
+    /// browser window instead.
+    pub fn session_profile(&self) -> Option<SessionProfile> {
+        SessionProfile::try_from(self.clone()).ok()
     }
 
     /// Set (or clear) the stored profile id.
@@ -590,13 +669,18 @@ impl SavedHostSessionProfile {
             SavedHostSessionProfile::Vnc(p) => p.profile_id = id,
             SavedHostSessionProfile::Gnmi(p) => p.profile_id = id,
             SavedHostSessionProfile::Netconf(p) => p.profile_id = id,
+            SavedHostSessionProfile::Web(p) => p.profile_id = id,
         }
     }
 }
 
-impl From<SavedHostSessionProfile> for SessionProfile {
-    fn from(profile: SavedHostSessionProfile) -> Self {
-        match profile {
+/// A saved host's profile as a session profile; a web page has none and
+/// comes back as the error.
+impl TryFrom<SavedHostSessionProfile> for SessionProfile {
+    type Error = WebProfile;
+
+    fn try_from(profile: SavedHostSessionProfile) -> Result<Self, WebProfile> {
+        Ok(match profile {
             SavedHostSessionProfile::Ssh(p) => SessionProfile::Ssh(p),
             SavedHostSessionProfile::Telnet(p) => SessionProfile::Telnet(p),
             SavedHostSessionProfile::Serial(p) => SessionProfile::Serial(p),
@@ -604,7 +688,8 @@ impl From<SavedHostSessionProfile> for SessionProfile {
             SavedHostSessionProfile::Vnc(p) => SessionProfile::Vnc(p),
             SavedHostSessionProfile::Gnmi(p) => SessionProfile::Gnmi(p),
             SavedHostSessionProfile::Netconf(p) => SessionProfile::Netconf(p),
-        }
+            SavedHostSessionProfile::Web(p) => return Err(p),
+        })
     }
 }
 
@@ -633,7 +718,8 @@ impl Validate for LocalProfile {
             &self.startup_command,
             0,
             32_768,
-        )
+        )?;
+        self.environment.validate_at(&join(path, "environment"))
     }
 }
 
@@ -672,8 +758,11 @@ impl Validate for SshProfile {
         }
         validate::opt_string(&join(path, "identityAgent"), &self.identity_agent, 1, 4096)?;
         if let Some(hops) = &self.proxy_jump {
-            validate::items(&join(path, "proxyJump"), hops.len(), 0, 8)?;
+            validate::items(&join(path, "proxyJump"), hops.len(), 0, MAX_JUMP_HOPS)?;
             validate::each_string(&join(path, "proxyJump"), hops, 1, 500)?;
+        }
+        if let Some(routes) = &mut self.proxy_jump_fallbacks {
+            crate::api::validate_jump_routes(&join(path, "proxyJumpFallbacks"), routes, false)?;
         }
         validate::opt_string(&join(path, "proxyCommand"), &self.proxy_command, 1, 32_768)?;
         if let Some(forwards) = &mut self.forwards {
@@ -686,6 +775,7 @@ impl Validate for SshProfile {
             1,
             32_768,
         )?;
+        self.environment.validate_at(&join(path, "environment"))?;
         if let Some(fingerprint) = &self.host_key_fingerprint {
             let at = join(path, "hostKeyFingerprint");
             validate::string(&at, fingerprint, 0, 200)?;
@@ -733,6 +823,18 @@ impl Validate for SshGateway {
     }
 }
 
+/// `sshGatewayFallbacksSchema`: further gateways tried in order.
+fn gateway_fallbacks(
+    path: &str,
+    fallbacks: &mut Option<Vec<SshGateway>>,
+) -> Result<(), ValidationError> {
+    let at = join(path, "sshGatewayFallbacks");
+    if let Some(gateways) = fallbacks {
+        validate::items(&at, gateways.len(), 0, MAX_JUMP_FALLBACKS)?;
+    }
+    fallbacks.validate_at(&at)
+}
+
 impl Validate for RdpProfile {
     fn validate_at(&mut self, path: &str) -> Result<(), ValidationError> {
         profile_id(path, &self.profile_id)?;
@@ -740,7 +842,8 @@ impl Validate for RdpProfile {
         port(&join(path, "port"), self.port)?;
         validate::opt_trimmed(&join(path, "username"), &mut self.username, 0, 256)?;
         validate::opt_trimmed(&join(path, "domain"), &mut self.domain, 0, 256)?;
-        self.ssh_gateway.validate_at(&join(path, "sshGateway"))
+        self.ssh_gateway.validate_at(&join(path, "sshGateway"))?;
+        gateway_fallbacks(path, &mut self.ssh_gateway_fallbacks)
     }
 }
 
@@ -750,7 +853,8 @@ impl Validate for VncProfile {
         validate::trimmed(&join(path, "host"), &mut self.host, 1, 253)?;
         port(&join(path, "port"), self.port)?;
         validate::opt_trimmed(&join(path, "username"), &mut self.username, 0, 256)?;
-        self.ssh_gateway.validate_at(&join(path, "sshGateway"))
+        self.ssh_gateway.validate_at(&join(path, "sshGateway"))?;
+        gateway_fallbacks(path, &mut self.ssh_gateway_fallbacks)
     }
 }
 
@@ -769,7 +873,8 @@ impl Validate for GnmiProfile {
         validate::opt_trimmed(&join(path, "caFile"), &mut self.ca_file, 1, 4096)?;
         validate::opt_trimmed(&join(path, "certFile"), &mut self.cert_file, 1, 4096)?;
         validate::opt_trimmed(&join(path, "keyFile"), &mut self.key_file, 1, 4096)?;
-        self.ssh_gateway.validate_at(&join(path, "sshGateway"))
+        self.ssh_gateway.validate_at(&join(path, "sshGateway"))?;
+        gateway_fallbacks(path, &mut self.ssh_gateway_fallbacks)
     }
 }
 
@@ -779,6 +884,23 @@ impl Validate for NetconfProfile {
         validate::trimmed(&join(path, "host"), &mut self.host, 1, 253)?;
         port(&join(path, "port"), self.port)?;
         validate::opt_trimmed(&join(path, "username"), &mut self.username, 0, 256)?;
+        self.ssh_gateway.validate_at(&join(path, "sshGateway"))?;
+        gateway_fallbacks(path, &mut self.ssh_gateway_fallbacks)
+    }
+}
+
+impl Validate for WebProfile {
+    /// `webProfileSchema`.
+    fn validate_at(&mut self, path: &str) -> Result<(), ValidationError> {
+        profile_id(path, &self.profile_id)?;
+        let at = join(path, "url");
+        validate::trimmed(&at, &mut self.url, 1, 4096)?;
+        if !is_web_url(&self.url) {
+            return Err(ValidationError::new(
+                at,
+                "Enter an http:// or https:// address",
+            ));
+        }
         self.ssh_gateway.validate_at(&join(path, "sshGateway"))
     }
 }
@@ -844,6 +966,7 @@ impl Validate for SavedHostSessionProfile {
             SavedHostSessionProfile::Vnc(p) => p.validate_at(path),
             SavedHostSessionProfile::Gnmi(p) => p.validate_at(path),
             SavedHostSessionProfile::Netconf(p) => p.validate_at(path),
+            SavedHostSessionProfile::Web(p) => p.validate_at(path),
         }
     }
 }
@@ -1014,6 +1137,11 @@ pub enum TerminalClientMessage {
         bracketed: bool,
         line_delay_ms: u32,
         char_delay_ms: u32,
+        /// Wait for the prompt after each line and stop at a rejected one;
+        /// absent paces by the delays alone. Ignored for a bracketed paste.
+        prompt: Option<PastePromptWait>,
+        /// The host's Enter key for line breaks outside a bracket; absent is CR.
+        enter_key: Option<TerminalEnterKey>,
     },
     /// Stop the paced paste that is running and drop the queued ones.
     PasteCancel,
@@ -1111,8 +1239,30 @@ impl Validate for TerminalClientMessage {
                 text,
                 line_delay_ms,
                 char_delay_ms,
+                prompt,
                 ..
             } => {
+                if let Some(prompt) = prompt {
+                    let at = join(path, "prompt");
+                    validate::string(
+                        &join(&at, "promptPattern"),
+                        &prompt.prompt_pattern,
+                        1,
+                        MAX_PASTE_PATTERN_LENGTH,
+                    )?;
+                    validate::range(
+                        &join(&at, "timeoutMs"),
+                        prompt.timeout_ms,
+                        MIN_PASTE_PROMPT_TIMEOUT_MS,
+                        MAX_PASTE_PROMPT_TIMEOUT_MS,
+                    )?;
+                    validate::string(
+                        &join(&at, "errorPattern"),
+                        &prompt.error_pattern,
+                        1,
+                        MAX_PASTE_PATTERN_LENGTH,
+                    )?;
+                }
                 validate::string(&join(path, "text"), text, 1, MAX_PACED_PASTE_LENGTH)?;
                 validate::range(
                     &join(path, "lineDelayMs"),
@@ -1221,6 +1371,8 @@ pub enum PasteProgressState {
     Running,
     Done,
     Cancelled,
+    /// A line the device rejected, or a pattern that failed, ended the paste.
+    Stopped,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1263,6 +1415,9 @@ pub enum TerminalServerMessage {
         host: Option<String>,
         user: Option<String>,
         sftp_available: Option<bool>,
+        /// The session is the computer's `ssh` program; `sftp_available` also
+        /// says whether its login is shared.
+        system_open_ssh: Option<bool>,
         /// SSH terminal sessions only.
         summary: Option<SshSessionSummary>,
     },
@@ -1289,14 +1444,21 @@ pub enum TerminalServerMessage {
         reason: ExitReason,
     },
     /// Paced paste progress over every queued paste, throttled while it runs.
+    #[serde(rename_all = "camelCase")]
     PasteProgress {
         state: PasteProgressState,
-        /// The line being sent, from 1, and the lines of every queued paste.
+        /// The line being sent, from 1, and the lines of every queued paste;
+        /// the last one sent once stopped.
         line: u64,
         lines: u64,
         /// UTF-16 code units sent and queued.
         sent: u64,
         total: u64,
+        /// Why a stopped paste stopped: its line, the line sent and the output that rejected it.
+        message: Option<String>,
+        /// Numbers the session's stopped pastes, so a returning window can
+        /// tell a stop it has noted.
+        stop_id: Option<u64>,
     },
     /// The host's login sequence started a step, finished, or stopped.
     LoginSequence {

@@ -187,6 +187,32 @@ pub trait RemoteShellSftp: Send + Sync {
     ) -> impl Future<Output = Result<(), String>> + Send;
 }
 
+/// What the shell probe learned about one transport, shared by its shells (`ShellProbeMemo`).
+#[derive(Debug, Default)]
+pub struct ShellProbeMemo {
+    /// The server ran the probe, so it runs commands at all.
+    ran_command: std::sync::atomic::AtomicBool,
+    /// It answered the probe's exec with failure. Nokia SR OS then holds that channel's slot
+    /// until the connection closes, so later shells on the transport skip the probe instead of
+    /// spending another slot on it.
+    exec_refused: std::sync::atomic::AtomicBool,
+}
+
+impl ShellProbeMemo {
+    pub fn ran_command(&self) -> bool {
+        self.ran_command.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn exec_refused(&self) -> bool {
+        self.exec_refused.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// The error a server's failure answer to an exec request becomes.
+fn is_exec_rejection(message: &str) -> bool {
+    message.contains("Unable to exec")
+}
+
 fn is_disconnected_error(message: &str) -> bool {
     message.starts_with("Not connected")
         || message.starts_with("Connection lost")
@@ -196,12 +222,18 @@ fn is_disconnected_error(message: &str) -> bool {
 /// Open a remote shell, adding OSC 133 integration for supported zsh/bash hosts and falling back
 /// to a normal shell everywhere else. Transport-loss observation spans both phases: some console
 /// servers close the probe channel first and only disconnect the SSH transport while the plain
-/// shell opens.
+/// shell opens. `memo` remembers per transport whether the server runs commands at all.
 pub async fn open_remote_shell<H: RemoteShellHost>(
     host: &H,
     cwd: Option<&str>,
+    memo: Option<&ShellProbeMemo>,
 ) -> Result<H::Channel, OpenShellError> {
-    if let Some(channel) = try_open_integrated_remote_shell(host, cwd).await {
+    let integrated = if memo.is_some_and(ShellProbeMemo::exec_refused) {
+        None
+    } else {
+        try_open_integrated_remote_shell(host, cwd, memo).await
+    };
+    if let Some(channel) = integrated {
         return Ok(channel);
     }
     if let Some(error) = host.transport_lost() {
@@ -233,11 +265,30 @@ pub async fn open_remote_shell<H: RemoteShellHost>(
 async fn try_open_integrated_remote_shell<H: RemoteShellHost>(
     host: &H,
     cwd: Option<&str>,
+    memo: Option<&ShellProbeMemo>,
 ) -> Option<H::Channel> {
     // Do not speculatively open SFTP against console appliances. Many expose only a plain shell
     // channel and some disconnect the whole transport when an unsupported subsystem is
     // requested.
-    let output = host.probe(SHELL_PROBE).await.ok()?;
+    let output = match host.probe(SHELL_PROBE).await {
+        Ok(output) => output,
+        Err(error) => {
+            if let Some(memo) = memo
+                && is_exec_rejection(&error)
+            {
+                memo.exec_refused
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            return None;
+        }
+    };
+    // Any shell printed the marker, even one Muxus does not integrate.
+    if let Some(memo) = memo
+        && marker(&output, "__MUXUS_SHELL__").is_some()
+    {
+        memo.ran_command
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     let shell = parse_shell_probe(&output)?;
     let sftp = host.sftp().await.ok()?;
     let root = install_integration(&sftp, &shell).await.ok()?;

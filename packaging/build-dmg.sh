@@ -73,6 +73,10 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>LSMinimumSystemVersion</key><string>11.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+    <!-- Local Network privacy (macOS 15+) attributes connections from local shells to Muxus.
+         Without this key the system blocks LAN and Tailscale addresses with "No route to host"
+         instead of asking. -->
+    <key>NSLocalNetworkUsageDescription</key><string>Muxus connects to SSH, Telnet, RDP, VNC and management hosts on your local network.</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

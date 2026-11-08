@@ -3,6 +3,7 @@
 
 pub mod bindings;
 pub mod chords;
+pub mod command_buttons;
 pub mod commands;
 pub mod hints;
 pub mod keystroke;

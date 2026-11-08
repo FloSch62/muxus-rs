@@ -6,6 +6,31 @@ use muxus_core::protocol::{RdpProfile, SavedHostSessionProfile, SshGateway, VncP
 
 use super::js::{has_space, js_number, non_empty};
 
+/// The fallbacks to save (`savedGatewayFallbacks`): picked ones only, never
+/// the primary again, and none without a primary. Saved hosts are told apart
+/// by their ID, not by their address.
+pub fn saved_gateway_fallbacks(
+    gateway: Option<&SshGateway>,
+    fallbacks: &[SshGateway],
+) -> Option<Vec<SshGateway>> {
+    let gateway = gateway?;
+    let same = |a: &SshGateway, b: &SshGateway| match &a.profile_id {
+        Some(id) => b.profile_id.as_ref() == Some(id),
+        None => b.profile_id.is_none() && a.target == b.target,
+    };
+    let mut kept: Vec<SshGateway> = Vec::new();
+    for fallback in fallbacks {
+        if fallback.target.is_empty()
+            || same(fallback, gateway)
+            || kept.iter().any(|item| same(item, fallback))
+        {
+            continue;
+        }
+        kept.push(fallback.clone());
+    }
+    (!kept.is_empty()).then_some(kept)
+}
+
 /// `Number.isInteger(port) && port >= 1 && port <= 65535`.
 pub fn port_in_range(port: f64) -> bool {
     port.is_finite() && port.fract() == 0. && (1. ..=65_535.).contains(&port)
@@ -42,6 +67,8 @@ pub struct DesktopHostDraft {
     pub domain: String,
     /// SSH host the desktop is reached through; `None` connects directly.
     pub ssh_gateway: Option<SshGateway>,
+    /// Gateways tried in order when `ssh_gateway` fails.
+    pub ssh_gateway_fallbacks: Vec<SshGateway>,
     pub share_clipboard: bool,
     pub resize_remote: bool,
     pub view_only: bool,
@@ -58,6 +85,7 @@ pub fn blank_desktop_draft(prefill_target: &str, group: &str) -> DesktopHostDraf
         username: target.user.unwrap_or_default(),
         domain: String::new(),
         ssh_gateway: None,
+        ssh_gateway_fallbacks: Vec::new(),
         share_clipboard: true,
         resize_remote: false,
         view_only: false,
@@ -99,6 +127,7 @@ pub fn desktop_draft_from_profile(
             username: profile.username.clone().unwrap_or_default(),
             domain: profile.domain.clone().unwrap_or_default(),
             ssh_gateway: profile.ssh_gateway.clone(),
+            ssh_gateway_fallbacks: profile.ssh_gateway_fallbacks.clone().unwrap_or_default(),
             share_clipboard: profile.share_clipboard != Some(false),
             resize_remote: false,
             view_only: false,
@@ -112,6 +141,7 @@ pub fn desktop_draft_from_profile(
             username: profile.username.clone().unwrap_or_default(),
             domain: String::new(),
             ssh_gateway: profile.ssh_gateway.clone(),
+            ssh_gateway_fallbacks: profile.ssh_gateway_fallbacks.clone().unwrap_or_default(),
             share_clipboard: profile.share_clipboard != Some(false),
             resize_remote: profile.resize_remote == Some(true),
             view_only: profile.view_only == Some(true),
@@ -155,6 +185,8 @@ pub fn desktop_draft_to_input(
     let port = desktop_draft_port(draft, kind) as u16;
     let username = non_empty(&draft.username);
     let share_clipboard = (!draft.share_clipboard).then_some(false);
+    let fallbacks =
+        saved_gateway_fallbacks(draft.ssh_gateway.as_ref(), &draft.ssh_gateway_fallbacks);
     let profile = match kind {
         DesktopKind::Rdp => SavedHostSessionProfile::Rdp(RdpProfile {
             profile_id: None,
@@ -163,6 +195,7 @@ pub fn desktop_draft_to_input(
             username,
             domain: non_empty(&draft.domain),
             ssh_gateway: draft.ssh_gateway.clone(),
+            ssh_gateway_fallbacks: fallbacks,
             share_clipboard,
         }),
         DesktopKind::Vnc => SavedHostSessionProfile::Vnc(VncProfile {
@@ -173,6 +206,7 @@ pub fn desktop_draft_to_input(
             ssh_gateway: draft.ssh_gateway.clone(),
             resize_remote: draft.resize_remote.then_some(true),
             view_only: draft.view_only.then_some(true),
+            ssh_gateway_fallbacks: fallbacks,
             share_clipboard,
         }),
     };
@@ -197,6 +231,60 @@ mod tests {
     use super::*;
     use muxus_core::api::{OpenSshProfileMetadata, SavedHostKind};
 
+    fn gateway(target: &str, profile_id: Option<&str>) -> SshGateway {
+        SshGateway {
+            target: target.into(),
+            profile_id: profile_id.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn keeps_no_fallback_gateway_without_a_first_one() {
+        assert_eq!(saved_gateway_fallbacks(None, &[gateway("b", None)]), None);
+        assert_eq!(
+            saved_gateway_fallbacks(Some(&gateway("a", None)), &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn tells_saved_gateways_apart_by_id_not_by_their_address() {
+        assert_eq!(
+            saved_gateway_fallbacks(
+                Some(&gateway("h", Some("p1"))),
+                &[
+                    gateway("h", Some("p2")),
+                    gateway("h", None),
+                    gateway("h", Some("p1")),
+                    gateway("h", None),
+                    gateway("", None),
+                ],
+            ),
+            Some(vec![gateway("h", Some("p2")), gateway("h", None)])
+        );
+    }
+
+    #[test]
+    fn keeps_gateway_fallbacks_through_edit_and_duplicate() {
+        let mut host = rdp_host(3389);
+        if let SavedHostSessionProfile::Rdp(profile) = &mut host.profile {
+            profile.ssh_gateway = Some(gateway("bastion", None));
+            profile.ssh_gateway_fallbacks = Some(vec![gateway("bastion-b", None)]);
+        }
+        for duplicate in [false, true] {
+            let draft = desktop_draft_from_profile(&host, duplicate).unwrap();
+            let SavedHostSessionProfile::Rdp(saved) =
+                desktop_draft_to_input(&draft, DesktopKind::Rdp, None).profile
+            else {
+                panic!("an RDP profile");
+            };
+            assert_eq!(
+                saved.ssh_gateway_fallbacks,
+                Some(vec![gateway("bastion-b", None)])
+            );
+        }
+    }
+
     fn rdp_host(port: u16) -> SavedHostProfile {
         SavedHostProfile {
             id: "win".into(),
@@ -213,6 +301,7 @@ mod tests {
                     profile_id: None,
                 }),
                 share_clipboard: Some(false),
+                ssh_gateway_fallbacks: None,
             }),
             metadata: OpenSshProfileMetadata {
                 profile_id: "win".into(),

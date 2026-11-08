@@ -147,6 +147,11 @@ pub struct WindowFeatures {
     pub vault_unlock: Option<Entity<VaultStartupUnlock>>,
     /// The vault's startup question is on screen: it has the keyboard.
     pub vault_blocking: bool,
+    /// The window's script job (`ui::scripts`), made on first use.
+    pub scripts: Option<(
+        Entity<muxus_app::features::scripts::ScriptJobs>,
+        Subscription,
+    )>,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -165,6 +170,7 @@ impl Default for WindowFeatures {
             secret_sender: None,
             vault_unlock: None,
             vault_blocking: false,
+            scripts: None,
             _subscriptions: Vec::new(),
             _tasks: Vec::new(),
         }
@@ -407,7 +413,15 @@ impl AppShell {
             .state()
             .mirror_tab_ids(source_tab_id);
         for target in targets {
-            self.send_to_session(&target, LinkInput::Data(data.to_vec()), cx);
+            // Keystrokes mirrored from another terminal, with this host's keys and echo.
+            match self.terminal_of(&target) {
+                Some(view) => {
+                    view.update(cx, |view, cx| view.send_keyboard_input(data, cx));
+                }
+                None => {
+                    self.send_to_session(&target, LinkInput::Data(data.to_vec()), cx);
+                }
+            }
         }
     }
 
@@ -422,7 +436,7 @@ impl AppShell {
             .filter(|id| id != source_tab_id)
             .collect();
         for target in targets {
-            self.paste_into_session(&target, text, None, cx);
+            self.paste_into_session(&target, text, None, false, cx);
         }
     }
 
@@ -740,10 +754,10 @@ fn install_command_hooks(cx: &mut App) {
             if !connected {
                 return false;
             }
-            let sent =
-                shell.send_to_session(&tab_id, LinkInput::Data(text.clone().into_bytes()), cx);
+            // Typed at the host's paste pace, and into the sessions mirroring it at theirs.
+            let sent = shell.type_text(&tab_id, &text, cx);
             if sent {
-                shell.mirror_input(&tab_id, text.as_bytes(), cx);
+                shell.mirror_typing(&tab_id, &text, cx);
             }
             sent
         })

@@ -177,6 +177,14 @@ impl<M> CommandTracker<M> {
         Self::default()
     }
 
+    /// Move the running command's marker with its line (the buffer was resized); `None` when
+    /// its line went away, which disposes it as xterm disposes a marker on a deleted line.
+    pub fn map_marker(&mut self, map: impl FnOnce(&M) -> Option<M>) {
+        if let Some(marker) = self.command_start.take() {
+            self.command_start = map(&marker);
+        }
+    }
+
     /// Handle one OSC 133/633 payload; returns true when consumed.
     pub fn handle<H: CommandMarkerHost<Marker = M>>(&mut self, host: &mut H, data: &str) -> bool {
         let (kind, arg) = match data.find(';') {

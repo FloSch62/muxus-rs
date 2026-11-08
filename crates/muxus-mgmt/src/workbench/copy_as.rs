@@ -271,6 +271,7 @@ mod tests {
             cert_file: None,
             key_file: None,
             ssh_gateway: None,
+            ssh_gateway_fallbacks: None,
             encoding: None,
         };
         let draft = GnmiDraft {
@@ -289,6 +290,7 @@ mod tests {
             port: 830,
             username: Some("admin".into()),
             ssh_gateway: None,
+            ssh_gateway_fallbacks: None,
         };
         let script = ncclient_script(
             &netconf,

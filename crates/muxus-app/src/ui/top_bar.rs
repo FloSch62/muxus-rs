@@ -39,6 +39,8 @@ impl AppShell {
         } else {
             layout::TOP_BAR_HEIGHT
         };
+        // The traffic lights stay centered in the bar, focus mode's shorter one included.
+        muxus_ui::widgets::window_frame::place_traffic_lights(window, height);
         let active_tab = self.tabs.active_tab().cloned();
         let ssh_ready = active_tab
             .as_ref()
@@ -151,6 +153,7 @@ impl AppShell {
                         })),
                 );
             }
+            bar = bar.children(self.environments_control(cx));
             let forwarding_open = self.features.forwarding_open;
             let summary = self.forwards;
             let mut forwarding = IconButton::new("forwarding", "SwapHorizOutlined")
@@ -313,7 +316,7 @@ impl AppShell {
             ShellMenu::Tab { tab_id, position } => (position, self.tab_menu(&tab_id, window, cx)),
             ShellMenu::Pane { pane_id, position } => (position, self.pane_menu(&pane_id, cx)),
             ShellMenu::AllTabs { pane_id, position } => {
-                (position, self.all_tabs_menu(&pane_id, cx))
+                (position, self.all_tabs_menu(&pane_id, window, cx))
             }
             ShellMenu::HostSessions { host, position } => {
                 // Toward the panes: from the row's right edge, or its left edge when the

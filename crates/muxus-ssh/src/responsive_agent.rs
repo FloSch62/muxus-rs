@@ -150,12 +150,23 @@ impl ResponsiveAgent {
         &self.endpoint
     }
 
-    /// The identities the agent holds.
+    /// The identities the agent holds. Keys of a type the SSH engine does not know are left
+    /// out, as ssh2's agent client skips keys it cannot parse.
     pub async fn identities(&self) -> Result<Vec<AgentIdentity>, AgentError> {
-        self.request(AgentOperation::Identities, None, |mut client| async move {
-            client.request_identities().await
-        })
-        .await
+        let identities = self
+            .request(AgentOperation::Identities, None, |mut client| async move {
+                client.request_identities().await
+            })
+            .await?;
+        Ok(identities
+            .into_iter()
+            .filter(|identity| {
+                !matches!(
+                    identity_public_key(identity).algorithm(),
+                    russh::keys::Algorithm::Other(_)
+                )
+            })
+            .collect())
     }
 
     /// Signs `data` with `identity` (`hash` picks rsa-sha2-256/512 for RSA keys).

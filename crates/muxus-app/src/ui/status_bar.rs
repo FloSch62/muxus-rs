@@ -156,6 +156,9 @@ fn tab_source(tab: Option<&TerminalTab>) -> Result<StatsSource, &'static str> {
     if matches!(profile, SessionProfile::Local { .. }) {
         return Ok(StatsSource::Local);
     }
+    if tab.system_open_ssh == Some(true) && tab.sftp_available == Some(false) {
+        return Err("Statistics are not available for this system OpenSSH session");
+    }
     tab.conn_id
         .clone()
         .map(StatsSource::Ssh)
@@ -446,7 +449,7 @@ impl AppShell {
             (Ok(_), Some(HostStatsState::Unsupported)) => with_tooltip(
                 "status-unsupported",
                 muted("This host does not report statistics", &theme),
-                "Muxus reads statistics with a short sh script over the SSH connection. This host did not run it; network devices and Windows servers have no POSIX shell.",
+                "Muxus reads statistics with a short sh script over the SSH connection. This host did not run it, or never runs commands, so it was not asked; network devices and Windows servers have no POSIX shell.",
             ),
             (Ok(_), Some(HostStatsState::Error(message))) => with_tooltip(
                 "status-error",

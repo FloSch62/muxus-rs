@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
+use muxus_core::api::TerminalBackspaceKey;
 use russh::client::Msg;
 use russh::{Channel, ChannelMsg, Pty};
 
@@ -35,6 +36,26 @@ impl SessionSettings {
     }
 }
 
+/// A session into a container, pod or console runs that command on the host instead of the
+/// login shell (or a configured RemoteCommand), always with a terminal, the way
+/// `ssh -t host docker exec -it …` would (`environmentSession`).
+pub fn environment_session(
+    settings: SessionSettings,
+    profile: &super::profile::SshProfile,
+) -> SessionSettings {
+    let Some(target) = &profile.environment else {
+        return settings;
+    };
+    let Ok(command) = muxus_core::environments::environment_command_line(target) else {
+        return settings;
+    };
+    SessionSettings {
+        remote_command: Some(command),
+        request_tty: Some(RequestTty::Force),
+        ..settings
+    }
+}
+
 /// RequestTTY the way ssh(1) treats it: auto ⇒ a tty only for plain shells.
 pub fn wants_pty(request_tty: Option<RequestTty>, has_command: bool) -> bool {
     match request_tty {
@@ -60,13 +81,28 @@ pub struct PtyOptions {
 /// remote PTY prevents DEL from being echoed as visible input (and advancing the cursor) on hosts
 /// with a different login default.
 pub fn terminal_pty_options(cols: u32, rows: u32, term: &str) -> PtyOptions {
+    terminal_pty_options_for(cols, rows, term, TerminalBackspaceKey::Del)
+}
+
+/// [`terminal_pty_options`] for a host whose Backspace sends `backspace_key`: the pty request
+/// advertises ^H as the erase character when the window sends it.
+pub fn terminal_pty_options_for(
+    cols: u32,
+    rows: u32,
+    term: &str,
+    backspace_key: TerminalBackspaceKey,
+) -> PtyOptions {
+    let erase = match backspace_key {
+        TerminalBackspaceKey::CtrlH => 0x08,
+        TerminalBackspaceKey::Del => 0x7f,
+    };
     PtyOptions {
         term: term.to_string(),
         cols,
         rows,
         pixel_width: 0,
         pixel_height: 0,
-        modes: vec![(Pty::VERASE, 0x7f)],
+        modes: vec![(Pty::VERASE, erase)],
     }
 }
 
@@ -330,4 +366,20 @@ pub async fn exec_command(
     out.timed_out = !finished;
     let _ = session.channel.close().await;
     Ok(out)
+}
+
+#[cfg(test)]
+mod pty_tests {
+    use super::*;
+
+    #[test]
+    fn negotiates_the_erase_character_the_hosts_backspace_sends() {
+        assert_eq!(
+            terminal_pty_options(132, 42, "xterm-256color").modes,
+            vec![(Pty::VERASE, 0x7f)]
+        );
+        let ctrl_h = terminal_pty_options_for(80, 24, "xterm", TerminalBackspaceKey::CtrlH);
+        assert_eq!(ctrl_h.modes, vec![(Pty::VERASE, 0x08)]);
+        assert_eq!((ctrl_h.cols, ctrl_h.rows), (80, 24));
+    }
 }

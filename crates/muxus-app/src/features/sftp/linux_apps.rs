@@ -11,6 +11,14 @@ use regex::Regex;
 
 const MAX_DESKTOP_FILE_BYTES: u64 = 256 * 1024;
 const MAX_APPLICATION_DIRECTORY_DEPTH: usize = 3;
+// The chooser draws icons at 24px; 48px stays sharp on HiDPI screens.
+const ICON_SIZE: f64 = 48.;
+const SMALL_ICON_PENALTY: f64 = 2_000.;
+// Spec order ends with hicolor; the others cover icons a desktop's default
+// theme provides when the user's theme could not be determined.
+const FALLBACK_ICON_THEMES: [&str; 3] = ["hicolor", "Adwaita", "breeze"];
+/// Larger SVG icons are not drawn (`MAX_SVG_ICON_BYTES`).
+const MAX_SVG_ICON_BYTES: u64 = 256 * 1024;
 
 /// One program a file can be opened with.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -790,6 +798,238 @@ fn desktop_files(directory: &Path, prefix: &str, depth: usize, found: &mut Vec<(
     }
 }
 
+/// An icon theme's `index.theme`, keeping only its program icon folders.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IconThemeIndex {
+    pub inherits: Vec<String>,
+    /// Folders of program icons, relative to the theme, best fit first, with their score.
+    pub directories: Vec<(String, f64)>,
+}
+
+fn comma_list(value: Option<&str>) -> Vec<String> {
+    value
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// JavaScript's `Number(text)` for the plain decimals icon themes use.
+fn js_number(value: Option<&str>) -> f64 {
+    match value.map(str::trim) {
+        None => f64::NAN,
+        Some("") => 0.,
+        Some(text) => text.parse().unwrap_or(f64::NAN),
+    }
+}
+
+/// `parseIconThemeIndex`: the program icon folders (context `Applications`/`Apps`, or an
+/// `apps` path without a context), exact fits first, then vectors, then larger icons (they
+/// scale down cleanly), and smaller ones only when nothing else exists.
+pub fn parse_icon_theme_index(text: &str) -> IconThemeIndex {
+    let groups = parse_key_file(text);
+    let empty = KeyGroup::new();
+    let theme = group(&groups, "Icon Theme").unwrap_or(&empty);
+    let mut names: Vec<String> = Vec::new();
+    for name in comma_list(get(theme, "Directories"))
+        .into_iter()
+        .chain(comma_list(get(theme, "ScaledDirectories")))
+    {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    let mut directories = Vec::new();
+    for name in names {
+        let Some(values) = group(&groups, &name) else {
+            continue;
+        };
+        let programs = match get(values, "Context") {
+            Some(context) if !context.is_empty() => context == "Applications" || context == "Apps",
+            _ => name.split('/').any(|part| part == "apps"),
+        };
+        if !programs {
+            continue;
+        }
+        let scale = match get(values, "Scale") {
+            None => 1.,
+            some => js_number(some),
+        };
+        let size = js_number(get(values, "Size")) * scale;
+        if !size.is_finite() || size <= 0. {
+            continue;
+        }
+        let score = if get(values, "Type") == Some("Scalable") {
+            0.5
+        } else if size >= ICON_SIZE {
+            size - ICON_SIZE
+        } else {
+            SMALL_ICON_PENALTY + ICON_SIZE - size
+        };
+        directories.push((name, score));
+    }
+    directories.sort_by(|a, b| a.1.total_cmp(&b.1));
+    IconThemeIndex {
+        inherits: comma_list(get(theme, "Inherits")),
+        directories,
+    }
+}
+
+/// Wait for a short-lived program's output, giving up after `timeout`.
+fn output_within(mut command: Command, timeout: std::time::Duration) -> Option<String> {
+    use std::io::Read;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut out = String::new();
+                child.stdout.take()?.read_to_string(&mut out).ok()?;
+                return status.success().then_some(out);
+            }
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+/// `detectIconTheme`: the icon theme the desktop is using, as far as it can be told without a
+/// toolkit (KDE's `kdeglobals`, GNOME's settings, GTK 3's `settings.ini`).
+pub fn detect_icon_theme(env: &HashMap<String, String>, home: &Path) -> Option<String> {
+    let config_home = config_directories(env, home).into_iter().next()?;
+    if current_desktops(env).iter().any(|desktop| desktop == "KDE") {
+        let theme = read_text(&config_home.join("kdeglobals"), MAX_DESKTOP_FILE_BYTES)
+            .and_then(|text| {
+                let groups = parse_key_file(&text);
+                group(&groups, "Icons")
+                    .and_then(|icons| get(icons, "Theme"))
+                    .map(String::from)
+            })
+            .filter(|theme| !theme.is_empty());
+        return Some(theme.unwrap_or_else(|| "breeze".into()));
+    }
+    let mut command = Command::new("gsettings");
+    command
+        .args(["get", "org.gnome.desktop.interface", "icon-theme"])
+        .env_clear()
+        .envs(env);
+    if let Some(theme) = output_within(command, std::time::Duration::from_secs(2)) {
+        let theme = theme.trim();
+        let theme = theme
+            .strip_prefix('\'')
+            .and_then(|rest| rest.strip_suffix('\''))
+            .unwrap_or(theme);
+        if !theme.is_empty() {
+            return Some(theme.to_string());
+        }
+    }
+    let text = read_text(
+        &config_home.join("gtk-3.0/settings.ini"),
+        MAX_DESKTOP_FILE_BYTES,
+    )?;
+    let groups = parse_key_file(&text);
+    group(&groups, "Settings")
+        .and_then(|settings| get(settings, "gtk-icon-theme-name"))
+        .filter(|theme| !theme.is_empty())
+        .map(String::from)
+}
+
+/// Icon name → best file: the user's theme, what it inherits, then the fallbacks; within a
+/// theme the folder's fit, then PNG over SVG; an earlier base breaks a tie, so icons the
+/// user installed win over the system's. Pixmaps come last.
+fn icon_index(
+    home: &Path,
+    data_dirs: &[PathBuf],
+    preferred: Option<&str>,
+) -> HashMap<String, PathBuf> {
+    let bases: Vec<PathBuf> = std::iter::once(home.join(".icons"))
+        .chain(data_dirs.iter().map(|dir| dir.join("icons")))
+        .collect();
+    let mut themes: Vec<(String, IconThemeIndex)> = Vec::new();
+    fn visit(name: &str, bases: &[PathBuf], themes: &mut Vec<(String, IconThemeIndex)>) {
+        if themes.iter().any(|(theme, _)| theme == name) {
+            return;
+        }
+        for base in bases {
+            let Some(text) = read_text(&base.join(name).join("index.theme"), 1024 * 1024) else {
+                continue;
+            };
+            let index = parse_icon_theme_index(&text);
+            let parents = index.inherits.clone();
+            themes.push((name.to_string(), index));
+            for parent in parents {
+                if parent != "hicolor" {
+                    visit(&parent, bases, themes);
+                }
+            }
+            return;
+        }
+    }
+    if let Some(preferred) = preferred.filter(|theme| *theme != "hicolor") {
+        visit(preferred, &bases, &mut themes);
+    }
+    for fallback in FALLBACK_ICON_THEMES {
+        visit(fallback, &bases, &mut themes);
+    }
+    let mut index: HashMap<String, (PathBuf, u64)> = HashMap::new();
+    let mut consider = |name: &str, file: PathBuf, rank: u64| match index.get(name) {
+        Some((_, current)) if *current <= rank => {}
+        _ => {
+            index.insert(name.to_string(), (file, rank));
+        }
+    };
+    let icon_files = |directory: &Path| -> Vec<(String, PathBuf)> {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let stem = name
+                    .strip_suffix(".png")
+                    .or_else(|| name.strip_suffix(".svg"))?
+                    .to_string();
+                Some((stem, entry.path()))
+            })
+            .collect()
+    };
+    for (theme_rank, (theme, theme_index)) in themes.iter().enumerate() {
+        for (directory, score) in &theme_index.directories {
+            for (base_rank, base) in bases.iter().enumerate() {
+                for (stem, file) in icon_files(&base.join(theme).join(directory)) {
+                    let fit = theme_rank as u64 * 10_000 + (score * 2.).round() as u64;
+                    let svg = u64::from(file.extension().is_some_and(|ext| ext == "svg"));
+                    let quality = fit * 2 + svg;
+                    consider(&stem, file, quality * bases.len() as u64 + base_rank as u64);
+                }
+            }
+        }
+    }
+    for directory in data_dirs {
+        for (stem, file) in icon_files(&directory.join("pixmaps")) {
+            consider(&stem, file, u64::MAX);
+        }
+    }
+    index
+        .into_iter()
+        .map(|(name, (file, _))| (name, file))
+        .collect()
+}
+
 /// The installed programs and file-type data, read in one go.
 pub struct LinuxApplicationCatalog {
     pub applications: Vec<DesktopApplication>,
@@ -797,10 +1037,21 @@ pub struct LinuxApplicationCatalog {
     subclasses: HashMap<String, Vec<String>>,
     aliases: HashMap<String, Vec<String>>,
     mime_apps: Vec<MimeAppsList>,
+    icons: HashMap<String, PathBuf>,
 }
 
 impl LinuxApplicationCatalog {
+    /// Everything installed, with the icons of the desktop's icon theme.
     pub fn read(env: &HashMap<String, String>, home: &Path) -> Self {
+        let theme = detect_icon_theme(env, home);
+        Self::read_with_icon_theme(env, home, theme.as_deref())
+    }
+
+    pub fn read_with_icon_theme(
+        env: &HashMap<String, String>,
+        home: &Path,
+        icon_theme: Option<&str>,
+    ) -> Self {
         let data_dirs = data_directories(env, home);
         let desktops = current_desktops(env);
         let locale = env
@@ -888,7 +1139,31 @@ impl LinuxApplicationCatalog {
             subclasses: merge_pairs("subclasses"),
             aliases: merge_pairs("aliases"),
             mime_apps,
+            icons: icon_index(home, &data_dirs, icon_theme),
         }
+    }
+
+    /// The PNG or SVG file of the program's icon, when one was found.
+    pub fn icon_file(&self, application: &DesktopApplication) -> Option<PathBuf> {
+        let icon = application.icon.as_deref()?;
+        let file = if Path::new(icon).is_absolute() {
+            (icon.ends_with(".png") || icon.ends_with(".svg")).then(|| PathBuf::from(icon))?
+        } else {
+            let name = [".png", ".svg", ".xpm"]
+                .iter()
+                .find_map(|ext| icon.strip_suffix(ext))
+                .unwrap_or(icon);
+            self.icons.get(name)?.clone()
+        };
+        // `programIconDataUrl`: an SVG past 256 KiB is not drawn.
+        let svg = file.extension().is_some_and(|ext| ext == "svg");
+        if svg
+            && std::fs::metadata(&file)
+                .is_ok_and(|info| !info.is_file() || info.len() > MAX_SVG_ICON_BYTES)
+        {
+            return None;
+        }
+        Some(file)
     }
 
     /// Every program, ranked for a file called `file_name`.
@@ -1318,6 +1593,135 @@ mod tests {
         assert_eq!(
             names,
             ["Calculator", "GIMP", "Image Viewer", "Pinta", "Text Editor"]
+        );
+    }
+
+    #[test]
+    fn keeps_program_icon_folders_closest_to_48px_first() {
+        let index = parse_icon_theme_index(
+            &[
+                "[Icon Theme]",
+                "Name=Yaru",
+                "Inherits=Humanity, hicolor",
+                "Directories=16x16/apps,48x48/apps,256x256/apps,scalable/apps,48x48/actions,misc",
+                "ScaledDirectories=24x24@2x/apps",
+                "[16x16/apps]",
+                "Size=16",
+                "Context=Applications",
+                "[48x48/apps]",
+                "Size=48",
+                "Context=Applications",
+                "[256x256/apps]",
+                "Size=256",
+                "Context=Applications",
+                "[scalable/apps]",
+                "Size=128",
+                "Type=Scalable",
+                "Context=Applications",
+                "[48x48/actions]",
+                "Size=48",
+                "Context=Actions",
+                "[misc]",
+                "Size=32",
+                "[24x24@2x/apps]",
+                "Size=24",
+                "Scale=2",
+                "Context=Applications",
+            ]
+            .join("\n"),
+        );
+        assert_eq!(index.inherits, strings(&["Humanity", "hicolor"]));
+        let paths: Vec<&str> = index.directories.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "48x48/apps",
+                "24x24@2x/apps",
+                "scalable/apps",
+                "256x256/apps",
+                "16x16/apps"
+            ]
+        );
+    }
+
+    #[test]
+    fn finds_a_programs_icon_in_the_theme_it_inherits_from() {
+        let scratch = tempfile::tempdir().unwrap();
+        let home = scratch.path().join("home");
+        let system = scratch.path().join("usr/share");
+        let write = |file: &Path, text: &str| {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        };
+        let theme = |name: &str, extra: &str| {
+            format!(
+                "[Icon Theme]\nName={name}\n{extra}Directories=48x48/apps,scalable/apps\n\
+                 [48x48/apps]\nSize=48\nContext=Applications\n\
+                 [scalable/apps]\nSize=48\nType=Scalable\nContext=Applications\n"
+            )
+        };
+        write(
+            &system.join("icons/hicolor/index.theme"),
+            &theme("hicolor", ""),
+        );
+        write(
+            &system.join("icons/Yaru/index.theme"),
+            &theme("Yaru", "Inherits=hicolor\n"),
+        );
+        write(&system.join("icons/hicolor/48x48/apps/viewer.png"), "png");
+        write(
+            &system.join("icons/hicolor/scalable/apps/viewer.svg"),
+            "<svg/>",
+        );
+        write(
+            &system.join("icons/Yaru/scalable/apps/editor.svg"),
+            "<svg/>",
+        );
+        write(&system.join("icons/hicolor/48x48/apps/editor.png"), "png");
+        // The user's own icons win a tie.
+        write(&home.join(".icons/hicolor/48x48/apps/editor.png"), "png");
+        write(&system.join("pixmaps/old.png"), "png");
+        let env: HashMap<String, String> = [
+            ("XDG_DATA_HOME", home.join(".local/share").to_str().unwrap()),
+            ("XDG_DATA_DIRS", system.to_str().unwrap()),
+            ("XDG_CONFIG_HOME", home.join(".config").to_str().unwrap()),
+            ("PATH", "/nonexistent"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let catalog = LinuxApplicationCatalog::read_with_icon_theme(&env, &home, Some("Yaru"));
+        let icon = |name: &str| {
+            catalog.icon_file(&DesktopApplication {
+                icon: Some(name.into()),
+                ..DesktopApplication::default()
+            })
+        };
+        // PNG over SVG in one theme; the preferred theme before what it inherits.
+        assert_eq!(
+            icon("viewer"),
+            Some(system.join("icons/hicolor/48x48/apps/viewer.png"))
+        );
+        assert_eq!(icon("viewer.png"), icon("viewer"));
+        assert_eq!(
+            icon("editor"),
+            Some(system.join("icons/Yaru/scalable/apps/editor.svg"))
+        );
+        assert_eq!(icon("old"), Some(system.join("pixmaps/old.png")));
+        assert_eq!(icon("missing"), None);
+        assert_eq!(
+            icon("/opt/app/icon.png"),
+            Some(PathBuf::from("/opt/app/icon.png"))
+        );
+        assert_eq!(icon("/opt/app/icon.xpm"), None);
+        // Without the preferred theme, hicolor's PNG; the user's copy first.
+        let plain = LinuxApplicationCatalog::read_with_icon_theme(&env, &home, None);
+        assert_eq!(
+            plain.icon_file(&DesktopApplication {
+                icon: Some("editor".into()),
+                ..DesktopApplication::default()
+            }),
+            Some(home.join(".icons/hicolor/48x48/apps/editor.png"))
         );
     }
 

@@ -104,7 +104,10 @@ impl RdpServerDisplay for Display {
         *self.size.lock().unwrap()
     }
 
-    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(
+        &mut self,
+        _ctx: ironrdp_server::DisplayContext,
+    ) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(Updates(self.updates.clone())))
     }
 

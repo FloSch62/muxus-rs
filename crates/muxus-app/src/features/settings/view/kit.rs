@@ -2,7 +2,7 @@
 //! a page heading, then groups (a small uppercase label above a bordered
 //! card) holding rows with the label and its explanation on the left and the
 //! control on the right. Plus the controls the sections use that the shared
-//! widget set does not have yet: toggle button groups, the compact slider,
+//! widget set does not have yet: toggle button groups, the compact select,
 //! the color well, outlined fields with a floating label and outlined alerts.
 //!
 //! Sizes are MUI's under the Muxus theme, measured in the Electron build's
@@ -20,13 +20,12 @@ use muxus_ui::gpui_kit::{
 use muxus_ui::icon::{SMALL, icon};
 use muxus_ui::label::{label, paragraph};
 use muxus_ui::theme::{Status, Theme, fonts};
+use muxus_ui::widgets::focus::TabStop;
 use muxus_ui::widgets::{AnchorBounds, bounds_probe};
 
 pub type Handler = Rc<dyn Fn(&mut Window, &mut App)>;
 /// A choice by position (toggle groups).
 pub type IndexHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
-/// A position along a slider, 0–1.
-pub type FractionHandler = Rc<dyn Fn(f32, &mut Window, &mut App)>;
 
 /// A line height on the device-pixel grid of a 2× display. GPUI rounds a
 /// text line's box up to whole device pixels, so Chrome's 18.59px body2
@@ -139,7 +138,8 @@ impl Group {
 
     pub fn render(self, theme: &Theme) -> AnyElement {
         let p = &theme.palette;
-        let mut section = div().flex().flex_col();
+        let (probe, outline) = super::search::group_focus(self.title.as_deref(), 16.).unzip();
+        let mut section = div().relative().flex().flex_col().children(probe);
         if self.title.is_some() || !self.actions.is_empty() {
             let mut head = div()
                 .flex()
@@ -186,6 +186,7 @@ impl Group {
         section
             .child(
                 div()
+                    .relative()
                     .flex()
                     .flex_col()
                     .border_1()
@@ -193,7 +194,8 @@ impl Group {
                     .rounded(px(16.))
                     .bg(p.background_paper)
                     .overflow_hidden()
-                    .children(rows),
+                    .children(rows)
+                    .children(outline),
             )
             .into_any_element()
     }
@@ -202,6 +204,8 @@ impl Group {
 /// `SettingRow`.
 pub struct Row {
     label: AnyElement,
+    /// The label's text, which a settings search pick outlines.
+    text: SharedString,
     description: Option<AnyElement>,
     controls: Vec<AnyElement>,
     stacked: bool,
@@ -215,8 +219,10 @@ pub fn row(theme: &Theme, text: impl Into<SharedString>) -> Row {
 
 impl Row {
     fn with_label(theme: &Theme, text: impl Into<SharedString>, disabled: bool) -> Self {
+        let text: SharedString = text.into();
         Row {
-            label: row_label(theme, text, disabled),
+            label: row_label(theme, text.clone(), disabled),
+            text,
             description: None,
             controls: Vec::new(),
             stacked: false,
@@ -233,7 +239,8 @@ impl Row {
         disabled: bool,
     ) -> Self {
         self.disabled = disabled;
-        self.label = row_label(theme, text, disabled);
+        self.text = text.into();
+        self.label = row_label(theme, self.text.clone(), disabled);
         self
     }
 
@@ -307,10 +314,12 @@ impl Row {
             line = line.child(controls);
         }
         div()
+            .relative()
             .px(px(16.))
             .py(px(12.))
             .child(line)
             .children(self.extra)
+            .children(super::search::row_focus(&self.text))
             .into_any_element()
     }
 }
@@ -495,6 +504,8 @@ pub fn toggle_group(
             text
         });
         let on_select = on_select.clone();
+        // Each button is a tab stop; Enter or Space picks it.
+        button = button.tab_stop_with_ripple(muxus_ui::widgets::focus::ripple(ink, None), true);
         if !is_selected {
             button = button.on_click(move |_, window, cx| on_select(index, window, cx));
         }
@@ -573,8 +584,32 @@ pub fn row_select(
     };
     field = field.group(group_name).child(outline_box);
     if !disabled {
+        // A tab stop; keyboard focus draws MUI's focused 2px primary outline (inside
+        // the field, so nothing moves) and Enter or Space opens the menu.
+        let ring = vec![BoxShadow {
+            color: p.primary.main,
+            offset: point(px(0.), px(0.)),
+            blur_radius: px(0.),
+            spread_radius: px(2.),
+            inset: true,
+        }];
+        let on_key = on_open.clone();
         field = field
+            .tab_stop(true)
+            .focusable()
+            .focus_visible(move |s| s.shadow(ring))
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .cursor_pointer()
+            // MUI's Select opens on the up and down arrows too.
+            .on_key_down(move |event, window, cx| {
+                let keystroke = &event.keystroke;
+                if matches!(keystroke.key.as_str(), "up" | "down")
+                    && !keystroke.modifiers.modified()
+                {
+                    cx.stop_propagation();
+                    on_key(window, cx);
+                }
+            })
             .on_click(move |_, window, cx| on_open(window, cx));
     }
     field
@@ -587,79 +622,6 @@ pub fn select_value(theme: &Theme, text: impl Into<SharedString>) -> AnyElement 
         .line_height(snap(BODY1 * 1.4375))
         .color(theme.palette.text.primary)
         .into_any_element()
-}
-
-/// MUI `Slider size="small"`: a 2px rail at 38% of the track color, the
-/// filled track and a 12px thumb, 180px wide in a settings row.
-pub fn slider(
-    id: impl Into<ElementId>,
-    theme: &Theme,
-    fraction: f32,
-    disabled: bool,
-    anchor: &AnchorBounds,
-    on_press: FractionHandler,
-) -> Stateful<Div> {
-    let p = &theme.palette;
-    let color = if disabled {
-        if theme.mode.is_dark() {
-            p.grey.g600
-        } else {
-            p.grey.g400
-        }
-    } else {
-        p.primary.main
-    };
-    let fraction = fraction.clamp(0., 1.);
-    let width = 180.;
-    let anchor_for_press = anchor.clone();
-    let mut root = div()
-        .id(id)
-        .relative()
-        .w(px(width))
-        .h(px(28.))
-        .flex_none()
-        .child(
-            div()
-                .absolute()
-                .left_0()
-                .right_0()
-                .top(px(13.))
-                .h(px(2.))
-                .rounded(px(1.))
-                .bg(alpha(color, 0.38)),
-        )
-        .child(
-            div()
-                .absolute()
-                .left_0()
-                .top(px(13.))
-                .h(px(2.))
-                .w(px(width * fraction))
-                .rounded(px(1.))
-                .bg(color),
-        )
-        .child(
-            div()
-                .absolute()
-                .top(px(8.))
-                .left(px(width * fraction - 6.))
-                .size(px(12.))
-                .rounded(px(6.))
-                .bg(color),
-        )
-        .child(bounds_probe(anchor));
-    if !disabled {
-        root = root
-            .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, move |event, window, cx| {
-                if let Some(bounds) = anchor_for_press.get() {
-                    let x = muxus_ui::zoom::unzoom(event.position.x - bounds.origin.x);
-                    let fraction = (x / muxus_ui::zoom::unzoom(bounds.size.width)).clamp(0., 1.);
-                    on_press(fraction, window, cx);
-                }
-            });
-    }
-    root
 }
 
 /// The value beside a slider: 44px, right aligned, tabular figures.

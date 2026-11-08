@@ -173,7 +173,7 @@ fn matches_an_ssh_config_host_by_host_name_and_port() {
 fn uses_a_saved_muxus_host_by_name_or_address_when_user_and_port_fit() {
     let fixture = Fixture::new();
     let (hosts, profiles) = (fixture.ssh_hosts(), fixture.profiles());
-    let mut expected_profile: SessionProfile = fixture.lab.profile.clone().into();
+    let mut expected_profile: SessionProfile = fixture.lab.profile.session_profile().unwrap();
     if let SessionProfile::Ssh(ssh) = &mut expected_profile {
         ssh.profile_id = Some("lab-1".to_owned());
     }

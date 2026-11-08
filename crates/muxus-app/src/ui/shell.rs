@@ -12,7 +12,7 @@ use muxus_app::model::Catalog;
 use muxus_app::sidebar::folder_prefs::FolderPrefs;
 use muxus_app::sidebar::live_counts::{LiveStatus, live_host_counts};
 use muxus_app::sidebar_width::clamp_sidebar_width;
-use muxus_app::state::session_actions::{LaunchGuard, connect_managed_host, connect_target};
+use muxus_app::state::session_actions::{LaunchGuard, connect_target};
 use muxus_app::state::tabs::{TabStatus, TabsState};
 use muxus_ui::gpui_kit::{
     AnyWindowHandle, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton,
@@ -146,6 +146,13 @@ pub struct AppShell {
     pub overlays: Vec<crate::ui::overlays::Overlay>,
     /// This shell's window, for routing app-wide requests to it.
     pub window_handle: Option<AnyWindowHandle>,
+    /// What programs reported with OSC 7501, per tab (`ui::program_status`).
+    pub program_status: muxus_app::state::program_status::ProgramStatusStore,
+    /// Tab drags, slides and the strips' scroll reveal (`ui::tab_drag`).
+    pub tab_motion: crate::ui::tab_drag::TabMotion,
+    /// What has the keyboard when no control does (a page's `body`): the
+    /// window's shortcuts and its Tab order answer from there.
+    pub body_focus: muxus_ui::gpui_kit::FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -253,10 +260,15 @@ impl AppShell {
             multi_exec: cx.new(|_| muxus_app::features::command_buttons::MultiExec::new()),
             prompt_seq: 0,
             window_handle: Some(window.window_handle()),
+            program_status: Default::default(),
+            tab_motion: Default::default(),
+            body_focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
         shell.apply_theme(window, cx);
         shell.load_catalog(cx);
+        shell.sync_sidebar_shells(cx);
+        shell.load_wsl_distributions(cx);
         if crate::ui::perf::perf().is_some() {
             // The heartbeat: a timer on the UI thread that notes how late it wakes.
             cx.spawn(async move |_, cx| {
@@ -349,6 +361,7 @@ impl AppShell {
             sidebar.rebuild();
             cx.notify();
         });
+        self.sync_sidebar_shells(cx);
         self.apply_theme(window, cx);
         self.refresh_terminal_settings(cx);
         cx.notify();
@@ -372,6 +385,7 @@ impl AppShell {
     }
 
     pub fn set_catalog(&mut self, catalog: Catalog, cx: &mut Context<Self>) {
+        self.environments_catalog_loaded(&catalog, cx);
         if self.catalog == catalog {
             return;
         }
@@ -426,6 +440,15 @@ impl AppShell {
                 anchor,
             } => self.open_host(host, *new_session || *repeat, *anchor, cx),
             SidebarEvent::OpenLocalTerminal => self.open_local(None, cx),
+            SidebarEvent::OpenLocalShell(profile) => {
+                muxus_app::features::launcher::sessions::open_local_shell_profile(
+                    &mut self.tabs,
+                    &mut self.launch_guard,
+                    profile,
+                    None,
+                    now,
+                );
+            }
             SidebarEvent::QuickConnect(target) => {
                 connect_target(
                     &mut self.tabs,
@@ -482,13 +505,7 @@ impl AppShell {
                 cx.notify();
             }
             _ => {
-                connect_managed_host(
-                    &mut self.tabs,
-                    &mut self.launch_guard,
-                    host,
-                    None,
-                    Instant::now(),
-                );
+                self.connect_host(host, None, cx);
                 self.tabs_changed(cx);
             }
         }
@@ -567,6 +584,8 @@ impl Render for AppShell {
         self.sync_session_views(window, cx);
         self.sync_sftp(window, cx);
         self.sync_prompt_dialog(window, cx);
+        self.sync_environments(cx);
+        self.sync_program_status();
         let theme = *cx.theme();
         let p = theme.palette;
         let show_sidebar = self.show_sidebar();
@@ -587,14 +606,31 @@ impl Render for AppShell {
         {
             canvas = canvas.child(panel);
         }
+        // The containers and VMs panel opens beside the sidebar it grows out of.
+        let environments = self.render_environments_panel(window, cx);
         middle = if on_right {
-            middle.child(canvas).children(sidebar)
+            middle
+                .child(canvas)
+                .children(environments)
+                .children(sidebar)
         } else {
-            middle.children(sidebar).child(canvas)
+            middle
+                .children(sidebar)
+                .children(environments)
+                .child(canvas)
         };
 
-        let mut root = div()
-            .id("app-shell")
+        // Nothing has the keyboard (the window just opened, or what had it went
+        // away): the body takes it, so shortcuts and Tab still reach the window.
+        if window.focused(cx).is_none() {
+            cx.defer_in(window, |this, window, cx| {
+                if window.focused(cx).is_none() {
+                    window.focus(&this.body_focus, cx);
+                }
+            });
+        }
+        // Tab walks the window's controls as it does a page; a terminal keeps it.
+        let mut root = muxus_ui::widgets::focus::tab_order(div().id("app-shell"))
             .relative()
             .flex()
             .flex_col()
@@ -615,6 +651,13 @@ impl Render for AppShell {
             ))
             .on_mouse_move(cx.listener(Self::on_drag_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_drag_end))
+            .child(
+                div()
+                    .id("shell-body-focus")
+                    .absolute()
+                    .size_0()
+                    .track_focus(&self.body_focus),
+            )
             .child(self.render_top_bar(window, cx));
         if !self.focus_mode && !command_bar_bottom {
             root = root.children(self.render_action_bar(cx));
@@ -635,14 +678,17 @@ impl Render for AppShell {
         if let Some((dialog, _)) = &self.confirm {
             root = root.child(dialog.clone());
         }
+        root = root.children(self.feature_layers());
+        root = root.children(self.overlays.iter().map(|overlay| overlay.view.clone()));
+        // Questions draw over feature dialogs: a script's hosts ask while Scripts is open.
         if let Some((dialog, _)) = &self.prompt_dialog {
             root = root.child(dialog.clone());
         }
-        root = root.children(self.feature_layers());
-        root = root.children(self.overlays.iter().map(|overlay| overlay.view.clone()));
         if let Some(toast) = self.render_toast(window, cx) {
             root = root.child(toast);
         }
+        // A tab drag ends wherever the button is let go, inside the window or not.
+        root = root.children(self.render_tab_drag_listener(cx));
         if let Some(perf) = crate::ui::perf::perf() {
             root = root.child(
                 muxus_ui::gpui_kit::canvas(|_, _, _| {}, move |_, _, _, _| perf.frame())

@@ -612,6 +612,11 @@ fn yes(v: Option<&String>) -> bool {
     v.is_some_and(|v| v.eq_ignore_ascii_case("yes"))
 }
 
+/// OpenSSH reads IdentitiesOnly as a flag, where `true` (any case) also means yes.
+fn yes_or_true(v: Option<&String>) -> bool {
+    v.is_some_and(|v| v.eq_ignore_ascii_case("yes") || v.eq_ignore_ascii_case("true"))
+}
+
 const RESOLVED_KEYS: &[&str] = &[
     "hostname",
     "user",
@@ -804,7 +809,7 @@ pub fn resolve_host(
             .iter()
             .map(|f| expand_identity_path(f, &identity_tokens, env))
             .collect(),
-        identities_only: yes(first.get("identitiesonly")),
+        identities_only: yes_or_true(first.get("identitiesonly")),
         forward_agent: yes(first.get("forwardagent")),
         forward_x11: flag(first.get("forwardx11")),
         proxy_jump: parse_proxy_jump_list(first.get("proxyjump").map(String::as_str)),
@@ -1250,7 +1255,15 @@ pub fn block_to_options(block: &HostBlock) -> HostBlockOptions {
                         .push(file.clone());
                 }
             }
-            "identitiesonly" => out.identities_only = Some(yes(opt.args.first())),
+            // Read as resolve_host does. Only the first line ever applies, so a save drops
+            // the rest.
+            "identitiesonly" => {
+                if out.identities_only.is_none()
+                    && let Some(value) = opt.args.first().filter(|v| !v.is_empty())
+                {
+                    out.identities_only = Some(yes_or_true(Some(value)));
+                }
+            }
             "identityagent" => match opt.args.first().filter(|a| !a.is_empty()) {
                 Some(agent) if out.identity_agent.is_none() => {
                     out.identity_agent = Some(agent.clone())

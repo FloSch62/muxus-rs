@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 muxus-core.workspace = true
 async-channel = "2"
-base64 = "0.22"
+base64 = "0.23"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
@@ -18,18 +18,18 @@ http-body = "1"
 hyper = { version = "1", features = ["client", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 indexmap = "2"
-md-5 = "0.10"
+md-5 = "0.11"
 percent-encoding = "2"
 prost = "0.14"
 prost-reflect = "0.16"
 prost-types = "0.14"
-quick-xml = "0.41"
+quick-xml = "0.42"
 regex = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-native-certs = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-sha2 = "0.10"
+sha2 = "0.11"
 socket2 = "0.6"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }

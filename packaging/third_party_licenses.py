@@ -6,6 +6,7 @@ one target, and writes, per package, its name, version, declared license and the
 notice files it ships. Packages that ship no file are listed with their declared license.
 
     packaging/third_party_licenses.py OUTPUT [--target x86_64-unknown-linux-gnu]
+                                             [--features muxus-app/webview]
 """
 
 import argparse
@@ -19,9 +20,11 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 LICENSE_PREFIXES = ("license", "licence", "copying", "notice", "copyright", "unlicense")
 
 
-def metadata(target):
+def metadata(target, features):
+    extra = ["--features", features] if features else []
     output = subprocess.run(
-        ["cargo", "metadata", "--format-version", "1", "--offline", "--filter-platform", target],
+        ["cargo", "metadata", "--format-version", "1", "--offline", "--filter-platform", target]
+        + extra,
         cwd=ROOT,
         check=True,
         capture_output=True,
@@ -69,8 +72,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("output")
     parser.add_argument("--target", default="x86_64-unknown-linux-gnu")
+    # The features the binary was built with, such as muxus-app/webview.
+    parser.add_argument("--features", default="")
     args = parser.parse_args()
-    packages = linked_packages(metadata(args.target))
+    packages = linked_packages(metadata(args.target, args.features))
     lines = [
         "Third-party software in Muxus",
         "=============================",

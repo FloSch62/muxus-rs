@@ -6,10 +6,16 @@ use serde_with::skip_serializing_none;
 
 use super::ForwardType;
 use crate::js::Patch;
-use crate::protocol::{RequestTty, SavedHostSessionProfile, StrictHostKeyChecking};
+use crate::paste_pacing::{
+    MAX_PASTE_PROMPT_TIMEOUT_MS, MIN_PASTE_PROMPT_TIMEOUT_MS, PastePromptWaitSetting,
+    paste_pattern_problem,
+};
+use crate::protocol::{
+    MAX_JUMP_FALLBACKS, MAX_JUMP_HOPS, RequestTty, SavedHostSessionProfile, StrictHostKeyChecking,
+};
 use crate::validate::{self, Validate, ValidationError, join};
 
-/// The kinds a saved host can have (everything but local shells).
+/// The kinds a saved host can have (everything but local shells, plus web pages).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SavedHostKind {
@@ -20,10 +26,13 @@ pub enum SavedHostKind {
     Vnc,
     Gnmi,
     Netconf,
+    /// A web page opened in a browser window; it has no session of its own.
+    Web,
 }
 
 impl SavedHostKind {
-    pub const ALL: [SavedHostKind; 7] = [
+    /// `SAVED_HOST_KINDS`, in the database's order.
+    pub const ALL: [SavedHostKind; 8] = [
         SavedHostKind::Ssh,
         SavedHostKind::Serial,
         SavedHostKind::Telnet,
@@ -31,6 +40,7 @@ impl SavedHostKind {
         SavedHostKind::Vnc,
         SavedHostKind::Gnmi,
         SavedHostKind::Netconf,
+        SavedHostKind::Web,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -42,6 +52,7 @@ impl SavedHostKind {
             SavedHostKind::Vnc => "vnc",
             SavedHostKind::Gnmi => "gnmi",
             SavedHostKind::Netconf => "netconf",
+            SavedHostKind::Web => "web",
         }
     }
 
@@ -50,7 +61,7 @@ impl SavedHostKind {
     }
 }
 
-/// SSH/Telnet/serial/RDP/VNC/gNMI/NETCONF host stored natively by Muxus rather than in ssh_config.
+/// SSH/Telnet/serial/RDP/VNC/gNMI/NETCONF/web host stored natively by Muxus rather than in ssh_config.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SavedHostProfile {
@@ -208,6 +219,15 @@ pub struct SshHostEntry {
     pub resolved: ResolvedHostSettings,
     /// Muxus-only metadata. Connection details still resolve live from OpenSSH.
     pub metadata: Option<OpenSshProfileMetadata>,
+}
+
+/// The host whose Muxus settings a tab dialing the ssh_config alias `target`
+/// uses: the first in host list order naming it. The window and the backend
+/// both pick it this way, from the list in the order the backend sorts it.
+pub fn listed_host_for<'a>(hosts: &'a [SshHostEntry], target: &str) -> Option<&'a SshHostEntry> {
+    hosts
+        .iter()
+        .find(|host| host.aliases.iter().any(|alias| alias == target))
 }
 
 /// One terminal keyword or pattern and the colors used to render every match.
@@ -399,6 +419,89 @@ pub const LOGIN_SEQUENCE_TEXT_MAX_LENGTH: usize = 1024;
 pub const LOGIN_SEQUENCE_DEFAULT_TIMEOUT_SECONDS: u32 = 10;
 pub const LOGIN_SEQUENCE_MAX_TIMEOUT_SECONDS: u32 = 3600;
 
+/// Text a session types after a stretch without input, so a device that
+/// closes idle lines keeps it open. Enter is pressed only when `enter` is set.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AntiIdle {
+    pub interval_seconds: u32,
+    /// Typed as is; may be empty when only Enter is pressed.
+    pub text: String,
+    pub enter: bool,
+}
+
+pub const ANTI_IDLE_MIN_INTERVAL_SECONDS: u32 = 10;
+pub const ANTI_IDLE_MAX_INTERVAL_SECONDS: u32 = 3600;
+pub const ANTI_IDLE_TEXT_MAX_LENGTH: usize = 256;
+
+/// What a host's Backspace key sends: DEL (0x7f), as xterm.js does, or ^H (0x08).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TerminalBackspaceKey {
+    #[default]
+    Del,
+    CtrlH,
+}
+
+pub const TERMINAL_BACKSPACE_KEYS: [TerminalBackspaceKey; 2] =
+    [TerminalBackspaceKey::Del, TerminalBackspaceKey::CtrlH];
+
+impl TerminalBackspaceKey {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TerminalBackspaceKey::Del => "del",
+            TerminalBackspaceKey::CtrlH => "ctrl-h",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        TERMINAL_BACKSPACE_KEYS
+            .into_iter()
+            .find(|key| key.as_str() == value)
+    }
+}
+
+/// What a host's Enter key sends: CR, as xterm.js does, CR LF, or LF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalEnterKey {
+    #[default]
+    Cr,
+    Crlf,
+    Lf,
+}
+
+pub const TERMINAL_ENTER_KEYS: [TerminalEnterKey; 3] = [
+    TerminalEnterKey::Cr,
+    TerminalEnterKey::Crlf,
+    TerminalEnterKey::Lf,
+];
+
+impl TerminalEnterKey {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TerminalEnterKey::Cr => "cr",
+            TerminalEnterKey::Crlf => "crlf",
+            TerminalEnterKey::Lf => "lf",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        TERMINAL_ENTER_KEYS
+            .into_iter()
+            .find(|key| key.as_str() == value)
+    }
+
+    /// The bytes the key sends.
+    pub fn data(self) -> &'static str {
+        match self {
+            TerminalEnterKey::Cr => "\r",
+            TerminalEnterKey::Crlf => "\r\n",
+            TerminalEnterKey::Lf => "\n",
+        }
+    }
+}
+
 /// Muxus-only metadata for an OpenSSH alias or a saved host.
 #[skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -425,14 +528,34 @@ pub struct OpenSshProfileMetadata {
     /// Paste pacing for this host's sessions; absent follows the Terminal settings.
     pub paste_line_delay_ms: Option<u32>,
     pub paste_char_delay_ms: Option<u32>,
+    /// Pastes wait for the prompt after each line; fields left out use the defaults. Absent is off.
+    pub paste_prompt_wait: Option<PastePromptWaitSetting>,
+    /// Typed into this host's idle sessions; absent sends nothing.
+    pub anti_idle: Option<AntiIdle>,
+    /// Keys and echo for this host's sessions; absent keeps what xterm.js does.
+    pub backspace_key: Option<TerminalBackspaceKey>,
+    pub enter_key: Option<TerminalEnterKey>,
+    /// Received LF also returns the cursor to the start of the line. Present only when set.
+    pub implicit_cr: Option<bool>,
+    /// Show typed input in the terminal for devices that do not echo it. Present only when set.
+    pub local_echo: Option<bool>,
     /// Do not open SFTP channels or probe for remote Unix shell integration.
     /// Present only when set.
     pub disable_sftp: Option<bool>,
     /// Console appliances: also suppress env requests and tolerate a rejected PTY.
     /// Present only when set.
     pub console_compatibility: Option<bool>,
+    /// Connect with the computer's `ssh` program instead of the built-in SSH
+    /// client. Present only when set.
+    pub system_open_ssh: Option<bool>,
+    /// Look for containers, clusters and VMs when a session connects; absent follows Settings.
+    pub discover_environments: Option<bool>,
     /// The host's own login sequence; absent inherits the folder's.
     pub login_sequence: Option<LoginSequence>,
+    /// Jump routes tried in order when the ProxyJump in ssh_config fails, each
+    /// a whole chain. Kept by Muxus: ssh_config has no way to say it. OpenSSH
+    /// aliases only; a saved host keeps them in its profile.
+    pub proxy_jump_fallbacks: Option<Vec<Vec<String>>>,
     pub last_connected_at: Option<String>,
     pub connect_count: u64,
 }
@@ -464,11 +587,35 @@ pub struct OpenSshMetadataPatch {
     pub paste_line_delay_ms: Patch<u32>,
     #[serde(default, skip_serializing_if = "Patch::is_keep")]
     pub paste_char_delay_ms: Patch<u32>,
+    /// `null` turns prompt waiting off.
+    #[serde(default, skip_serializing_if = "Patch::is_keep")]
+    pub paste_prompt_wait: Patch<PastePromptWaitSetting>,
+    /// `null` turns anti-idle off.
+    #[serde(default, skip_serializing_if = "Patch::is_keep")]
+    pub anti_idle: Patch<AntiIdle>,
+    /// `null` goes back to what xterm.js does.
+    #[serde(default, skip_serializing_if = "Patch::is_keep")]
+    pub backspace_key: Patch<TerminalBackspaceKey>,
+    #[serde(default, skip_serializing_if = "Patch::is_keep")]
+    pub enter_key: Patch<TerminalEnterKey>,
+    /// `null` is off.
+    #[serde(default, skip_serializing_if = "Patch::is_keep")]
+    pub implicit_cr: Patch<bool>,
+    /// `null` is off.
+    #[serde(default, skip_serializing_if = "Patch::is_keep")]
+    pub local_echo: Patch<bool>,
     pub disable_sftp: Option<bool>,
     pub console_compatibility: Option<bool>,
+    pub system_open_ssh: Option<bool>,
+    /// `null` follows the global setting.
+    #[serde(default, skip_serializing_if = "Patch::is_keep")]
+    pub discover_environments: Patch<bool>,
     /// `null` goes back to the folder's sequence.
     #[serde(default, skip_serializing_if = "Patch::is_keep")]
     pub login_sequence: Patch<LoginSequence>,
+    /// `null` or empty removes the fallback jump routes (OpenSSH aliases only).
+    #[serde(default, skip_serializing_if = "Patch::is_keep")]
+    pub proxy_jump_fallbacks: Patch<Vec<Vec<String>>>,
 }
 
 impl OpenSshMetadataPatch {
@@ -485,9 +632,18 @@ impl OpenSshMetadataPatch {
             && self.command_button_group.is_keep()
             && self.paste_line_delay_ms.is_keep()
             && self.paste_char_delay_ms.is_keep()
+            && self.paste_prompt_wait.is_keep()
+            && self.anti_idle.is_keep()
+            && self.backspace_key.is_keep()
+            && self.enter_key.is_keep()
+            && self.implicit_cr.is_keep()
+            && self.local_echo.is_keep()
             && self.disable_sftp.is_none()
             && self.console_compatibility.is_none()
+            && self.system_open_ssh.is_none()
+            && self.discover_environments.is_keep()
             && self.login_sequence.is_keep()
+            && self.proxy_jump_fallbacks.is_keep()
     }
 }
 
@@ -626,6 +782,20 @@ pub struct HostOptionsPatch {
 pub struct HostBulkUpdateRequest {
     pub aliases: Vec<String>,
     pub options: HostOptionsPatch,
+}
+
+/// Body of POST /api/ssh/config/hosts/batch: new Host blocks, written in one go.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostBatchCreateRequest {
+    pub hosts: Vec<HostUpsertRequest>,
+}
+
+/// At most as many hosts as one range save may create.
+pub const MAX_HOST_BATCH_CREATE: usize = 250;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostBatchCreateResponse {
+    pub created: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -997,8 +1167,17 @@ impl Validate for OpenSshMetadataPatch {
                 MAX_PASTE_CHAR_DELAY_MS,
             )?;
         }
+        if let Patch::Set(wait) = &self.paste_prompt_wait {
+            validate_paste_prompt_wait(&join(path, "pastePromptWait"), wait)?;
+        }
+        if let Patch::Set(anti_idle) = &mut self.anti_idle {
+            anti_idle.validate_at(&join(path, "antiIdle"))?;
+        }
         if let Patch::Set(sequence) = &mut self.login_sequence {
             sequence.validate_at(&join(path, "loginSequence"))?;
+        }
+        if let Patch::Set(routes) = &mut self.proxy_jump_fallbacks {
+            validate_jump_routes(&join(path, "proxyJumpFallbacks"), routes, true)?;
         }
         if self.is_empty() {
             return Err(ValidationError::new(
@@ -1007,6 +1186,122 @@ impl Validate for OpenSshMetadataPatch {
             ));
         }
         Ok(())
+    }
+}
+
+/// `pastePromptWaitSchema`: each field optional; a pattern must pass
+/// [`paste_pattern_problem`].
+fn validate_paste_prompt_wait(
+    path: &str,
+    wait: &PastePromptWaitSetting,
+) -> Result<(), ValidationError> {
+    for (key, pattern) in [
+        ("promptPattern", &wait.prompt_pattern),
+        ("errorPattern", &wait.error_pattern),
+    ] {
+        if let Some(pattern) = pattern
+            && paste_pattern_problem(pattern).is_some()
+        {
+            return Err(ValidationError::new(
+                join(path, key),
+                "unusable regular expression",
+            ));
+        }
+    }
+    validate::opt_range(
+        &join(path, "timeoutMs"),
+        wait.timeout_ms,
+        MIN_PASTE_PROMPT_TIMEOUT_MS,
+        MAX_PASTE_PROMPT_TIMEOUT_MS,
+    )
+}
+
+impl Validate for AntiIdle {
+    /// `antiIdleSchema`: typed into an idle session as is; Enter only when the
+    /// user asked for it.
+    fn validate_at(&mut self, path: &str) -> Result<(), ValidationError> {
+        validate::range(
+            &join(path, "intervalSeconds"),
+            self.interval_seconds,
+            ANTI_IDLE_MIN_INTERVAL_SECONDS,
+            ANTI_IDLE_MAX_INTERVAL_SECONDS,
+        )?;
+        validate::string(
+            &join(path, "text"),
+            &self.text,
+            0,
+            ANTI_IDLE_TEXT_MAX_LENGTH,
+        )?;
+        // No control characters, so a hidden Enter or Ctrl+C cannot ride along.
+        if self.text.chars().any(char::is_control) {
+            return Err(ValidationError::new(
+                join(path, "text"),
+                "control characters are not allowed",
+            ));
+        }
+        if self.text.is_empty() && !self.enter {
+            return Err(ValidationError::new(
+                join(path, "text"),
+                "anti-idle needs text or Enter",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Fallback jump routes: at most [`MAX_JUMP_FALLBACKS`] whole chains of 1 to
+/// [`MAX_JUMP_HOPS`] hops. The metadata route trims each hop (`trim`); the
+/// SSH profile schema does not.
+pub(crate) fn validate_jump_routes(
+    path: &str,
+    routes: &mut [Vec<String>],
+    trim: bool,
+) -> Result<(), ValidationError> {
+    validate::items(path, routes.len(), 0, MAX_JUMP_FALLBACKS)?;
+    for (index, route) in routes.iter_mut().enumerate() {
+        let at = join(path, &index.to_string());
+        if trim {
+            validate::each_trimmed(&at, route, 1, 500)?;
+        } else {
+            validate::each_string(&at, route, 1, 500)?;
+        }
+        validate::items(&at, route.len(), 1, MAX_JUMP_HOPS)?;
+    }
+    Ok(())
+}
+
+pub use crate::anti_idle::is_anti_idle;
+
+/// Fallback jump routes from a backup: a list of non-empty lists of host
+/// names (`isJumpRoutes`).
+pub fn is_jump_routes(value: &serde_json::Value) -> bool {
+    let Some(routes) = value.as_array() else {
+        return false;
+    };
+    routes.len() <= MAX_JUMP_FALLBACKS
+        && routes.iter().all(|route| {
+            route.as_array().is_some_and(|hops| {
+                !hops.is_empty()
+                    && hops.len() <= MAX_JUMP_HOPS
+                    && hops.iter().all(|hop| {
+                        hop.as_str().is_some_and(|hop| {
+                            !crate::js::js_trim(hop).is_empty() && crate::js::utf16_len(hop) <= 500
+                        })
+                    })
+            })
+        })
+}
+
+impl Validate for HostBatchCreateRequest {
+    /// `batchCreateSchema`: 1 to 250 new Host blocks. Each block is checked
+    /// by the route as a single upsert is (`upsertSchema`).
+    fn validate_at(&mut self, path: &str) -> Result<(), ValidationError> {
+        validate::items(
+            &join(path, "hosts"),
+            self.hosts.len(),
+            1,
+            MAX_HOST_BATCH_CREATE,
+        )
     }
 }
 

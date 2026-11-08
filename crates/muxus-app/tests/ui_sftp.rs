@@ -85,3 +85,57 @@ fn following_the_terminal_shows_the_new_folder_while_the_shell_keeps_syncing(
     sync(cx, "/many");
     assert_eq!(names(cx), vec!["inside.txt".to_string()]);
 }
+
+/// Rows select like a file manager: a click selects one, Ctrl/Cmd-click adds one, Shift-click
+/// the run from the last click; going to another folder starts over.
+#[gpui::test]
+fn selects_several_files_and_forgets_them_in_another_folder(cx: &mut TestAppContext) {
+    use muxus_app::features::sftp::selection::SftpSelectGesture::{Extend, Only, Toggle};
+
+    let fx = Fixture::start(|root| {
+        for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+            std::fs::write(root.join(name), name).unwrap();
+        }
+        std::fs::create_dir_all(root.join("logs")).unwrap();
+    });
+    allow_backend_threads(cx);
+    cx.update(|cx| {
+        init_ui(&fx.backend, cx);
+    });
+    let conn = fx.conn_id.clone();
+    let window = cx.add_window(|window, cx| {
+        let mut options = SftpPanelOptions::new(conn);
+        options.initial_path = "/".into();
+        SftpPanel::new(options, window, cx)
+    });
+    wait_until(cx, Duration::from_secs(20), "the listing", |cx| {
+        window
+            .update(cx, |panel, _, _| panel.entry_names().len() == 5)
+            .unwrap()
+    });
+    let click = |cx: &mut TestAppContext, name: &str, gesture| {
+        window
+            .update(cx, |panel, _, cx| panel.select_with(name, gesture, cx))
+            .unwrap();
+    };
+    let selected = |cx: &mut TestAppContext| {
+        window
+            .update(cx, |panel, _, _| panel.selected_names())
+            .unwrap()
+    };
+
+    click(cx, "b.txt", Only);
+    click(cx, "d.txt", Extend);
+    assert_eq!(selected(cx), ["b.txt", "c.txt", "d.txt"]);
+    click(cx, "c.txt", Toggle);
+    assert_eq!(selected(cx), ["b.txt", "d.txt"]);
+    click(cx, "a.txt", Only);
+    assert_eq!(selected(cx), ["a.txt"]);
+
+    window
+        .update(cx, |panel, window, cx| {
+            panel.navigate_to("/logs".into(), window, cx)
+        })
+        .unwrap();
+    assert!(selected(cx).is_empty());
+}

@@ -17,6 +17,8 @@ pub enum CommandCategory {
     Tabs,
     Terminal,
     App,
+    /// Command buttons with a shortcut of their own.
+    Buttons,
 }
 
 impl CommandCategory {
@@ -26,16 +28,18 @@ impl CommandCategory {
             CommandCategory::Tabs => "Tabs",
             CommandCategory::Terminal => "Terminal",
             CommandCategory::App => "Application",
+            CommandCategory::Buttons => "Command buttons",
         }
     }
 }
 
 /// Category order for the shortcut list.
-pub const COMMAND_CATEGORIES: [CommandCategory; 4] = [
+pub const COMMAND_CATEGORIES: [CommandCategory; 5] = [
     CommandCategory::Panes,
     CommandCategory::Tabs,
     CommandCategory::Terminal,
     CommandCategory::App,
+    CommandCategory::Buttons,
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,11 +55,13 @@ pub struct KeyCommand {
     pub palette: bool,
     /// Also answers while the file editor has focus, where other bindings stay quiet.
     pub in_editor: bool,
+    /// Types into the active session, so its chords only answer while a terminal has focus.
+    pub types_into_session: bool,
 }
 
 /// Chords only offered where Command is the modifier: Ctrl belongs to the shell.
-fn mac_only(chord: String) -> Vec<String> {
-    if IS_MAC { vec![chord] } else { Vec::new() }
+fn mac_only(is_mac: bool, chord: String) -> Vec<String> {
+    if is_mac { vec![chord] } else { Vec::new() }
 }
 
 fn arrow(direction: PaneDirection) -> &'static str {
@@ -86,6 +92,7 @@ fn command(
         keywords: strings(keywords),
         palette: true,
         in_editor: false,
+        types_into_session: false,
     }
 }
 
@@ -106,19 +113,28 @@ fn split_command(direction: PaneDirection, extra_chords: &[&str]) -> KeyCommand 
         keywords: strings(&["split", "divide", "new pane", name]),
         palette: true,
         in_editor: false,
+        types_into_session: false,
     }
 }
 
-fn focus_command(direction: PaneDirection) -> KeyCommand {
+fn focus_command(direction: PaneDirection, is_mac: bool) -> KeyCommand {
     let name = direction.as_str();
+    // Option+←/→ jumps by word on macOS, in every pane, so panes take
+    // Command+Option+arrow there, as in iTerm2.
+    let chord = if is_mac {
+        format!("Mod+Alt+{}", arrow(direction))
+    } else {
+        format!("Alt+{}", arrow(direction))
+    };
     KeyCommand {
         id: format!("pane.focus.{name}"),
         title: format!("Focus pane {name}"),
         category: CommandCategory::Panes,
-        default_chords: vec![format!("Alt+{}", arrow(direction))],
+        default_chords: vec![chord],
         keywords: strings(&["focus", "move", "navigate", name]),
         palette: true,
         in_editor: false,
+        types_into_session: false,
     }
 }
 
@@ -132,15 +148,16 @@ fn move_tab_command(direction: PaneDirection) -> KeyCommand {
         keywords: strings(&["move", "send", "detach", "split off", name]),
         palette: true,
         in_editor: false,
+        types_into_session: false,
     }
 }
 
-fn select_tab_command(position: usize, id: Option<&str>) -> KeyCommand {
+fn select_tab_command(position: usize, id: Option<&str>, is_mac: bool) -> KeyCommand {
     let id = id.map_or_else(|| position.to_string(), str::to_owned);
     // Ctrl+2…Ctrl+8 are control characters (Ctrl+3 is Escape); leave them
     // to the terminal and take the Alt row that every terminal app uses.
     let mut chords = vec![format!("Alt+Digit{position}")];
-    chords.extend(mac_only(format!("Mod+Digit{position}")));
+    chords.extend(mac_only(is_mac, format!("Mod+Digit{position}")));
     KeyCommand {
         id: format!("tab.select.{id}"),
         title: format!("Go to tab {position}"),
@@ -154,10 +171,20 @@ fn select_tab_command(position: usize, id: Option<&str>) -> KeyCommand {
         ],
         palette: false,
         in_editor: false,
+        types_into_session: false,
     }
 }
 
-fn build_commands() -> Vec<KeyCommand> {
+/// A command that types this key into the active session (`typeKeystroke`).
+fn line_jump(id: &str, title: &str, chord: &str, keywords: &[&str], is_mac: bool) -> KeyCommand {
+    let mut command = command(id, title, CommandCategory::Terminal, &[], keywords);
+    command.default_chords = mac_only(is_mac, chord.into());
+    command.types_into_session = true;
+    command
+}
+
+/// The catalog as one platform sees it: `Mod` and the macOS-only chords follow `is_mac`.
+pub(crate) fn build_commands_for(is_mac: bool) -> Vec<KeyCommand> {
     use CommandCategory::{App, Panes, Tabs, Terminal};
     use PaneDirection::{Down, Left, Right, Up};
 
@@ -167,10 +194,10 @@ fn build_commands() -> Vec<KeyCommand> {
         split_command(Down, &["Alt+Shift+Minus"]),
         split_command(Left, &[]),
         split_command(Up, &[]),
-        focus_command(Left),
-        focus_command(Right),
-        focus_command(Up),
-        focus_command(Down),
+        focus_command(Left, is_mac),
+        focus_command(Right, is_mac),
+        focus_command(Up, is_mac),
+        focus_command(Down, is_mac),
         command(
             "pane.focus.next",
             "Focus next pane",
@@ -244,7 +271,9 @@ fn build_commands() -> Vec<KeyCommand> {
         &["Mod+Shift+W"],
         &["end session"],
     );
-    close.default_chords.extend(mac_only("Mod+W".into()));
+    close
+        .default_chords
+        .extend(mac_only(is_mac, "Mod+W".into()));
     commands.push(close);
     commands.extend([
         command(
@@ -281,11 +310,11 @@ fn build_commands() -> Vec<KeyCommand> {
         move_tab_command(Down),
     ]);
     for position in 1..=8 {
-        commands.push(select_tab_command(position, None));
+        commands.push(select_tab_command(position, None, is_mac));
     }
     // Keep the legacy command id so existing custom bindings survive, while
     // making 9 select the tab visibly labelled 9 instead of an unrelated last tab.
-    commands.push(select_tab_command(9, Some("last")));
+    commands.push(select_tab_command(9, Some("last"), is_mac));
 
     // Terminal
     commands.extend([
@@ -303,6 +332,21 @@ fn build_commands() -> Vec<KeyCommand> {
             &["Mod+Shift+V"],
             &[],
         )),
+        // Ctrl+A, as Command+Left sends in VS Code and Ghostty; elsewhere Home already does this.
+        line_jump(
+            "terminal.line-start",
+            "Jump to line start",
+            "Mod+ArrowLeft",
+            &["beginning of line", "home", "cursor"],
+            is_mac,
+        ),
+        line_jump(
+            "terminal.line-end",
+            "Jump to line end",
+            "Mod+ArrowRight",
+            &["end of line", "cursor"],
+            is_mac,
+        ),
         // Ctrl+Space deliberately takes NUL from the shell: it matches the
         // MobaXterm macro picker and remains Control (not Command) on macOS.
         command(
@@ -393,6 +437,23 @@ fn build_commands() -> Vec<KeyCommand> {
             ],
         ),
         command(
+            "terminal.send-text-file",
+            "Send text file…",
+            Terminal,
+            &[],
+            &[
+                "file",
+                "config",
+                "configuration",
+                "upload",
+                "type",
+                "serial",
+                "telnet",
+                "ssh",
+                "console",
+            ],
+        ),
+        command(
             "terminal.cancel-login-sequence",
             "Cancel login sequence",
             Terminal,
@@ -458,6 +519,21 @@ fn build_commands() -> Vec<KeyCommand> {
             &["Mod+Shift+B"],
             &["distraction free", "zen", "fullscreen", "hide chrome"],
         ),
+        command(
+            "app.scripts",
+            "Run a script on hosts…",
+            App,
+            &[],
+            &[
+                "script",
+                "batch",
+                "bulk",
+                "run",
+                "many hosts",
+                "parallel",
+                "ansible",
+            ],
+        ),
         hidden(command(
             "app.settings",
             "Open settings",
@@ -477,7 +553,7 @@ fn build_commands() -> Vec<KeyCommand> {
 }
 
 /// Every command, in catalog order.
-pub static KEY_COMMANDS: LazyLock<Vec<KeyCommand>> = LazyLock::new(build_commands);
+pub static KEY_COMMANDS: LazyLock<Vec<KeyCommand>> = LazyLock::new(|| build_commands_for(IS_MAC));
 
 static BY_ID: LazyLock<HashMap<&'static str, &'static KeyCommand>> = LazyLock::new(|| {
     KEY_COMMANDS
@@ -505,7 +581,7 @@ mod tests {
 
     #[test]
     fn catalog_matches_the_typescript_table() {
-        assert_eq!(KEY_COMMANDS.len(), 56);
+        assert_eq!(KEY_COMMANDS.len(), 60);
         let first = &KEY_COMMANDS[0];
         assert_eq!(first.id, "pane.split.right");
         assert_eq!(first.title, "Split pane right");

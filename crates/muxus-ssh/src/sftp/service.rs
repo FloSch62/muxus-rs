@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, ready};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use russh_sftp::protocol::{FileAttributes, OpenFlags};
@@ -18,7 +18,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::sync::mpsc;
 
 use super::fs::{RemoteFs, SftpError, SftpResult, WriteError};
-use super::lease::SftpWindowLease;
+use super::lease::{SftpLease, SftpWindowLease};
 use super::paths;
 use super::progress::{ByteProgress, ProgressMeter, UploadStep};
 use super::types::{
@@ -27,14 +27,12 @@ use super::types::{
 };
 use crate::Problem;
 use crate::connection::leases::ConnectionLeaseOwner;
-use crate::connection::manager::{ConnectionLease, SshConnectionManager};
+use crate::connection::manager::SshConnectionManager;
 
 /// Directory-tree deletes stop after this many entries — runaway guard.
 pub const MAX_RECURSIVE_DELETE: usize = 10_000;
 /// The editor is a text editor, not a way to accidentally buffer huge remote artifacts.
 pub const MAX_EDITOR_BYTES: u64 = 8 * 1024 * 1024;
-/// How long a drag-out download ticket stays valid.
-pub const DOWNLOAD_TICKET_TTL: Duration = Duration::from_secs(2 * 60);
 /// Pasted clipboard images are readable by their owner only.
 pub const CLIPBOARD_IMAGE_MODE: u32 = 0o600;
 pub const CLIPBOARD_IMAGE_TEMP_DIR: &str = "/tmp";
@@ -113,27 +111,31 @@ impl UploadOptions {
 struct DownloadTicket {
     conn_id: String,
     path: String,
-    expires_at: Instant,
+}
+
+/// Drag-out download tickets. A listing can stay on screen long before a file is dragged out of
+/// it, and a drag whose download fails leaves the file manager with an empty file. So a ticket
+/// lasts as long as its connection: each remote file keeps one ticket across listings, and all
+/// of them go when the connection closes.
+#[derive(Default)]
+struct DownloadTickets {
+    by_ticket: HashMap<String, DownloadTicket>,
+    /// Connection id → remote path → ticket.
+    by_connection: HashMap<String, HashMap<String, String>>,
 }
 
 /// The SFTP operations of the file browser and the remote editor.
 #[derive(Clone)]
 pub struct SftpService {
     manager: SshConnectionManager,
-    tickets: Arc<Mutex<HashMap<String, DownloadTicket>>>,
-    ticket_ttl: Duration,
+    tickets: Arc<Mutex<DownloadTickets>>,
 }
 
 impl SftpService {
     pub fn new(manager: SshConnectionManager) -> Self {
-        Self::with_ticket_ttl(manager, DOWNLOAD_TICKET_TTL)
-    }
-
-    pub(crate) fn with_ticket_ttl(manager: SshConnectionManager, ticket_ttl: Duration) -> Self {
         Self {
             manager,
-            tickets: Arc::new(Mutex::new(HashMap::new())),
-            ticket_ttl,
+            tickets: Arc::new(Mutex::new(DownloadTickets::default())),
         }
     }
 
@@ -146,31 +148,64 @@ impl SftpService {
         SftpWindowLease::acquire(&self.manager, conn_id)
     }
 
-    /// An SFTP lease for one operation, plus the connection's shared session.
-    async fn acquire(&self, conn_id: &str) -> Result<(ConnectionLease, RemoteFs), Problem> {
+    /// A further lease on the connection, for work that outlives the operation's own.
+    fn lease(&self, conn_id: &str) -> Option<SftpLease> {
+        SftpLease::acquire(&self.manager, conn_id, ConnectionLeaseOwner::Sftp)
+    }
+
+    /// An SFTP lease for one operation, plus the connection's shared session. A system OpenSSH
+    /// session's connId reaches the login its terminal shares.
+    async fn acquire(&self, conn_id: &str) -> Result<(SftpLease, RemoteFs), Problem> {
         let lease = self
-            .manager
-            .acquire(conn_id, ConnectionLeaseOwner::Sftp)
+            .lease(conn_id)
             .ok_or_else(|| Problem::not_found("connection not found"))?;
         // A failed session open drops (releases) the lease again.
-        let fs = RemoteFs::open_on(lease.connection().clone())
+        let fs = RemoteFs::open_on(lease.source())
             .await
             .map_err(Problem::internal)?;
         Ok((lease, fs))
     }
 
-    fn issue_download_ticket(&self, conn_id: &str, file: String) -> String {
-        let now = Instant::now();
+    fn issue_download_ticket(&self, connection: &SftpLease, file: String) -> String {
+        let conn_id = connection.connection_id().to_string();
         let mut tickets = self.tickets.lock().unwrap_or_else(|e| e.into_inner());
-        tickets.retain(|_, ticket| ticket.expires_at > now);
+        if !tickets.by_connection.contains_key(&conn_id) {
+            tickets
+                .by_connection
+                .insert(conn_id.clone(), HashMap::new());
+            // Every ticket of the connection goes when it closes.
+            let all = self.tickets.clone();
+            let closed = connection.connection_closed();
+            let closing = conn_id.clone();
+            tokio::spawn(async move {
+                closed.await;
+                let mut tickets = all.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(issued) = tickets.by_connection.remove(&closing) {
+                    for ticket in issued.values() {
+                        tickets.by_ticket.remove(ticket);
+                    }
+                }
+            });
+        }
+        if let Some(existing) = tickets
+            .by_connection
+            .get(&conn_id)
+            .and_then(|issued| issued.get(&file))
+        {
+            return existing.clone();
+        }
         let ticket =
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 18]>());
-        tickets.insert(
+        tickets
+            .by_connection
+            .entry(conn_id.clone())
+            .or_default()
+            .insert(file.clone(), ticket.clone());
+        tickets.by_ticket.insert(
             ticket.clone(),
             DownloadTicket {
-                conn_id: conn_id.to_string(),
+                conn_id,
                 path: file,
-                expires_at: now + self.ticket_ttl,
             },
         );
         ticket
@@ -186,9 +221,9 @@ impl SftpService {
     }
 
     /// A directory listing; `path` may be relative (`.` is the home directory). Regular files
-    /// carry a short-lived drag-out download ticket.
+    /// carry a drag-out download ticket, valid while the connection lasts.
     pub async fn list(&self, conn_id: &str, path: &str) -> Result<SftpListResponse, Problem> {
-        let (_lease, fs) = self.acquire(conn_id).await?;
+        let (lease, fs) = self.acquire(conn_id).await?;
         let dir = require_path(path)?;
         let resolved = fs.realpath(dir).await?;
         let listing = fs.read_dir(&resolved).await?;
@@ -200,7 +235,7 @@ impl SftpService {
                 let kind = entry_type(mode);
                 let (owner, group) = owner_from_longname(&item.longname);
                 let download_ticket = (kind == SftpEntryType::File).then(|| {
-                    self.issue_download_ticket(conn_id, paths::join(&resolved, &item.filename))
+                    self.issue_download_ticket(&lease, paths::join(&resolved, &item.filename))
                 });
                 SftpEntry {
                     name: item.filename,
@@ -244,15 +279,10 @@ impl SftpService {
         ticket: &str,
     ) -> Result<SftpDownload, Problem> {
         let file = {
-            let mut tickets = self.tickets.lock().unwrap_or_else(|e| e.into_inner());
-            match tickets.get(ticket) {
-                Some(value) if value.conn_id == conn_id && value.expires_at > Instant::now() => {
-                    value.path.clone()
-                }
-                _ => {
-                    tickets.remove(ticket);
-                    return Err(Problem::new(401, "download ticket is missing or expired"));
-                }
+            let tickets = self.tickets.lock().unwrap_or_else(|e| e.into_inner());
+            match tickets.by_ticket.get(ticket) {
+                Some(value) if value.conn_id == conn_id => value.path.clone(),
+                _ => return Err(Problem::new(401, "download ticket is missing or expired")),
             }
         };
         let (lease, fs) = self.acquire(conn_id).await?;
@@ -415,7 +445,7 @@ impl SftpService {
         let mode = existing.and_then(|attrs| attrs.permissions);
         let upload = StreamUpload {
             fs: &fs,
-            lease: self.manager.acquire(conn_id, ConnectionLeaseOwner::Sftp),
+            lease: self.lease(conn_id),
             file,
             overwrite,
             mode,
@@ -458,7 +488,7 @@ impl SftpService {
         );
         let upload = StreamUpload {
             fs: &fs,
-            lease: self.manager.acquire(conn_id, ConnectionLeaseOwner::Sftp),
+            lease: self.lease(conn_id),
             file: &file,
             overwrite: false,
             mode: Some(CLIPBOARD_IMAGE_MODE),
@@ -528,7 +558,7 @@ pub struct SftpDownload {
     chunks: mpsc::Receiver<SftpResult<Vec<u8>>>,
     buffer: Vec<u8>,
     position: usize,
-    lease: Arc<ConnectionLease>,
+    lease: Arc<SftpLease>,
 }
 
 impl std::fmt::Debug for SftpDownload {
@@ -543,7 +573,7 @@ impl std::fmt::Debug for SftpDownload {
 
 impl SftpDownload {
     fn start(
-        lease: ConnectionLease,
+        lease: SftpLease,
         fs: &RemoteFs,
         handle: String,
         name: String,
@@ -684,7 +714,7 @@ fn format_bytes(bytes: u64) -> String {
 
 fn random_hex<const N: usize>() -> String {
     let mut bytes = [0u8; N];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+    rand::Rng::fill_bytes(&mut rand::rng(), &mut bytes);
     hex::encode(bytes)
 }
 
@@ -777,7 +807,7 @@ fn write_exclusive() -> OpenFlags {
 struct StreamUpload<'a> {
     fs: &'a RemoteFs,
     /// Keeps the transport up for the clean-up of a dropped upload.
-    lease: Option<ConnectionLease>,
+    lease: Option<SftpLease>,
     file: &'a str,
     overwrite: bool,
     mode: Option<u32>,
@@ -844,7 +874,7 @@ impl StreamUpload<'_> {
 struct TempFileGuard {
     fs: Option<RemoteFs>,
     path: String,
-    lease: Option<ConnectionLease>,
+    lease: Option<SftpLease>,
 }
 
 impl TempFileGuard {

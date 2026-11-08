@@ -1,9 +1,11 @@
 //! The persistent tunnel editor (`TunnelEditorDialog.tsx`): a forwarding
 //! rule bound to an SSH host, saved to start and stop without a terminal.
 
+use crate::hosts::system_openssh::{SYSTEM_OPENSSH_UNAVAILABLE, alias_uses_system_open_ssh};
 use std::rc::Rc;
 
 use muxus_core::api::{ForwardType, SshKeysResponse, TunnelRecord};
+use muxus_core::js::js_trim;
 use muxus_session::Backend;
 use muxus_ui::gpui_kit::{
     AnyElement, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
@@ -346,18 +348,22 @@ impl Render for TunnelEditor {
                     ])),
             );
         if mode == ConnectionMode::Host {
-            let aliases: Vec<Suggestion> = self
+            let hosts = self
                 .data
                 .ssh_config
                 .as_ref()
-                .map(|c| {
-                    c.hosts
-                        .iter()
-                        .flat_map(|h| h.aliases.clone())
-                        .map(|a| Suggestion::new(a.clone(), a))
-                        .collect()
-                })
+                .map(|c| c.hosts.clone())
                 .unwrap_or_default();
+            // A tunnel dials its host with the built-in client.
+            let aliases: Vec<Suggestion> = hosts
+                .iter()
+                .flat_map(|h| h.aliases.clone())
+                .map(|a| {
+                    let unavailable = alias_uses_system_open_ssh(&a, &hosts);
+                    Suggestion::new(a.clone(), a).disabled(unavailable)
+                })
+                .collect();
+            let needs_system = alias_uses_system_open_ssh(js_trim(&self.draft.host_target), &hosts);
             let target = self.draft.host_target.clone();
             let mut col = div().flex().flex_col().gap(Theme::spacing(1.25)).child(form::autocomplete(
                 self,
@@ -368,7 +374,12 @@ impl Render for TunnelEditor {
                     FormField::input("tunnel-host-field", &input)
                         .label("SSH host")
                         .placeholder("Choose an alias from ~/.ssh/config")
-                        .helper("Keys, jump hosts, user, and port stay linked to this host's SSH config.")
+                        .error(needs_system)
+                        .helper(if needs_system {
+                            format!("{SYSTEM_OPENSSH_UNAVAILABLE}: use LocalForward in this host's settings instead.")
+                        } else {
+                            "Keys, jump hosts, user, and port stay linked to this host's SSH config.".to_owned()
+                        })
                 },
                 AutocompleteHandlers {
                     on_input: Rc::new(|this: &mut TunnelEditor, v, cx| {
@@ -689,7 +700,11 @@ impl Render for TunnelEditor {
             .child(rule)
             .child(options);
 
-        let valid = self.draft.valid() && !self.busy;
+        let needs_system = self.draft.mode == ConnectionMode::Host
+            && self.data.ssh_config.as_ref().is_some_and(|config| {
+                alias_uses_system_open_ssh(js_trim(&self.draft.host_target), &config.hosts)
+            });
+        let valid = self.draft.valid() && !needs_system && !self.busy;
         let (cancel, save, start, close) = (entity.clone(), entity.clone(), entity.clone(), entity);
         let width = dialog_width(window, DIALOG_MD);
         let max_height = muxus_ui::zoom::unzoom(window.viewport_size().height) - 64.;

@@ -17,8 +17,9 @@ fn check_forward(request: &ForwardRequest) -> Result<(), String> {
     if request.conn_id.is_empty() {
         return Err(too_small_string);
     }
-    if request.bind_port == 0 {
-        return Err(too_small_number);
+    // 0 asks for any free port, for a local or dynamic forward only.
+    if request.bind_port == 0 && request.kind == muxus_core::api::ForwardType::Remote {
+        return Err("bindPort must be 1–65535".to_string());
     }
     if request
         .target_host
@@ -127,5 +128,35 @@ impl Backend {
         })
         .await?;
         Ok(deleted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use muxus_core::api::{ForwardRequest, ForwardType};
+
+    use super::check_forward;
+
+    fn request(kind: ForwardType, bind_port: u16) -> ForwardRequest {
+        ForwardRequest {
+            conn_id: "c1".into(),
+            kind,
+            bind_port,
+            target_host: None,
+            target_port: None,
+            tunnel_id: None,
+            independent: None,
+        }
+    }
+
+    #[test]
+    fn lets_local_and_dynamic_forwards_ask_for_any_free_port() {
+        assert!(check_forward(&request(ForwardType::Local, 0)).is_ok());
+        assert!(check_forward(&request(ForwardType::Dynamic, 0)).is_ok());
+        assert_eq!(
+            check_forward(&request(ForwardType::Remote, 0)),
+            Err("bindPort must be 1–65535".to_string())
+        );
+        assert!(check_forward(&request(ForwardType::Remote, 9000)).is_ok());
     }
 }

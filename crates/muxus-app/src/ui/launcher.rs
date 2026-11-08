@@ -12,7 +12,7 @@ use muxus_app::features::launcher::{
     HostPickerEvent, LauncherContext, LauncherEvent, open_host_picker, open_quick_launcher,
 };
 use muxus_app::model::SessionProfile;
-use muxus_app::state::session_actions::{connect_managed_host, connect_target};
+use muxus_app::state::session_actions::connect_target;
 use muxus_core::api::TunnelRecord;
 use muxus_ui::gpui_kit::{Context, Pixels, Point, Window};
 use muxus_ui::theme::Status;
@@ -22,12 +22,13 @@ use crate::ui::shell::AppShell;
 
 impl AppShell {
     /// What the launcher needs to know about this window.
-    fn launcher_context(&self, cx: &Context<Self>) -> LauncherContext {
+    fn launcher_context(&mut self, cx: &mut Context<Self>) -> LauncherContext {
         LauncherContext {
+            environments: self.environment_launch_items(cx),
             tabs: self.tabs.tabs.clone(),
             active_id: self.tabs.active_id.clone(),
             shown_command_group: self.shown_command_group(cx),
-            wsl_shell_profiles: Vec::new(),
+            wsl_shell_profiles: self.sidebar.read(cx).wsl_shell_profiles(),
             workspaces: self.workspaces.clone(),
         }
     }
@@ -71,7 +72,7 @@ impl AppShell {
                 self.tabs.activate_editor(&tab_id, &path);
             }
             LauncherEvent::ConnectHost(host) => {
-                connect_managed_host(&mut self.tabs, &mut self.launch_guard, &host, None, now);
+                self.connect_host(&host, None, cx);
             }
             LauncherEvent::ConnectTarget(target) => {
                 connect_target(
@@ -101,6 +102,7 @@ impl AppShell {
                 self.run_command(&id, window, cx);
             }
             LauncherEvent::StartTunnel(tunnel) => self.start_tunnel(tunnel, cx),
+            LauncherEvent::OpenEnvironment(launch) => self.launch_environment(*launch, cx),
         }
         self.tabs_changed(cx);
     }
@@ -119,7 +121,15 @@ impl AppShell {
             LauncherAction::Workspaces => self.open_workspaces(window, cx),
             LauncherAction::History => self.open_history("", None, window, cx),
             LauncherAction::Commands => self.open_command_buttons(window, cx),
+            LauncherAction::Scripts => self.open_scripts(None, window, cx),
             LauncherAction::Tunnels => self.set_forwarding_open(true, cx),
+            LauncherAction::Environments => {
+                if let Some(hub) = self.environments_hub(cx) {
+                    hub.update(cx, |hub, cx| {
+                        hub.set_panel(muxus_app::features::environments::hub::PanelScope::All, cx)
+                    });
+                }
+            }
             LauncherAction::Sftp => {
                 if let Some(tab) = self.tabs.active_tab().cloned()
                     && matches!(tab.profile, Some(SessionProfile::Ssh(_)))
@@ -204,13 +214,7 @@ impl AppShell {
                     replace_tab_id,
                 } => {
                     this.close_overlay("host-picker", window, cx);
-                    connect_managed_host(
-                        &mut this.tabs,
-                        &mut this.launch_guard,
-                        &host,
-                        replace_tab_id.as_deref(),
-                        Instant::now(),
-                    );
+                    this.connect_host(&host, replace_tab_id.as_deref(), cx);
                     this.tabs_changed(cx);
                 }
                 HostPickerEvent::AddHost => {

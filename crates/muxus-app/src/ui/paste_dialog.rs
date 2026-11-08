@@ -1,14 +1,16 @@
-//! The multi-line paste preview: `client/src/components/PasteConfirmDialog.tsx`.
+//! The paste preview: `client/src/components/PasteConfirmDialog.tsx`.
 //!
 //! A paste that spans lines may run several commands at once, so it is shown
 //! first in an editor with a line-number gutter, where it can be changed, and
-//! the delay after each line can be set for this paste.
+//! the delay after each line can be set for this paste. Invisible and
+//! look-alike characters are listed with where they are, and can be replaced
+//! with ASCII before anything is sent.
 
 use muxus_core::paste_pacing::{PastePacing, paste_pacing_duration_ms, prepare_paste_text};
 use muxus_term_view::muxus_term::font_catalog::terminal_font_stack;
 use muxus_term_view::muxus_term::paste::{
-    PasteDelayKind, format_paste_duration, parse_paste_delay, paste_line_count,
-    paste_line_number_window,
+    FlaggedPasteCharacter, PasteDelayKind, flag_paste_characters, format_paste_duration,
+    parse_paste_delay, paste_line_count, paste_line_number_window, replace_flagged_characters,
 };
 use muxus_ui::gpui_kit::base::input::{InputEvent, InputState, Textarea, TextareaState};
 use muxus_ui::gpui_kit::{
@@ -17,7 +19,8 @@ use muxus_ui::gpui_kit::{
     div, px, relative,
 };
 use muxus_ui::label::paragraph;
-use muxus_ui::theme::{ActiveTheme, fonts};
+use muxus_ui::theme::{ActiveTheme, Status, fonts};
+use muxus_ui::widgets::display::Alert;
 use muxus_ui::widgets::text_field::style_input;
 use muxus_ui::widgets::{Button, ButtonColor, Dialog, DialogWidth, TextField};
 
@@ -25,6 +28,8 @@ use muxus_ui::widgets::{Button, ButtonColor, Dialog, DialogWidth, TextField};
 const EDITOR_PADDING_Y: f32 = 8.5;
 const MIN_ROWS: usize = 8;
 const MAX_ROWS: usize = 18;
+/// Positions listed per flagged character before "and N more".
+const LISTED_POSITIONS: usize = 3;
 
 /// What the preview asks the window to do.
 #[derive(Clone, Debug, PartialEq)]
@@ -35,10 +40,13 @@ pub enum PasteDialogEvent {
 
 /// What the pace means for this paste, or how to slow it down (`pacingNote`).
 pub fn pacing_note(text: &str, pacing: PastePacing, mirrored: usize) -> String {
-    let note = if pacing.line_delay_ms == 0 && pacing.char_delay_ms == 0 {
+    let note = if pacing.prompt.is_some() {
+        "Each line waits for the prompt, and the paste stops at the first line the device rejects."
+            .to_string()
+    } else if pacing.line_delay_ms == 0 && pacing.char_delay_ms == 0 {
         "Sent all at once. A line delay paces it for consoles that drop input.".to_string()
     } else {
-        let duration = paste_pacing_duration_ms(&prepare_paste_text(text, false), pacing);
+        let duration = paste_pacing_duration_ms(&prepare_paste_text(text, false), &pacing);
         let chars = if pacing.char_delay_ms > 0 {
             format!(", with {} ms after each character", pacing.char_delay_ms)
         } else {
@@ -60,11 +68,76 @@ pub fn paste_title(text: &str) -> String {
     } else {
         paste_line_count(text)
     };
-    if lines == 0 {
-        "Nothing to paste".into()
-    } else {
-        format!("Paste {lines} lines into the terminal?")
+    match lines {
+        0 => "Nothing to paste".into(),
+        1 => "Paste 1 line into the terminal?".into(),
+        lines => format!("Paste {lines} lines into the terminal?"),
     }
+}
+
+/// One row per distinct flagged character, with where it occurs (`flaggedRows`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlaggedRow {
+    pub ch: char,
+    /// "No-break space (U+00A0)".
+    pub label: String,
+    pub ascii: &'static str,
+    /// "line 1, column 5; line 2, column 3 and 4 more".
+    pub positions: String,
+}
+
+pub fn flagged_rows(flagged: &[FlaggedPasteCharacter]) -> Vec<FlaggedRow> {
+    let mut groups: Vec<Vec<&FlaggedPasteCharacter>> = Vec::new();
+    for entry in flagged {
+        match groups.iter_mut().find(|group| group[0].ch == entry.ch) {
+            Some(group) => group.push(entry),
+            None => groups.push(vec![entry]),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|entries| {
+            let first = entries[0];
+            let mut units = [0u16; 2];
+            let code = first.ch.encode_utf16(&mut units)[0];
+            let positions = entries
+                .iter()
+                .take(LISTED_POSITIONS)
+                .map(|entry| format!("line {}, column {}", entry.line, entry.column))
+                .collect::<Vec<_>>()
+                .join("; ");
+            let more = entries.len().saturating_sub(LISTED_POSITIONS);
+            FlaggedRow {
+                ch: first.ch,
+                label: format!("{} (U+{code:04X})", first.name),
+                ascii: first.ascii,
+                positions: if more > 0 {
+                    format!("{positions} and {more} more")
+                } else {
+                    positions
+                },
+            }
+        })
+        .collect()
+}
+
+/// What the warning says about the flagged characters.
+pub fn flagged_summary(count: usize) -> String {
+    if count == 1 {
+        "One character is invisible or only looks like ASCII:".into()
+    } else {
+        format!("{count} characters are invisible or only look like ASCII:")
+    }
+}
+
+/// What the note says after "Replace with ASCII".
+pub fn replaced_summary(count: usize) -> String {
+    let what = if count == 1 {
+        "One character was".to_string()
+    } else {
+        format!("{count} characters were")
+    };
+    format!("{what} replaced with ASCII. Review the result before pasting it.")
 }
 
 pub struct PasteDialog {
@@ -76,6 +149,8 @@ pub struct PasteDialog {
     font_family: SharedString,
     font_size: f32,
     line_height: f32,
+    /// Characters the last "Replace with ASCII" replaced.
+    replaced: usize,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -136,9 +211,69 @@ impl PasteDialog {
                 .into(),
             font_size,
             line_height,
+            replaced: 0,
             focus,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// "Replace with ASCII": put each flagged character's stand-in in its place in the editor.
+    fn replace_flagged(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.text(cx);
+        let flagged = flag_paste_characters(&text);
+        if flagged.is_empty() {
+            return;
+        }
+        let replaced = replace_flagged_characters(&text, &flagged);
+        self.replaced = flagged.len();
+        self.editor
+            .update(cx, |editor, cx| editor.set_value(replaced, window, cx));
+        cx.notify();
+    }
+
+    fn flagged_alert(&self, text: &str, cx: &mut Context<Self>) -> Option<Alert> {
+        let theme = cx.theme();
+        let flagged = flag_paste_characters(text);
+        if flagged.is_empty() {
+            return (self.replaced > 0)
+                .then(|| Alert::new(Status::Success, replaced_summary(self.replaced)));
+        }
+        let mono = self.font_family.clone();
+        let body2 = theme.typography.body2;
+        let rows = flagged_rows(&flagged).into_iter().map(|row| {
+            let change = match row.ascii {
+                "" => div().child(", removed"),
+                " " => div().child(", becomes a space"),
+                ascii => div()
+                    .flex()
+                    .child(", becomes\u{a0}")
+                    .child(div().font_family(mono.clone()).child(ascii)),
+            };
+            div()
+                .flex()
+                .flex_wrap()
+                .child(div().child(format!("\u{2022}\u{a0}{}", row.label)))
+                .child(change)
+                .child(div().child(format!(": {}", row.positions)))
+        });
+        let entity = cx.entity().downgrade();
+        Some(
+            Alert::new(Status::Warning, "")
+                .content(
+                    div()
+                        .text_size(px(body2.size))
+                        .line_height(px(body2.line_height))
+                        .child(flagged_summary(flagged.len()))
+                        .child(div().pl(px(8.)).children(rows)),
+                )
+                .action(
+                    Button::new("paste-replace-ascii", "Replace with ASCII")
+                        .color(ButtonColor::Inherit)
+                        .on_click(move |_, window, cx| {
+                            let _ = entity.update(cx, |this, cx| this.replace_flagged(window, cx));
+                        }),
+                ),
+        )
     }
 
     fn text(&self, cx: &muxus_ui::gpui_kit::App) -> String {
@@ -209,7 +344,7 @@ impl Render for PasteDialog {
             &text,
             PastePacing {
                 line_delay_ms: delay_ms,
-                ..self.pacing
+                ..self.pacing.clone()
             },
             self.mirrored,
         );
@@ -280,6 +415,7 @@ impl Render for PasteDialog {
             .end_text("ms")
             .width(200.);
 
+        let flagged_alert = self.flagged_alert(&text, cx);
         let entity = cx.entity().downgrade();
         let confirm_entity = entity.clone();
         let cancel_entity = entity.clone();
@@ -299,14 +435,18 @@ impl Render for PasteDialog {
                         let _ = close_entity.update(cx, |this, cx| this.cancel(cx));
                     })
                     .content(
-                        div().mb(px(12.)).child(
-                            paragraph(
-                                "Multiple lines may run several commands immediately. Review or edit the content before sending it.",
-                            )
-                            .size(body2.size)
-                            .line_height(body2.line_height)
-                            .color(p.text.secondary),
-                        ),
+                        div()
+                            .children((line_count != 1).then(|| {
+                                div().mb(px(12.)).child(
+                                    paragraph(
+                                        "Multiple lines may run several commands immediately. Review or edit the content before sending it.",
+                                    )
+                                    .size(body2.size)
+                                    .line_height(body2.line_height)
+                                    .color(p.text.secondary),
+                                )
+                            }))
+                            .children(flagged_alert.map(|alert| div().mb(px(12.)).child(alert))),
                     )
                     .content(editor)
                     .content(
@@ -371,7 +511,60 @@ mod tests {
     #[test]
     fn titles_the_preview_by_line_count() {
         assert_eq!(paste_title(""), "Nothing to paste");
+        assert_eq!(paste_title("a\u{a0}b"), "Paste 1 line into the terminal?");
         assert_eq!(paste_title("a\nb"), "Paste 2 lines into the terminal?");
+    }
+
+    #[test]
+    fn lists_each_flagged_character_once_with_where_it_occurs() {
+        let text = "a\u{a0}b\u{a0}c\u{a0}d\u{a0}e \u{201c}x\u{201d}\u{200b}";
+        let rows = flagged_rows(&flag_paste_characters(text));
+        assert_eq!(
+            rows[0],
+            FlaggedRow {
+                ch: '\u{a0}',
+                label: "No-break space (U+00A0)".into(),
+                ascii: " ",
+                positions: "line 1, column 2; line 1, column 4; line 1, column 6 and 1 more".into(),
+            }
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "No-break space (U+00A0)",
+                "Left double quote (U+201C)",
+                "Right double quote (U+201D)",
+                "Zero-width space (U+200B)",
+            ]
+        );
+        assert_eq!(
+            flagged_summary(1),
+            "One character is invisible or only looks like ASCII:"
+        );
+        assert_eq!(
+            flagged_summary(7),
+            "7 characters are invisible or only look like ASCII:"
+        );
+        assert_eq!(
+            replaced_summary(2),
+            "2 characters were replaced with ASCII. Review the result before pasting it."
+        );
+    }
+
+    #[test]
+    fn says_a_paste_that_waits_for_the_prompt_stops_at_a_rejected_line() {
+        let pacing = PastePacing {
+            prompt: Some(muxus_core::paste_pacing::resolve_paste_prompt_wait(
+                &Default::default(),
+            )),
+            ..PastePacing::delays(500, 0)
+        };
+        assert_eq!(
+            pacing_note("a\nb", pacing, 0),
+            "Each line waits for the prompt, and the paste stops at the first line the device rejects."
+        );
     }
 
     #[test]
@@ -381,26 +574,9 @@ mod tests {
             "Sent all at once. A line delay paces it for consoles that drop input."
         );
         assert_eq!(
-            pacing_note(
-                "a\nb",
-                PastePacing {
-                    line_delay_ms: 0,
-                    char_delay_ms: 0
-                },
-                2
-            ),
+            pacing_note("a\nb", PastePacing::delays(0, 0), 2),
             "Sent all at once. A line delay paces it for consoles that drop input. Mirrored terminals paste at their own host's pace."
         );
-        assert!(
-            pacing_note(
-                "a\nb\nc",
-                PastePacing {
-                    line_delay_ms: 500,
-                    char_delay_ms: 0
-                },
-                0
-            )
-            .starts_with("Takes ")
-        );
+        assert!(pacing_note("a\nb\nc", PastePacing::delays(500, 0), 0).starts_with("Takes "));
     }
 }

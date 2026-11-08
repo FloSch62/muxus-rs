@@ -158,6 +158,10 @@ pub fn saved_host_address(profile: &SavedHostProfile) -> String {
             p.username.as_deref(),
             p.ssh_gateway.as_ref(),
         ),
+        SavedHostSessionProfile::Web(p) => match &p.ssh_gateway {
+            Some(gateway) => format!("{} via {}", p.url, gateway.target),
+            None => p.url.clone(),
+        },
         SavedHostSessionProfile::Telnet(p) => format!("{}:{}", p.host, p.port),
         SavedHostSessionProfile::Serial(p) => format!("{} · {} baud", p.path, p.baud_rate),
     }
@@ -245,6 +249,7 @@ mod tests {
                 }),
                 domain: None,
                 share_clipboard: None,
+                ssh_gateway_fallbacks: None,
             }),
         );
         assert_eq!(
@@ -271,5 +276,130 @@ mod tests {
             .map(|p| p.name.as_str())
             .collect();
         assert_eq!(names, ["zeta"]);
+    }
+
+    /// `saved-hosts.test.ts`, the two native hosts it searches.
+    fn native_hosts() -> Vec<SavedHostProfile> {
+        let mut serial = saved(
+            "serial-console",
+            "Rack console",
+            SavedHostSessionProfile::Serial(crate::model::SerialProfile {
+                profile_id: Some("serial-console".into()),
+                baud_rate: 115_200,
+                ..crate::model::SerialProfile::new("COM3")
+            }),
+        );
+        serial.metadata.group = Some("Lab".into());
+        let telnet = saved(
+            "telnet-router",
+            "Core router",
+            SavedHostSessionProfile::Telnet(TelnetProfile {
+                profile_id: Some("telnet-router".into()),
+                host: "router.example.test".into(),
+                port: 2323,
+            }),
+        );
+        vec![serial, telnet]
+    }
+
+    fn ids(profiles: Vec<&SavedHostProfile>) -> Vec<&str> {
+        profiles.iter().map(|profile| profile.id.as_str()).collect()
+    }
+
+    #[test]
+    fn searches_native_hosts_by_name_kind_group_and_address() {
+        let profiles = native_hosts();
+        assert_eq!(
+            ids(filter_saved_hosts(&profiles, "lab")),
+            ["serial-console"]
+        );
+        assert_eq!(
+            ids(filter_saved_hosts(&profiles, "telnet")),
+            ["telnet-router"]
+        );
+        assert_eq!(
+            ids(filter_saved_hosts(&profiles, "2323")),
+            ["telnet-router"]
+        );
+    }
+
+    #[test]
+    fn sorts_by_display_name_and_formats_platform_native_addresses() {
+        let profiles = native_hosts();
+        assert_eq!(
+            ids(filter_saved_hosts(&profiles, "")),
+            ["telnet-router", "serial-console"]
+        );
+        assert_eq!(saved_host_address(&profiles[0]), "COM3 · 115200 baud");
+        assert_eq!(saved_host_address(&profiles[1]), "router.example.test:2323");
+    }
+
+    fn ssh(
+        id: &str,
+        target: &str,
+        user: Option<&str>,
+        port: Option<u16>,
+        jumps: &[&str],
+    ) -> SavedHostProfile {
+        saved(
+            id,
+            id,
+            SavedHostSessionProfile::Ssh(SshProfile {
+                user: user.map(Into::into),
+                port,
+                proxy_jump: (!jumps.is_empty())
+                    .then(|| jumps.iter().map(|hop| hop.to_string()).collect()),
+                ..SshProfile::new(target)
+            }),
+        )
+    }
+
+    /// The export helper (`openSshJumpHops`): ssh cannot look up a saved Muxus host.
+    #[test]
+    fn spells_jump_lists_the_way_openssh_reads_them() {
+        let profiles = vec![
+            ssh("edge", "edge.example.test", Some("ops"), Some(2222), &[]),
+            ssh(
+                "inner",
+                "inner.example.test",
+                None,
+                None,
+                &["muxus-host:edge"],
+            ),
+            ssh("v6", "2001:db8::1", None, Some(22), &[]),
+            ssh(
+                "loop",
+                "loop.example.test",
+                None,
+                None,
+                &["muxus-host:loop"],
+            ),
+            saved("console", "console", telnet("192.0.2.1")),
+        ];
+        let hops = |list: &[&str], alias: Option<ExportedAlias<'_>>| {
+            let list: Vec<String> = list.iter().map(|hop| hop.to_string()).collect();
+            open_ssh_jump_hops(&list, &profiles, alias, &HashSet::new())
+        };
+        // ssh_config hops pass through; a saved host becomes its address, preceded by
+        // its own jump hosts.
+        assert_eq!(
+            hops(&["bastion", "muxus-host:inner"], None),
+            [
+                "bastion",
+                "ops@edge.example.test:2222",
+                "inner.example.test"
+            ]
+        );
+        // An IPv6 target with a port is bracketed.
+        assert_eq!(hops(&["muxus-host:v6"], None), ["[2001:db8::1]:22"]);
+        // During an export, the alias a saved host is exported under wins.
+        let exported = |id: &str| (id == "edge").then(|| "muxus-edge".to_string());
+        assert_eq!(
+            hops(&["muxus-host:inner"], Some(&exported)),
+            ["muxus-edge", "inner.example.test"]
+        );
+        // A loop ends, and hosts that are gone or not SSH drop out.
+        assert_eq!(hops(&["muxus-host:loop"], None), ["loop.example.test"]);
+        assert!(hops(&["muxus-host:console", "muxus-host:gone"], None).is_empty());
     }
 }

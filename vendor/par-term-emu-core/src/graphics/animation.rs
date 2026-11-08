@@ -3,13 +3,20 @@
 //! This module handles animation frames and playback control for
 //! the Kitty graphics protocol.
 //!
-//! Reference: https://sw.kovidgoyal.net/kitty/graphics-protocol/#animation
+//! Reference: <https://sw.kovidgoyal.net/kitty/graphics-protocol/#animation>
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+/// Maximum number of frames one kitty animation retains (SEC-001).
+///
+/// A frame with a new frame number past the cap is dropped; an existing
+/// frame number is still replaced.
+/// cap: Frames retained per kitty animation from escape payloads.
+pub const MAX_ANIMATION_FRAMES: usize = 1024;
 
 /// Animation frame data
 #[derive(Debug, Clone)]
@@ -38,6 +45,26 @@ impl AnimationFrame {
         Self {
             frame_number,
             pixels: Arc::new(pixels),
+            width,
+            height,
+            delay_ms: 0,
+            x_offset: 0,
+            y_offset: 0,
+            composition: CompositionMode::default(),
+        }
+    }
+
+    /// Muxus patch: a frame over a buffer that is already shared (an image's root frame), so
+    /// it is retained once.
+    pub fn new_shared(
+        frame_number: u32,
+        pixels: Arc<Vec<u8>>,
+        width: usize,
+        height: usize,
+    ) -> Self {
+        Self {
+            frame_number,
+            pixels,
             width,
             height,
             delay_ms: 0,
@@ -164,8 +191,21 @@ impl Animation {
     }
 
     /// Add a frame to the animation
+    ///
+    /// A new frame number is dropped once the animation holds
+    /// [`MAX_ANIMATION_FRAMES`]; an existing frame number is replaced.
     pub fn add_frame(&mut self, frame: AnimationFrame) {
         let frame_num = frame.frame_number;
+        if self.frames.len() >= MAX_ANIMATION_FRAMES && !self.frames.contains_key(&frame_num) {
+            debug_info!(
+                "ANIMATION",
+                "Dropped frame {} for image_id={}: {} frame cap reached",
+                frame_num,
+                self.image_id,
+                MAX_ANIMATION_FRAMES
+            );
+            return;
+        }
         debug_info!(
             "ANIMATION",
             "Adding frame {} to image_id={} (delay={}ms, size={}x{})",

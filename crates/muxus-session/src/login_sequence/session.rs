@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use async_trait::async_trait;
-use muxus_core::api::LoginSequence;
+use muxus_core::api::{LoginSequence, TerminalEnterKey};
+use muxus_core::paste_pacing::with_enter_key;
 use muxus_core::protocol::{
     AuthPromptField, AuthPromptInfo, AuthPromptPurpose, AuthPromptResponse, LoginSequenceState,
     TerminalClientMessage, TerminalServerMessage,
@@ -69,13 +70,20 @@ pub struct LoginSequenceSessionOptions {
     pub recorder: Arc<dyn LoginSequenceRecorder>,
     /// Messages for the tab: progress and the master-password prompt.
     pub send: Arc<dyn Fn(TerminalServerMessage) + Send + Sync>,
+    /// What Enter sends on the session's host, read when a step presses it; CR when absent.
+    pub enter_key: Option<Arc<dyn Fn() -> TerminalEnterKey + Send + Sync>>,
 }
 
 /// A secret as keystrokes: its text, then Enter (a carriage return, as the key sends) when asked.
 pub fn secret_keystrokes(value: &str, enter: bool) -> Vec<u8> {
+    secret_keystrokes_for(value, enter, TerminalEnterKey::Cr)
+}
+
+/// A secret as keystrokes: its text, then Enter as the host's key sends it when asked.
+pub fn secret_keystrokes_for(value: &str, enter: bool, enter_key: TerminalEnterKey) -> Vec<u8> {
     let mut keys = value.as_bytes().to_vec();
     if enter {
-        keys.push(b'\r');
+        keys.extend_from_slice(with_enter_key("\r", enter_key).as_bytes());
     }
     keys
 }
@@ -150,6 +158,13 @@ impl LoginSequenceIo for Io {
         self.options.recorder.input(data);
     }
 
+    fn enter_key(&self) -> TerminalEnterKey {
+        self.options
+            .enter_key
+            .as_ref()
+            .map_or(TerminalEnterKey::Cr, |enter_key| enter_key())
+    }
+
     async fn type_secret(
         &self,
         secret_id: &str,
@@ -169,7 +184,8 @@ impl LoginSequenceIo for Io {
                 // The value goes from the vault straight to the session; it is
                 // never logged or given to a session recorder.
                 Ok(Some(value)) => {
-                    return if (self.options.write)(&secret_keystrokes(&value, enter)) {
+                    let keys = secret_keystrokes_for(&value, enter, self.enter_key());
+                    return if (self.options.write)(&keys) {
                         Ok(())
                     } else {
                         Err("the session no longer takes input.".into())
@@ -235,6 +251,7 @@ pub struct LoginSequenceSession {
     io: Arc<Io>,
     runner: Arc<LoginSequenceRunner>,
     started: AtomicBool,
+    finished: Arc<AtomicBool>,
 }
 
 impl LoginSequenceSession {
@@ -257,12 +274,18 @@ impl LoginSequenceSession {
             io,
             runner,
             started: AtomicBool::new(false),
+            finished: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Session output, from the moment the transport attached.
     pub fn output(&self, data: &[u8]) {
         self.runner.output(data);
+    }
+
+    /// Started and not yet done, stopped or closed.
+    pub fn running(&self) -> bool {
+        self.started.load(Ordering::SeqCst) && !self.finished.load(Ordering::SeqCst)
     }
 
     /// Run the steps on the tokio runtime; output received since the session
@@ -276,9 +299,11 @@ impl LoginSequenceSession {
             return;
         }
         let runner = self.runner.clone();
+        let finished = self.finished.clone();
         let mut run: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
             Box::pin(async move {
                 runner.run().await;
+                finished.store(true, Ordering::SeqCst);
             });
         let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         if run.as_mut().poll(&mut context).is_pending() {

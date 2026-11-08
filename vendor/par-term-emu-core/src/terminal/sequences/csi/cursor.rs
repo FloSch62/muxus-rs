@@ -127,6 +127,11 @@ pub(crate) fn handle_cursor_motion(ctx: CursorCtx<'_>, action: char, params: &Pa
 }
 
 impl Terminal {
+    /// CSI dispatch entry for the cursor family. The pure-motion verbs
+    /// (`A`..`d`) go through the capability-scoped `handle_cursor_motion`
+    /// on a `CursorCtx`; the remaining arms (CHT, the space-intermediate
+    /// DECSCUSR/DECSWBV `q`, the SCORC/DECSMBV `u`, TBC) need
+    /// whole-`Terminal` state and stay here.
     pub(crate) fn handle_csi_cursor(
         &mut self,
         action: char,
@@ -172,7 +177,7 @@ impl Terminal {
                     };
 
                     // Handle DECSWBV (VT520)
-                    self.warning_bell_volume = n.min(8) as u8;
+                    self.bell_volumes.warning = n.min(8) as u8;
                 }
             's' => {
                 // SCOSC - Save Cursor
@@ -186,10 +191,10 @@ impl Terminal {
                 if let Some(val) = ps {
                     if val == 0 {
                         self.restore_cursor();
-                        self.margin_bell_volume = 0;
+                        self.bell_volumes.margin = 0;
                     } else {
                         // DECSMBV - Set Margin Bell Volume: CSI Ps u
-                        self.margin_bell_volume = val.min(8) as u8;
+                        self.bell_volumes.margin = val.min(8) as u8;
                     }
                 } else {
                     // SCORC - Restore Cursor

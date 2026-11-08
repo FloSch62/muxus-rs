@@ -2,8 +2,9 @@
 //! workbench): gpui-component's tree-sitter grammars with fold ranges. The colors are
 //! `muxus_ui::syntax` (Monaco's `vs` and `vs-dark` themes).
 
+use std::cell::RefCell;
 use std::ops::Range;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use muxus_ui::gpui_kit::base::input::{
     EditorState, FoldIconRenderer, FoldRange, HighlightStyleResolver, InputEdit, InputHighlighter,
@@ -26,6 +27,133 @@ struct TreeSitterHighlighter {
     brackets: Vec<(usize, BracketColor)>,
     /// `independentColorPoolPerBracketType`: each kind counts its own depth.
     pools: BracketPools,
+    /// Where the syntax tree is published after each parse, for the features beside the
+    /// editor.
+    probe: Option<SharedProbe>,
+}
+
+/// What an editor's highlighter shares with the features drawn beside the editor (the remote
+/// editor's problem markers and minimap): its syntax tree after the latest parse, itself for
+/// token colors, and a version that moves whenever either changes.
+#[derive(Default)]
+pub struct HighlighterProbe {
+    version: u64,
+    grammar: SharedString,
+    tree: Option<tree_sitter::Tree>,
+    highlighter: Weak<RefCell<Box<dyn InputHighlighter>>>,
+}
+
+/// One editor's probe.
+pub type SharedProbe = Rc<RefCell<HighlighterProbe>>;
+
+impl HighlighterProbe {
+    /// Moves whenever the tree or the highlighter changes.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// The grammar the tree and colors come from (`""` while there is no highlighter).
+    pub fn grammar(&self) -> &SharedString {
+        &self.grammar
+    }
+
+    /// The syntax tree of the text as it is now, for a tree-sitter grammar.
+    pub fn tree(&self) -> Option<&tree_sitter::Tree> {
+        self.tree.as_ref()
+    }
+
+    /// The highlighter's style runs over `range`, as the editor paints them; `None` without a
+    /// highlighter.
+    pub fn styles(
+        &self,
+        range: &Range<usize>,
+        resolver: &dyn HighlightStyleResolver,
+    ) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
+        let highlighter = self.highlighter.upgrade()?;
+        let highlighter = highlighter.try_borrow().ok()?;
+        Some(highlighter.styles(range, resolver))
+    }
+}
+
+/// A highlighter that tells its probe when it reparses, and lends itself to it.
+struct Probed {
+    inner: Rc<RefCell<Box<dyn InputHighlighter>>>,
+    probe: SharedProbe,
+}
+
+impl Probed {
+    fn touch(&self) {
+        let mut probe = self.probe.borrow_mut();
+        probe.version += 1;
+    }
+}
+
+impl InputHighlighter for Probed {
+    fn language(&self) -> SharedString {
+        self.inner.borrow().language()
+    }
+
+    fn update(
+        &mut self,
+        edit: Option<InputEdit>,
+        text: &Rope,
+        folding: bool,
+        window: &mut Window,
+        cx: &mut Context<EditorState>,
+    ) {
+        self.inner
+            .borrow_mut()
+            .update(edit, text, folding, window, cx);
+        self.touch();
+    }
+
+    fn update_batch(
+        &mut self,
+        edits: &[(InputEdit, Rope)],
+        folding: bool,
+        window: &mut Window,
+        cx: &mut Context<EditorState>,
+    ) {
+        self.inner
+            .borrow_mut()
+            .update_batch(edits, folding, window, cx);
+        self.touch();
+    }
+
+    fn styles(
+        &self,
+        range: &Range<usize>,
+        resolver: &dyn HighlightStyleResolver,
+    ) -> Vec<(Range<usize>, HighlightStyle)> {
+        self.inner.borrow().styles(range, resolver)
+    }
+
+    fn fold_ranges(&self, text: &Rope) -> Vec<FoldRange> {
+        self.inner.borrow().fold_ranges(text)
+    }
+
+    fn fold_ranges_for_edit(&self, range: Range<usize>, text: &Rope) -> Vec<FoldRange> {
+        self.inner.borrow().fold_ranges_for_edit(range, text)
+    }
+}
+
+/// `highlighter`, reporting to `probe` (which forgets the previous highlighter's tree).
+pub fn probe_highlighter(
+    highlighter: Box<dyn InputHighlighter>,
+    probe: &SharedProbe,
+) -> Box<dyn InputHighlighter> {
+    let inner = Rc::new(RefCell::new(highlighter));
+    {
+        let mut state = probe.borrow_mut();
+        state.version += 1;
+        state.grammar = inner.borrow().language();
+        state.tree = None;
+        state.highlighter = Rc::downgrade(&inner);
+    }
+    Box::new(Probed {
+        inner,
+        probe: probe.clone(),
+    })
 }
 
 /// Whether the three bracket kinds share one depth (Monaco's default) or each counts its
@@ -45,7 +173,7 @@ pub enum BracketColor {
 }
 
 impl BracketColor {
-    fn token(self) -> &'static str {
+    pub fn token(self) -> &'static str {
         match self {
             BracketColor::Depth(depth) => match depth % 3 {
                 0 => "bracket.depth.1",
@@ -158,6 +286,9 @@ impl InputHighlighter for TreeSitterHighlighter {
             tree_brackets(tree.root_node(), &mut found);
         }
         self.brackets = color_brackets(&found, self.pools);
+        if let Some(probe) = &self.probe {
+            probe.borrow_mut().tree = self.inner.tree().cloned();
+        }
     }
 
     fn styles(
@@ -250,19 +381,43 @@ pub fn mouseover_fold_icons(dark: bool) -> FoldIconRenderer {
 /// The highlighter factory the editor states use; `pools` as the editor's
 /// `bracketPairColorization` sets them.
 pub fn highlighter_factory(pools: BracketPools) -> InputHighlighterFactory {
+    tree_sitter_factory(pools, None)
+}
+
+/// [`highlighter_factory`] for one editor, reporting each parse to `probe`.
+pub fn probed_highlighter_factory(
+    pools: BracketPools,
+    probe: SharedProbe,
+) -> InputHighlighterFactory {
+    tree_sitter_factory(pools, Some(probe))
+}
+
+fn tree_sitter_factory(pools: BracketPools, probe: Option<SharedProbe>) -> InputHighlighterFactory {
     Rc::new(move |language: &str| {
         if language == "text" || language.is_empty() {
+            if let Some(probe) = &probe {
+                let mut probe = probe.borrow_mut();
+                probe.version += 1;
+                probe.grammar = SharedString::default();
+                probe.tree = None;
+                probe.highlighter = Weak::new();
+            }
             return None;
         }
         // Grammars register on first use; a language without one is plain text.
         let registry = LanguageRegistry::singleton();
         let known = registry.language(language).is_some();
         known.then(|| {
-            Box::new(TreeSitterHighlighter {
+            let highlighter = Box::new(TreeSitterHighlighter {
                 inner: SyntaxHighlighter::new(language),
                 brackets: Vec::new(),
                 pools,
-            }) as Box<dyn InputHighlighter>
+                probe: probe.clone(),
+            }) as Box<dyn InputHighlighter>;
+            match &probe {
+                Some(probe) => probe_highlighter(highlighter, probe),
+                None => highlighter,
+            }
         })
     })
 }

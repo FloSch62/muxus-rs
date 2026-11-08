@@ -812,8 +812,19 @@ impl ForwardingPanel {
             None => {}
         }
         let entity = cx.entity().downgrade();
-        let action: AnyElement = match tunnel_action(tunnel, running, busy.is_some(), any_starting)
+        let mut action = tunnel_action(tunnel, running, busy.is_some(), any_starting);
+        // A tunnel linked to a system OpenSSH host's config needs the built-in client.
+        if let TunnelAction::Start { tooltip, disabled } = &mut action
+            && crate::hosts::system_openssh::tunnel_uses_system_open_ssh(tunnel, &self.hosts)
         {
+            *tooltip = format!(
+                "{}: {} uses it",
+                crate::hosts::system_openssh::SYSTEM_OPENSSH_UNAVAILABLE,
+                tunnel.target
+            );
+            *disabled = true;
+        }
+        let action: AnyElement = match action {
             TunnelAction::Busy => div()
                 .mx(Theme::spacing(0.75))
                 .child(CircularProgress::new(

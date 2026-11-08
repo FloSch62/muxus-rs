@@ -61,6 +61,20 @@ pub fn rgba8(r: u8, g: u8, b: u8, a: f32) -> Hsla {
     .into()
 }
 
+/// The color as CSS writes it, for a web page drawn in the app's colors: `#rrggbb` when
+/// opaque, `rgba(r, g, b, a)` otherwise.
+pub fn css(color: Hsla) -> String {
+    let rgb = color.to_rgb();
+    let byte = |value: f32| (value.clamp(0., 1.) * 255.).round() as u8;
+    let (r, g, b) = (byte(rgb.r), byte(rgb.g), byte(rgb.b));
+    if rgb.a >= 1. {
+        format!("#{r:02x}{g:02x}{b:02x}")
+    } else {
+        let a = (rgb.a.clamp(0., 1.) * 1000.).round() / 1000.;
+        format!("rgba({r}, {g}, {b}, {a})")
+    }
+}
+
 /// MUI `alpha(color, value)`: the same color at an absolute opacity.
 pub fn alpha(color: Hsla, value: f32) -> Hsla {
     Hsla {
@@ -153,6 +167,14 @@ mod tests {
         // MUI: lighten('#3b66f5', 0.2) = rgb(98, 133, 247); darken(…, 0.3) = rgb(41, 71, 171)
         assert_eq!(rgb8(lighten(hex("#3b66f5"), 0.2)), (98, 133, 247));
         assert_eq!(rgb8(darken(hex("#3b66f5"), 0.3)), (41, 71, 172));
+    }
+
+    #[test]
+    fn writes_colors_as_css() {
+        assert_eq!(css(hex("#3b66f5")), "#3b66f5");
+        assert_eq!(css(hex("#fff")), "#ffffff");
+        assert_eq!(css(rgba8(0, 0, 0, 0.12)), "rgba(0, 0, 0, 0.12)");
+        assert_eq!(css(alpha(hex("#ffffff"), 0.5)), "rgba(255, 255, 255, 0.5)");
     }
 
     #[test]

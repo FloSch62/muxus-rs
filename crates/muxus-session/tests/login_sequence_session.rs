@@ -351,6 +351,7 @@ async fn connect(
         }),
         recorder: Arc::new(recorder.clone()),
         send: Arc::new(move |message| sink.lock().unwrap().push(message)),
+        enter_key: None,
     }));
     let output: Arc<Mutex<Vec<u8>>> = Arc::default();
     {

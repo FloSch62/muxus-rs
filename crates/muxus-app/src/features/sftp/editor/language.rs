@@ -479,6 +479,7 @@ pub fn highlighter_language(language: &str, path: &str) -> &'static str {
         "swift" => "swift",
         "graphql" => "graphql",
         "elixir" => "elixir",
+        GENERAL_TEXT_LANGUAGE_ID => GENERAL_TEXT_LANGUAGE_ID,
         _ => "text",
     }
 }

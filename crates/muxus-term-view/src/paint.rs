@@ -2,19 +2,26 @@
 //! images, the scrollbar and the overview ruler. A [`Frame`] is a snapshot the view builds on each
 //! render; painting only reads it.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui_kit::{
-    App, BorderStyle, Bounds, Font, FontFallbacks, FontStyle, FontWeight, Hsla, Pixels,
-    RenderImage, SharedString, StrikethroughStyle, TextAlign, TextRun,
-    UnderlineStyle as GpuiUnderline, Window, fill, outline, point, size,
+    App, BorderStyle, Bounds, ContentMask, FillOptions, FillRule, Font, FontFallbacks, FontStyle,
+    FontWeight, Hsla, PathBuilder, PathStyle, Pixels, RenderImage, SharedString,
+    StrikethroughStyle, TextAlign, TextRenderingMode, TextRun, UnderlineStyle as GpuiUnderline,
+    Window, fill, outline, point, size,
 };
 use muxus_term::color::Rgba;
+use muxus_term::font_catalog::{BUNDLED_TERMINAL_FONT_FAMILIES, TERMINAL_SYMBOL_FONT};
+use muxus_term::palette::{COMPOSITION_VIEW_BACKGROUND, COMPOSITION_VIEW_FOREGROUND};
 use muxus_term::style::UnderlineStyle;
 use muxus_term::terminal::CursorShape;
 // Painting works in layout space (scaled with the interface): `px` here takes laid-out
 // lengths as they are; the CSS constants below are scaled once.
 use muxus_ui::zoom::{css, layout_px as px};
+
+use crate::box_drawing::{Segment, Shape, box_glyph_char, cached_glyph_shapes};
 
 pub(crate) fn hsla(color: Rgba) -> Hsla {
     gpui_kit::Rgba {
@@ -34,10 +41,24 @@ pub(crate) struct FontSet {
     pub size: Pixels,
 }
 
+/// The bundled families in [`terminal_font_stack`](muxus_term::font_catalog::terminal_font_stack),
+/// in its order.
+const BUNDLED_FALLBACKS: [&str; 2] = [BUNDLED_TERMINAL_FONT_FAMILIES[0], TERMINAL_SYMBOL_FONT];
+
+thread_local! {
+    static BUNDLED_FALLBACK: RefCell<HashMap<(SharedString, char), Option<&'static str>>> =
+        RefCell::new(HashMap::new());
+}
+
 impl FontSet {
     pub fn font(&self, bold: bool, italic: bool) -> Font {
+        self.font_with(None, bold, italic)
+    }
+
+    /// The font with `fallback` (from [`FontSet::bundled_fallback`]) in place of the family.
+    pub fn font_with(&self, fallback: Option<&'static str>, bold: bool, italic: bool) -> Font {
         Font {
-            family: self.family.clone(),
+            family: fallback.map_or_else(|| self.family.clone(), SharedString::new_static),
             features: Default::default(),
             fallbacks: (!self.fallbacks.is_empty())
                 .then(|| FontFallbacks::from_fonts(self.fallbacks.clone())),
@@ -52,6 +73,56 @@ impl FontSet {
                 FontStyle::Normal
             },
         }
+    }
+
+    /// The bundled family that draws `text` when the chosen family has no glyph for it.
+    ///
+    /// DirectWrite looks the fallback families up among the installed fonts only, so on Windows
+    /// the bundled faces in `fallbacks` never stand in for a missing glyph: Nerd Font and
+    /// Powerline symbols drew as the chosen family's missing-glyph box. The cell takes the first
+    /// bundled family in the stack that has the glyph instead, remembered per family and char.
+    pub fn bundled_fallback(&self, text: &str, window: &Window) -> Option<&'static str> {
+        let c = text.chars().next().filter(|c| !c.is_ascii())?;
+        let key = (self.family.clone(), c);
+        BUNDLED_FALLBACK.with(|cache| {
+            if let Some(found) = cache.borrow().get(&key) {
+                return *found;
+            }
+            // Shaped rather than looked up: DirectWrite answers a missing char with glyph 0
+            // (`.notdef`), not with none. A glyph from another face is a system fallback's.
+            let text_system = window.text_system();
+            let has_glyph = |font: Font| {
+                let font_id = text_system.resolve_font(&font);
+                let run = TextRun {
+                    len: c.len_utf8(),
+                    font,
+                    color: Hsla::default(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let layout =
+                    text_system.layout_line(c.encode_utf8(&mut [0; 4]), self.size, &[run], None);
+                !layout.runs.is_empty()
+                    && layout.runs.iter().all(|run| {
+                        run.font_id == font_id && run.glyphs.iter().all(|glyph| glyph.id.0 != 0)
+                    })
+            };
+            let found = if has_glyph(self.font(false, false)) {
+                None
+            } else {
+                BUNDLED_FALLBACKS.into_iter().find(|family| {
+                    *family != self.family.as_ref()
+                        && has_glyph(self.font_with(Some(*family), false, false))
+                })
+            };
+            let mut cache = cache.borrow_mut();
+            if cache.len() > 4096 {
+                cache.clear();
+            }
+            cache.insert(key, found);
+            found
+        })
     }
 }
 
@@ -99,7 +170,32 @@ pub(crate) struct FrameImage {
     /// Size in logical pixels.
     pub width: f32,
     pub height: f32,
-    pub below_text: bool,
+    /// The sprite's border outside that size on each side (x, y), in logical pixels.
+    pub border: (f32, f32),
+    pub layer: ImageLayer,
+}
+
+/// Where an image goes among the cells, by its kitty z-index, as kitty draws it: under the
+/// cells' backgrounds below `i32::MIN / 2`, over the backgrounds but under the text for the other
+/// negative values, over the text from 0. (The image addon puts every negative z under the
+/// backgrounds, where a program's colored cells hide it.)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImageLayer {
+    UnderBackgrounds,
+    UnderText,
+    OverText,
+}
+
+impl ImageLayer {
+    pub(crate) fn of(z_index: i32) -> Self {
+        if z_index >= 0 {
+            Self::OverText
+        } else if z_index < i32::MIN / 2 {
+            Self::UnderBackgrounds
+        } else {
+            Self::UnderText
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -119,7 +215,7 @@ pub(crate) enum RulerLane {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Scrollbar {
-    /// Slider top and height as fractions of the track.
+    /// Slider top (from the track's top) and height, in px. The track is as tall as the rows.
     pub top: f32,
     pub height: f32,
     pub color: Hsla,
@@ -135,20 +231,29 @@ pub(crate) struct CellSize {
     pub baseline_shift: f32,
 }
 
+/// The IME's composition, drawn over the cursor's cell as xterm's composition view.
+#[derive(Clone, Debug)]
+pub(crate) struct FramePreedit {
+    pub text: String,
+    pub row: usize,
+    pub col: usize,
+    /// Columns from the cursor to the right edge: longer text shows its end.
+    pub cols_left: usize,
+}
+
 #[derive(Clone)]
 pub(crate) struct Frame {
     /// Shared with the view's cache: unchanged rows are not rebuilt.
     pub rows: std::rc::Rc<Vec<Vec<PaintCell>>>,
     pub cell: CellSize,
     pub fonts: FontSet,
-    pub background: Hsla,
     pub cursor: Option<FrameCursor>,
     pub images: Vec<FrameImage>,
     pub scrollbar: Option<Scrollbar>,
     pub ruler: Vec<RulerMark>,
     pub buffer_lines: usize,
     /// IME composition shown at the cursor.
-    pub preedit: Option<String>,
+    pub preedit: Option<FramePreedit>,
 }
 
 /// Width reserved at the right for the scrollbar and the overview ruler (`scrollbar.width`).
@@ -181,30 +286,48 @@ pub(crate) fn paint_frame(
     let origin_y = f32::from(bounds.origin.y) + inner_padding();
     let cell = frame.cell;
     let line_height = px(cell.height);
+    // xterm's WebGL renderer rasterizes glyphs with grayscale antialiasing. ClearType's colored
+    // fringes darkened and tinted text on colored backgrounds (a prompt's segments). Each glyph
+    // reads the mode as it is painted, so the rest of the window keeps the platform's.
+    let rendering_mode = cx.text_rendering_mode();
+    cx.set_text_rendering_mode(TextRenderingMode::Grayscale);
 
-    for image in frame.images.iter().filter(|image| image.below_text) {
-        paint_image(image, origin_x, origin_y, cell, bounds, window);
-    }
+    let paint_images = |layer: ImageLayer, window: &mut Window| {
+        for image in frame.images.iter().filter(|image| image.layer == layer) {
+            paint_image(image, origin_x, origin_y, cell, bounds, window);
+        }
+    };
+    let row_y = |row_index: usize| origin_y + row_index as f32 * cell.height;
 
-    for (row_index, row) in frame.rows.iter().enumerate() {
-        let y = origin_y + row_index as f32 * cell.height;
-        paint_backgrounds(row, origin_x, y, cell, window);
-        paint_text(
-            row,
-            origin_x,
-            y,
-            cell,
-            &frame.fonts,
-            line_height,
-            window,
-            cx,
-        );
-        paint_decorations(row, origin_x, y, cell, window);
-    }
-
-    for image in frame.images.iter().filter(|image| !image.below_text) {
-        paint_image(image, origin_x, origin_y, cell, bounds, window);
-    }
+    // The grid is two layers, as xterm's WebGL renderer draws it: the backgrounds, then the
+    // text and the drawn glyphs, with the images that go under the text between them. Each
+    // primitive outside a layer finds its place among everything it overlaps; a screen of
+    // colored cells has thousands.
+    paint_images(ImageLayer::UnderBackgrounds, window);
+    window.paint_layer(bounds, |window| {
+        for (row_index, row) in frame.rows.iter().enumerate() {
+            paint_backgrounds(row, origin_x, row_y(row_index), cell, window);
+        }
+    });
+    paint_images(ImageLayer::UnderText, window);
+    window.paint_layer(bounds, |window| {
+        for (row_index, row) in frame.rows.iter().enumerate() {
+            let y = row_y(row_index);
+            paint_text(
+                row,
+                origin_x,
+                y,
+                cell,
+                &frame.fonts,
+                line_height,
+                window,
+                cx,
+            );
+            paint_box_glyphs(row, origin_x, y, cell, frame.fonts.size, window);
+            paint_decorations(row, origin_x, y, cell, window);
+        }
+    });
+    paint_images(ImageLayer::OverText, window);
 
     if let Some(cursor) = &frame.cursor {
         paint_cursor(
@@ -218,33 +341,20 @@ pub(crate) fn paint_frame(
             cx,
         );
     }
-    if let (Some(preedit), Some(cursor)) = (&frame.preedit, &frame.cursor) {
-        paint_preedit(
-            preedit,
-            cursor,
-            frame,
-            origin_x,
-            origin_y,
-            line_height,
-            window,
-            cx,
-        );
+    if let Some(preedit) = &frame.preedit {
+        paint_preedit(preedit, frame, origin_x, origin_y, window, cx);
     }
+    cx.set_text_rendering_mode(rendering_mode);
 
     let grid_height = frame.rows.len() as f32 * cell.height;
     paint_ruler(frame, bounds, grid_height, window);
     if let Some(scrollbar) = &frame.scrollbar {
         let track_x =
             f32::from(bounds.origin.x + bounds.size.width) - inner_padding() - scrollbar_width();
-        let track_height = f32::from(bounds.size.height) - 2.0 * inner_padding();
-        let top = origin_y + scrollbar.top * track_height;
-        let height = (scrollbar.height * track_height)
-            .max(20.0)
-            .min(track_height);
         window.paint_quad(fill(
             Bounds::new(
-                point(px(track_x), px(top)),
-                size(px(scrollbar_width()), px(height)),
+                point(px(track_x), px(origin_y + scrollbar.top)),
+                size(px(scrollbar_width()), px(scrollbar.height)),
             ),
             scrollbar.color,
         ));
@@ -280,7 +390,12 @@ fn paint_backgrounds(
     }
 }
 
-fn text_run(cell: &PaintCell, fonts: &FontSet, len: usize) -> TextRun {
+fn text_run(
+    cell: &PaintCell,
+    fonts: &FontSet,
+    fallback: Option<&'static str>,
+    len: usize,
+) -> TextRun {
     let underline = match cell.underline {
         _ if cell.link => Some(GpuiUnderline {
             thickness: px(1.0),
@@ -301,7 +416,7 @@ fn text_run(cell: &PaintCell, fonts: &FontSet, len: usize) -> TextRun {
     };
     TextRun {
         len,
-        font: fonts.font(cell.bold, cell.italic),
+        font: fonts.font_with(fallback, cell.bold, cell.italic),
         color: cell.fg,
         background_color: None,
         underline,
@@ -315,6 +430,7 @@ fn text_run(cell: &PaintCell, fonts: &FontSet, len: usize) -> TextRun {
 /// Everything [`text_run`] reads from a cell: two cells with equal keys make equal runs.
 #[derive(Clone, Copy, PartialEq)]
 struct RunKey {
+    fallback: Option<&'static str>,
     bold: bool,
     italic: bool,
     color: Hsla,
@@ -324,7 +440,7 @@ struct RunKey {
 }
 
 impl RunKey {
-    fn of(cell: &PaintCell) -> Self {
+    fn of(cell: &PaintCell, fallback: Option<&'static str>) -> Self {
         let underline = match cell.underline {
             _ if cell.link => Some((cell.fg, false)),
             UnderlineStyle::Single => Some((cell.underline_color, false)),
@@ -332,6 +448,7 @@ impl RunKey {
             _ => None,
         };
         Self {
+            fallback,
             bold: cell.bold,
             italic: cell.italic,
             color: cell.fg,
@@ -368,7 +485,8 @@ fn paint_text(
         if current.width == 2 {
             // Wide characters are shaped on their own and centred on their two cells.
             let text: SharedString = current.text.clone().into();
-            let run = text_run(current, fonts, text.len());
+            let fallback = fonts.bundled_fallback(&text, window);
+            let run = text_run(current, fonts, fallback, text.len());
             let shaped = window
                 .text_system()
                 .shape_line(text, fonts.size, &[run], None);
@@ -393,15 +511,26 @@ fn paint_text(
         while col < trimmed && row[col].width == 1 {
             let piece = &row[col];
             let before = text.len();
-            text.push_str(&piece.text);
+            // Box drawing and blocks are drawn on the grid (`paint_box_glyphs`); the run keeps
+            // a space in their place, with its underline or strikethrough.
+            let drawn = box_glyph_char(&piece.text).is_some();
+            let fallback = if drawn {
+                text.push(' ');
+                None
+            } else {
+                text.push_str(&piece.text);
+                fonts.bundled_fallback(&piece.text, window)
+            };
             let len = text.len() - before;
             // Cells that would make equal runs extend the last one; the run (and its font) is
-            // only built when the style changes.
-            let key = RunKey::of(piece);
+            // only built when the style changes. A drawn glyph's space shows none of its style
+            // unless it is underlined or struck through, so it extends any run.
+            let key = RunKey::of(piece, fallback);
+            let plain_space = drawn && key.underline.is_none() && !key.strikethrough;
             match runs.last_mut() {
-                Some(last) if last_key == Some(key) => last.len += len,
+                Some(last) if last_key == Some(key) || plain_space => last.len += len,
                 _ => {
-                    runs.push(text_run(piece, fonts, len));
+                    runs.push(text_run(piece, fonts, fallback, len));
                     last_key = Some(key);
                 }
             }
@@ -429,6 +558,102 @@ fn paint_text(
             window,
             cx,
         );
+    }
+}
+
+/// Box Drawing, Block Elements and Powerline symbols, drawn on the cell grid in the cell's color.
+fn paint_box_glyphs(
+    row: &[PaintCell],
+    origin_x: f32,
+    y: f32,
+    cell: CellSize,
+    font_size: Pixels,
+    window: &mut Window,
+) {
+    for (col, current) in row.iter().enumerate() {
+        if current.width != 1 {
+            continue;
+        }
+        let Some(c) = box_glyph_char(&current.text) else {
+            continue;
+        };
+        let x = cell_x(origin_x, col, cell);
+        paint_box_glyph(
+            c,
+            Bounds::new(point(px(x), px(y)), size(px(cell.width), px(cell.height))),
+            current.fg,
+            font_size,
+            window,
+        );
+    }
+}
+
+/// One box-drawing, block or Powerline glyph in `cell`. The cell is taken to whole device pixels,
+/// edges rounded the same way for every cell, so neighbours tile without gaps or overlap.
+fn paint_box_glyph(
+    c: char,
+    cell: Bounds<Pixels>,
+    color: Hsla,
+    font_size: Pixels,
+    window: &mut Window,
+) {
+    let scale = window.scale_factor();
+    let device = |value: Pixels| (f32::from(value) * scale).round();
+    let (left, top) = (device(cell.left()), device(cell.top()));
+    let (width, height) = (device(cell.right()) - left, device(cell.bottom()) - top);
+    let css_pixel = scale * muxus_ui::zoom::zoom();
+    let font_size = f32::from(font_size) * scale;
+    let Some(shapes) = cached_glyph_shapes(c, width, height, css_pixel, font_size) else {
+        return;
+    };
+    let at = |x: f32, y: f32| point(px((left + x) / scale), px((top + y) / scale));
+    let whole = Bounds::from_corners(at(0., 0.), at(width, height));
+    let trace = |builder: &mut PathBuilder, segments: &[Segment]| {
+        for segment in segments {
+            match *segment {
+                Segment::Move(x, y) => builder.move_to(at(x, y)),
+                Segment::Line(x, y) => builder.line_to(at(x, y)),
+                Segment::Cubic { c1, c2, to } => {
+                    builder.cubic_bezier_to(at(to.0, to.1), at(c1.0, c1.1), at(c2.0, c2.1))
+                }
+                Segment::Quad { c, to } => builder.curve_to(at(to.0, to.1), at(c.0, c.1)),
+                Segment::Close => builder.close(),
+            }
+        }
+    };
+    for shape in shapes.iter() {
+        let builder = match shape {
+            Shape::Rect { x0, y0, x1, y1 } => {
+                window.paint_quad(fill(
+                    Bounds::from_corners(at(*x0, *y0), at(*x1, *y1)),
+                    color,
+                ));
+                continue;
+            }
+            Shape::Shade(share) => {
+                window.paint_quad(fill(whole, color.opacity(*share)));
+                continue;
+            }
+            Shape::Stroke { segments, width } => {
+                let mut builder = PathBuilder::stroke(px(width / scale));
+                trace(&mut builder, segments);
+                builder
+            }
+            Shape::Fill { subpaths } => {
+                let mut builder = PathBuilder::fill().with_style(PathStyle::Fill(
+                    FillOptions::default().with_fill_rule(FillRule::NonZero),
+                ));
+                for segments in subpaths {
+                    trace(&mut builder, segments);
+                }
+                builder
+            }
+        };
+        if let Ok(path) = builder.build() {
+            window.with_content_mask(Some(ContentMask { bounds: whole }), |window| {
+                window.paint_path(path, color)
+            });
+        }
     }
 }
 
@@ -493,9 +718,17 @@ fn paint_image(
     let x = cell_x(origin_x, image.col, cell);
     let y = origin_y + image.row as f32 * cell.height;
     let image_bounds = Bounds::new(point(px(x), px(y)), size(px(image.width), px(image.height)));
+    let (border_x, border_y) = image.border;
+    let sprite_bounds = Bounds::new(
+        point(px(x - border_x), px(y - border_y)),
+        size(
+            px(image.width + 2.0 * border_x),
+            px(image.height + 2.0 * border_y),
+        ),
+    );
     let _ = window.paint_image(
-        bounds,
-        image_bounds,
+        bounds.intersect(&image_bounds),
+        sprite_bounds,
         Default::default(),
         image.image.clone(),
         0,
@@ -529,11 +762,20 @@ fn paint_cursor(
     match cursor.shape {
         CursorShape::Block => {
             window.paint_quad(fill(cell_bounds, cursor.color));
-            if !cursor.text.trim().is_empty() {
+            if let Some(c) = box_glyph_char(&cursor.text) {
+                paint_box_glyph(
+                    c,
+                    Bounds::new(point(px(x), px(y)), size(px(cell.width), px(cell.height))),
+                    cursor.accent,
+                    fonts.size,
+                    window,
+                );
+            } else if !cursor.text.trim().is_empty() {
                 let text: SharedString = cursor.text.clone().into();
+                let fallback = fonts.bundled_fallback(&text, window);
                 let run = TextRun {
                     len: text.len(),
-                    font: fonts.font(cursor.bold, cursor.italic),
+                    font: fonts.font_with(fallback, cursor.bold, cursor.italic),
                     color: cursor.accent,
                     background_color: None,
                     underline: None,
@@ -573,51 +815,47 @@ fn paint_cursor(
 
 #[allow(clippy::too_many_arguments)]
 fn paint_preedit(
-    preedit: &str,
-    cursor: &FrameCursor,
+    preedit: &FramePreedit,
     frame: &Frame,
     origin_x: f32,
     origin_y: f32,
-    line_height: Pixels,
     window: &mut Window,
     cx: &mut App,
 ) {
-    if preedit.is_empty() {
+    if preedit.text.is_empty() {
         return;
     }
-    let x = cell_x(origin_x, cursor.col, frame.cell);
-    let y = origin_y + cursor.row as f32 * frame.cell.height;
-    let text: SharedString = preedit.to_string().into();
+    let x = cell_x(origin_x, preedit.col, frame.cell);
+    let y = origin_y + preedit.row as f32 * frame.cell.height;
+    let text: SharedString = preedit.text.clone().into();
     let run = TextRun {
         len: text.len(),
         font: frame.fonts.font(false, false),
-        color: cursor.color,
-        background_color: Some(frame.background),
-        underline: Some(GpuiUnderline {
-            thickness: px(1.0),
-            color: Some(cursor.color),
-            wavy: false,
-        }),
+        color: hsla(COMPOSITION_VIEW_FOREGROUND),
+        background_color: None,
+        underline: None,
         strikethrough: None,
     };
     let shaped = window
         .text_system()
         .shape_line(text, frame.fonts.size, &[run], None);
-    window.paint_quad(fill(
-        Bounds::new(
-            point(px(x), px(y)),
-            size(shaped.width, px(frame.cell.height)),
-        ),
-        frame.background,
-    ));
-    let _ = shaped.paint(
-        point(px(x), px(y)),
-        line_height,
-        TextAlign::Left,
-        None,
-        window,
-        cx,
-    );
+    // At most as wide as the room to the right edge; longer text shows its end
+    // (`direction: rtl` with the overflow hidden).
+    let max_width = preedit.cols_left as f32 * frame.cell.width;
+    let width = f32::from(shaped.width).min(max_width);
+    let shift = (f32::from(shaped.width) - width).max(0.0);
+    let bounds = Bounds::new(point(px(x), px(y)), size(px(width), px(frame.cell.height)));
+    window.paint_quad(fill(bounds, hsla(COMPOSITION_VIEW_BACKGROUND)));
+    window.with_content_mask(Some(ContentMask { bounds }), |window| {
+        let _ = shaped.paint(
+            point(px(x - shift), px(y)),
+            px(frame.cell.height),
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    });
 }
 
 /// xterm's overview ruler: three lanes in the scrollbar's width at the right edge of the padding
@@ -651,6 +889,19 @@ fn paint_ruler(frame: &Frame, bounds: Bounds<Pixels>, grid_height: f32, window: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_kitty_z_index_picks_the_layer_kitty_draws_the_image_in() {
+        assert_eq!(ImageLayer::of(0), ImageLayer::OverText);
+        assert_eq!(ImageLayer::of(5), ImageLayer::OverText);
+        // presenterm places its images at z=-2: over the slide's colored cells.
+        assert_eq!(ImageLayer::of(-2), ImageLayer::UnderText);
+        assert_eq!(ImageLayer::of(i32::MIN / 2), ImageLayer::UnderText);
+        assert_eq!(
+            ImageLayer::of(i32::MIN / 2 - 1),
+            ImageLayer::UnderBackgrounds
+        );
+    }
 
     fn cell(edit: impl FnOnce(&mut PaintCell)) -> PaintCell {
         let mut cell = PaintCell {
@@ -717,13 +968,18 @@ mod tests {
                 c.underline = UnderlineStyle::Curly;
             }),
         ];
+        let fallbacks = [None, Some(TERMINAL_SYMBOL_FONT)];
         for a in &cells {
             for b in &cells {
-                assert_eq!(
-                    RunKey::of(a) == RunKey::of(b),
-                    text_run(a, &fonts, 1) == text_run(b, &fonts, 1),
-                    "{a:?} / {b:?}"
-                );
+                for fa in fallbacks {
+                    for fb in fallbacks {
+                        assert_eq!(
+                            RunKey::of(a, fa) == RunKey::of(b, fb),
+                            text_run(a, &fonts, fa, 1) == text_run(b, &fonts, fb, 1),
+                            "{a:?} {fa:?} / {b:?} {fb:?}"
+                        );
+                    }
+                }
             }
         }
     }

@@ -93,3 +93,105 @@ fn tunnels_need_a_target_unless_dynamic() {
         parse_value(json!({ "type": "dynamic", "bindPort": 1080, "target": "  proxy  " })).unwrap();
     assert_eq!(tunnel.target, "proxy");
 }
+
+#[test]
+fn metadata_patch_takes_prompt_waiting_anti_idle_keys_and_fallback_routes() {
+    let patch: OpenSshMetadataPatch = parse_value(json!({
+        "pastePromptWait": { "promptPattern": "[>#\\]]\\s*$", "timeoutMs": 20000 },
+        "antiIdle": { "intervalSeconds": 120, "text": " ", "enter": false },
+        "backspaceKey": "ctrl-h",
+        "enterKey": "crlf",
+        "implicitCr": null,
+        "localEcho": true,
+        "systemOpenSsh": true,
+        "discoverEnvironments": null,
+        "proxyJumpFallbacks": [[" bastion-b "], ["edge", "bastion-c"]],
+    }))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&patch).unwrap(),
+        json!({
+            "pastePromptWait": { "promptPattern": "[>#\\]]\\s*$", "timeoutMs": 20000 },
+            "antiIdle": { "intervalSeconds": 120, "text": " ", "enter": false },
+            "backspaceKey": "ctrl-h",
+            "enterKey": "crlf",
+            "implicitCr": null,
+            "localEcho": true,
+            "systemOpenSsh": true,
+            "discoverEnvironments": null,
+            "proxyJumpFallbacks": [["bastion-b"], ["edge", "bastion-c"]],
+        })
+    );
+    // An empty prompt wait is on with every default.
+    assert!(parse_value::<OpenSshMetadataPatch>(json!({ "pastePromptWait": {} })).is_ok());
+}
+
+#[test]
+fn metadata_patch_refuses_settings_the_api_refuses() {
+    for body in [
+        json!({ "pastePromptWait": { "promptPattern": "([" } }),
+        json!({ "pastePromptWait": { "errorPattern": "" } }),
+        json!({ "pastePromptWait": { "timeoutMs": 99 } }),
+        json!({ "antiIdle": { "intervalSeconds": 9, "text": " ", "enter": false } }),
+        json!({ "antiIdle": { "intervalSeconds": 60, "text": "", "enter": false } }),
+        json!({ "antiIdle": { "intervalSeconds": 60, "text": "a\rb", "enter": false } }),
+        json!({ "antiIdle": { "intervalSeconds": 60, "text": "x".repeat(257), "enter": true } }),
+        json!({ "backspaceKey": "bs" }),
+        json!({ "enterKey": "\r\n" }),
+        json!({ "proxyJumpFallbacks": [[]] }),
+        json!({ "proxyJumpFallbacks": [[" "]] }),
+        json!({ "proxyJumpFallbacks": [["a"], ["b"], ["c"], ["d"], ["e"]] }),
+        json!({ "proxyJumpFallbacks": [["1", "2", "3", "4", "5", "6", "7", "8", "9"]] }),
+    ] {
+        assert!(
+            parse_value::<OpenSshMetadataPatch>(body.clone()).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn saved_web_hosts_need_an_http_address() {
+    use muxus_core::api::SavedHostProfileInput;
+    let host: SavedHostProfileInput = parse_value(json!({
+        "name": "Grafana",
+        "profile": {
+            "kind": "web",
+            "url": " https://grafana.internal:3000 ",
+            "sshGateway": { "target": "bastion-a" },
+        },
+    }))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&host.profile).unwrap(),
+        json!({ "kind": "web", "url": "https://grafana.internal:3000", "sshGateway": { "target": "bastion-a" } })
+    );
+    for url in [
+        "ftp://files",
+        "https:///path",
+        "grafana.internal",
+        "HTTP:// x",
+        "",
+    ] {
+        let body = json!({ "name": "x", "profile": { "kind": "web", "url": url } });
+        assert!(parse_value::<SavedHostProfileInput>(body).is_err(), "{url}");
+    }
+    assert!(
+        parse_value::<SavedHostProfileInput>(
+            json!({ "name": "x", "profile": { "kind": "web", "url": "HTTP://Router" } })
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn gateway_fallbacks_and_jump_fallbacks_are_bounded() {
+    use muxus_core::protocol::SessionProfile;
+    let gateway = json!({ "target": "bastion" });
+    let rdp = |count: usize| json!({ "kind": "rdp", "host": "win", "sshGatewayFallbacks": vec![gateway.clone(); count] });
+    assert!(parse_value::<SessionProfile>(rdp(4)).is_ok());
+    assert!(parse_value::<SessionProfile>(rdp(5)).is_err());
+    let ssh = |routes: serde_json::Value| json!({ "kind": "ssh", "target": "app", "proxyJumpFallbacks": routes });
+    assert!(parse_value::<SessionProfile>(ssh(json!([["b"], ["c", "d"]]))).is_ok());
+    assert!(parse_value::<SessionProfile>(ssh(json!([[]]))).is_err());
+}

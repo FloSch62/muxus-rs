@@ -701,7 +701,7 @@ impl AuthLadder {
         Ok(last)
     }
 
-    fn report_agent_failure(&self, err: &crate::responsive_agent::AgentError) {
+    fn report_agent_failure(&mut self, err: &crate::responsive_agent::AgentError) {
         if let Some(key) = &err.security_key {
             let problem = crate::security_keys::describe_security_key_error(
                 &crate::security_keys::SecurityKeyError {
@@ -715,6 +715,8 @@ impl AuthLadder {
                 &format!("{problem} — trying other authentication methods"),
                 false,
             );
+            // The reason the login fails when nothing else gets in (`noteSecurityKeyProblem`).
+            self.security_key_problem = Some(problem);
         } else {
             tracing::warn!(%err, "ssh-agent did not sign; trying other authentication methods");
             self.cx.io.status(

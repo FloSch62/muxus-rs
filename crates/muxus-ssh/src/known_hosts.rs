@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use md5::Md5;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -339,7 +339,7 @@ fn hashed_matches(field: &str, names: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::RngCore;
+    use rand::Rng;
 
     struct Files {
         dir: tempfile::TempDir,
@@ -374,14 +374,14 @@ mod tests {
         let mut out = (key_type.len() as u32).to_be_bytes().to_vec();
         out.extend_from_slice(key_type.as_bytes());
         let mut payload = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut payload);
+        rand::rng().fill_bytes(&mut payload);
         out.extend_from_slice(&payload);
         out
     }
 
     fn hashed_entry(host: &str, key: &[u8]) -> String {
         let mut salt = [0u8; 20];
-        rand::thread_rng().fill_bytes(&mut salt);
+        rand::rng().fill_bytes(&mut salt);
         let mut mac = Hmac::<Sha1>::new_from_slice(&salt).unwrap();
         mac.update(host.as_bytes());
         let digest = mac.finalize().into_bytes();

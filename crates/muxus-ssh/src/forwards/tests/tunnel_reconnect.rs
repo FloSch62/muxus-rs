@@ -65,6 +65,7 @@ impl Prepared {
                 target_host: self.tunnel.target_host.clone(),
                 target_port: self.tunnel.target_port,
                 tunnel_id: Some(self.tunnel.id.clone()),
+                independent: None,
             })
             .await
             .unwrap();

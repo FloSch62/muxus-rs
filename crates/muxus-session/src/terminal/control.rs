@@ -16,6 +16,8 @@ struct State {
     closed: bool,
     intercept: Option<Intercept>,
     on_message: Option<OnMessage>,
+    /// The newest resize from before the session was attached.
+    pending_resize: Option<TerminalClientMessage>,
 }
 
 /// The session's control messages: a prompt waits for the next one with [`ControlChannel::next`];
@@ -44,11 +46,21 @@ impl ControlChannel {
         self.state().intercept = Some(Arc::new(intercept));
     }
 
+    /// The attached session's handler. A resize that came while the session connected reaches
+    /// it first.
     pub fn set_on_message(
         &self,
         on_message: impl Fn(TerminalClientMessage) + Send + Sync + 'static,
     ) {
-        self.state().on_message = Some(Arc::new(on_message));
+        let on_message: OnMessage = Arc::new(on_message);
+        let pending = {
+            let mut state = self.state();
+            state.on_message = Some(on_message.clone());
+            state.pending_resize.take()
+        };
+        if let Some(resize) = pending {
+            on_message(resize);
+        }
     }
 
     pub fn push(&self, message: TerminalClientMessage) {
@@ -62,6 +74,19 @@ impl ControlChannel {
             // A BREAK has no line to go to until the session is attached, and must not be taken
             // as the answer to an auth or host-key prompt.
             if matches!(message, TerminalClientMessage::SendBreak) && state.on_message.is_none() {
+                return;
+            }
+            // Muxus fix (`terminal-socket.ts` loses these): a resize is never the answer to a
+            // prompt, and one that comes before the session is attached waits for it, the
+            // newest replacing the others, so the remote pty takes the window's size.
+            if matches!(message, TerminalClientMessage::Resize { .. }) {
+                match state.on_message.clone() {
+                    Some(on_message) => {
+                        drop(state);
+                        on_message(message);
+                    }
+                    None => state.pending_resize = Some(message),
+                }
                 return;
             }
             while let Some(waiter) = state.waiters.pop_front() {
@@ -111,6 +136,7 @@ impl ControlChannel {
         state.waiters.clear();
         state.intercept = None;
         state.on_message = None;
+        state.pending_resize = None;
     }
 }
 
@@ -145,5 +171,33 @@ mod tests {
         );
         control.close();
         assert_eq!(control.claim_next().await, Err(ConnectionClosed));
+    }
+
+    #[tokio::test]
+    async fn a_resize_while_connecting_waits_for_the_session_and_answers_no_prompt() {
+        let resize = |cols, rows| TerminalClientMessage::Resize { cols, rows };
+        let control = Arc::new(ControlChannel::default());
+        let waiting = {
+            let control = control.clone();
+            tokio::spawn(control.claim_next())
+        };
+        tokio::task::yield_now().await;
+        // The window is resized while a password prompt waits: the prompt still gets its answer.
+        control.push(resize(100, 30));
+        control.push(resize(149, 44));
+        control.push(TerminalClientMessage::HostKeyResponse { accept: true });
+        assert_eq!(
+            waiting.await.unwrap(),
+            Ok(TerminalClientMessage::HostKeyResponse { accept: true })
+        );
+        // The attached session hears the newest size first, then the ones after it.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        control.set_on_message(move |message| sink.lock().unwrap().push(message));
+        control.push(resize(120, 40));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![resize(149, 44), resize(120, 40)]
+        );
     }
 }

@@ -383,6 +383,66 @@ pub(super) const MIGRATION_28: &str = r#"
         CHECK(paste_char_delay_ms IS NULL OR paste_char_delay_ms >= 0);
     "#;
 
+/// Migration 30, `host-paste-prompt-wait`.
+pub(super) const MIGRATION_30: &str = r#"
+      ALTER TABLE connection_profiles
+        ADD COLUMN paste_prompt_wait_json TEXT
+        CHECK(paste_prompt_wait_json IS NULL OR json_valid(paste_prompt_wait_json));
+    "#;
+
+/// Migration 31, `host-anti-idle`.
+pub(super) const MIGRATION_31: &str = r#"
+      ALTER TABLE connection_profiles
+        ADD COLUMN anti_idle_json TEXT
+        CHECK(anti_idle_json IS NULL OR json_valid(anti_idle_json));
+    "#;
+
+/// Migration 32, `host-terminal-input-modes`.
+pub(super) const MIGRATION_32: &str = r#"
+      ALTER TABLE connection_profiles
+        ADD COLUMN backspace_key TEXT;
+      ALTER TABLE connection_profiles
+        ADD COLUMN enter_key TEXT;
+      ALTER TABLE connection_profiles
+        ADD COLUMN implicit_cr INTEGER NOT NULL DEFAULT 0
+        CHECK(implicit_cr IN (0, 1));
+      ALTER TABLE connection_profiles
+        ADD COLUMN local_echo INTEGER NOT NULL DEFAULT 0
+        CHECK(local_echo IN (0, 1));
+    "#;
+
+/// Migration 33, `host-environment-discovery`.
+pub(super) const MIGRATION_33: &str = r#"
+      ALTER TABLE connection_profiles
+        ADD COLUMN discover_environments INTEGER
+        CHECK(discover_environments IS NULL OR discover_environments IN (0, 1));
+    "#;
+
+/// Migration 34, `host-jump-fallbacks`.
+pub(super) const MIGRATION_34: &str = r#"
+      ALTER TABLE connection_profiles
+        ADD COLUMN proxy_jump_fallbacks_json TEXT
+        CHECK(proxy_jump_fallbacks_json IS NULL OR json_valid(proxy_jump_fallbacks_json));
+    "#;
+
+/// Migration 35, `scripts`.
+pub(super) const MIGRATION_35: &str = r#"
+      CREATE TABLE scripts (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 200),
+        body TEXT NOT NULL CHECK(length(body) <= 1048576),
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      ) STRICT;
+    "#;
+
+/// Migration 37, `host-system-openssh`.
+pub(super) const MIGRATION_37: &str = r#"
+      ALTER TABLE connection_profiles
+        ADD COLUMN system_openssh INTEGER NOT NULL DEFAULT 0
+        CHECK(system_openssh IN (0, 1));
+    "#;
+
 /// Migration 22: the kinds connection_profiles admitted before.
 pub(super) const REMOTE_DESKTOP_PREVIOUS_KINDS: &str =
     r#"kind IN ('openssh', 'ssh', 'local', 'serial', 'telnet')"#;
@@ -430,6 +490,16 @@ pub(super) const MANAGEMENT_SQL: &str = r#"
     ) STRICT;
     CREATE INDEX management_requests_scope ON management_requests(protocol, profile_id);
   "#;
+
+/// Migration 36: the kinds connection_profiles admitted before.
+pub(super) const WEB_PREVIOUS_KINDS: &str =
+    r#"kind IN ('openssh', 'ssh', 'local', 'serial', 'telnet', 'rdp', 'vnc', 'gnmi', 'netconf')"#;
+
+/// Migration 36: the kinds it admits after.
+pub(super) const WEB_NEXT_KINDS: &str = r#"kind IN ('openssh', 'ssh', 'local', 'serial', 'telnet', 'rdp', 'vnc', 'gnmi', 'netconf', 'web')"#;
+
+/// Migration 36: a definition that already admits web hosts (restored from a newer copy).
+pub(super) const WEB_ADMITTED_MARKER: &str = r#"'netconf', 'web')"#;
 
 /// Migration 14: the draft version 13 vault table is replaced.
 pub(super) const DRAFT_VAULT_SQL: &str = r#"

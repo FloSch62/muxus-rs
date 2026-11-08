@@ -1,12 +1,22 @@
 //! The SSH host editor's form state (`client/src/components/host-editor/draft.ts`):
 //! one draft for an OpenSSH Host block or a Muxus-owned SSH profile.
 
+use muxus_core::anti_idle::{
+    AntiIdleDraft, anti_idle_draft, anti_idle_from_draft, anti_idle_problem,
+};
 use muxus_core::api::{
     ConfigForward, ForwardType, HostBlockOptions, HostKeywordHighlightConfig, HostOptionExtra,
     HostUpsertRequest, OpenSshMetadataPatch, SavedHostProfile, SavedHostProfileInput, SshHostEntry,
     saved_host_hop_id,
 };
-use muxus_core::js::{js_trim, utf16_len};
+use muxus_core::input_modes::{
+    TerminalInputModes, apply_terminal_input_modes_patch, host_terminal_input_modes,
+};
+use muxus_core::js::{Patch, js_trim, utf16_len};
+use muxus_core::paste_prompt::{
+    PastePromptWaitDraft, paste_prompt_wait_draft, paste_prompt_wait_from_draft,
+    paste_prompt_wait_problem,
+};
 use muxus_core::protocol::{
     RequestTty, SavedHostSessionProfile, SshProfile, StrictHostKeyChecking,
 };
@@ -71,6 +81,33 @@ pub enum RouteMode {
     Command,
 }
 
+/// Look for containers, clusters and VMs on connect; `Default` follows Settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum EnvironmentDiscoveryDraft {
+    #[default]
+    Default,
+    On,
+    Off,
+}
+
+/// `environmentDiscoveryDraft`.
+pub fn environment_discovery_draft(value: Option<bool>) -> EnvironmentDiscoveryDraft {
+    match value {
+        None => EnvironmentDiscoveryDraft::Default,
+        Some(true) => EnvironmentDiscoveryDraft::On,
+        Some(false) => EnvironmentDiscoveryDraft::Off,
+    }
+}
+
+/// The stored override (`environmentDiscoveryFromDraft`): `None` follows the global setting.
+pub fn environment_discovery_from_draft(value: EnvironmentDiscoveryDraft) -> Option<bool> {
+    match value {
+        EnvironmentDiscoveryDraft::Default => None,
+        EnvironmentDiscoveryDraft::On => Some(true),
+        EnvironmentDiscoveryDraft::Off => Some(false),
+    }
+}
+
 /// Everything the editor form holds, in form-friendly shapes (ports as text).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostDraft {
@@ -91,10 +128,20 @@ pub struct HostDraft {
     /// Paste pacing; unset follows the Terminal settings.
     pub paste_line_delay_ms: Option<u32>,
     pub paste_char_delay_ms: Option<u32>,
+    /// Pastes wait for the prompt after each line.
+    pub paste_prompt_wait: PastePromptWaitDraft,
+    /// Text typed into idle sessions.
+    pub anti_idle: AntiIdleDraft,
+    /// Backspace and Enter keys, implicit CR and local echo.
+    pub input_modes: TerminalInputModes,
     /// Muxus-only plain-shell mode: no SFTP or shell integration.
     pub disable_sftp: bool,
     /// Muxus-only console mode: also no env requests, with PTY rejection fallback.
     pub console_compatibility: bool,
+    /// Connect with the computer's `ssh` program instead of the built-in client.
+    pub system_open_ssh: bool,
+    /// Look for containers, clusters and VMs on connect; `Default` follows Settings.
+    pub discover_environments: EnvironmentDiscoveryDraft,
     /// Target config file; empty keeps the block's file (or the root for new hosts).
     pub file: String,
     pub hostname: String,
@@ -103,7 +150,8 @@ pub struct HostDraft {
     pub auth_mode: AuthMode,
     pub identity_files: Vec<String>,
     pub certificate_files: Vec<String>,
-    pub identities_only: bool,
+    /// As the host has it (unset when absent); [`auth_choice`] sets it.
+    pub identities_only: Option<bool>,
     pub identity_agent_mode: IdentityAgentMode,
     /// Custom agent socket path or environment indirection.
     pub identity_agent: String,
@@ -111,6 +159,8 @@ pub struct HostDraft {
     pub forward_x11: ForwardX11Mode,
     pub route_mode: RouteMode,
     pub proxy_jump: Vec<String>,
+    /// Jump routes tried in order when `proxy_jump` fails, each a whole chain.
+    pub proxy_jump_fallbacks: Vec<Vec<String>>,
     pub proxy_command: String,
     pub forwards: Vec<ConfigForward>,
     pub remote_command_mode: RemoteCommandMode,
@@ -154,8 +204,13 @@ pub fn blank_draft(prefill_target: &str, group: &str, storage: Storage) -> HostD
         command_button_group: None,
         paste_line_delay_ms: None,
         paste_char_delay_ms: None,
+        paste_prompt_wait: paste_prompt_wait_draft(None),
+        anti_idle: anti_idle_draft(None),
+        input_modes: host_terminal_input_modes(None),
         disable_sftp: false,
         console_compatibility: false,
+        system_open_ssh: false,
+        discover_environments: EnvironmentDiscoveryDraft::Default,
         file: String::new(),
         hostname: match &parsed {
             Some(parsed) => parsed.host.clone(),
@@ -175,13 +230,14 @@ pub fn blank_draft(prefill_target: &str, group: &str, storage: Storage) -> HostD
         certificate_files: Vec::new(),
         // "Specific key file" is an exact-key mode. This stays dormant while the
         // default auth mode is selected, then serializes as IdentitiesOnly yes.
-        identities_only: true,
+        identities_only: Some(true),
         identity_agent_mode: IdentityAgentMode::Default,
         identity_agent: String::new(),
         forward_agent: false,
         forward_x11: ForwardX11Mode::Inherit,
         route_mode: RouteMode::Direct,
         proxy_jump: Vec::new(),
+        proxy_jump_fallbacks: Vec::new(),
         proxy_command: String::new(),
         forwards: Vec::new(),
         remote_command_mode: RemoteCommandMode::Inherit,
@@ -257,10 +313,19 @@ pub fn draft_from_entry(entry: &SshHostEntry, duplicate: bool) -> HostDraft {
         command_button_group: metadata.and_then(|m| m.command_button_group.clone()),
         paste_line_delay_ms: metadata.and_then(|m| m.paste_line_delay_ms),
         paste_char_delay_ms: metadata.and_then(|m| m.paste_char_delay_ms),
+        paste_prompt_wait: paste_prompt_wait_draft(
+            metadata.and_then(|m| m.paste_prompt_wait.as_ref()),
+        ),
+        anti_idle: anti_idle_draft(metadata.and_then(|m| m.anti_idle.as_ref())),
+        input_modes: host_terminal_input_modes(metadata),
         disable_sftp: metadata.and_then(|m| m.disable_sftp).unwrap_or(false),
         console_compatibility: metadata
             .and_then(|m| m.console_compatibility)
             .unwrap_or(false),
+        system_open_ssh: metadata.and_then(|m| m.system_open_ssh).unwrap_or(false),
+        discover_environments: environment_discovery_draft(
+            metadata.and_then(|m| m.discover_environments),
+        ),
         file: entry.file.clone(),
         hostname: o.hostname.clone().unwrap_or_default(),
         user: o.user.clone().unwrap_or_default(),
@@ -268,13 +333,16 @@ pub fn draft_from_entry(entry: &SshHostEntry, duplicate: bool) -> HostDraft {
         auth_mode: auth_mode_of(o.password_only, &o.identity_files, &o.certificate_files),
         identity_files: o.identity_files.clone().unwrap_or_default(),
         certificate_files: o.certificate_files.clone().unwrap_or_default(),
-        identities_only: o.identities_only.unwrap_or(false),
+        identities_only: o.identities_only,
         identity_agent_mode,
         identity_agent,
         forward_agent: o.forward_agent.unwrap_or(false),
         forward_x11: forward_x11_draft(o.forward_x11),
         route_mode: route_mode_of(&o.proxy_command, &o.proxy_jump),
         proxy_jump: o.proxy_jump.clone().unwrap_or_default(),
+        proxy_jump_fallbacks: metadata
+            .and_then(|m| m.proxy_jump_fallbacks.clone())
+            .unwrap_or_default(),
         proxy_command: o.proxy_command.clone().unwrap_or_default(),
         forwards: o.forwards.clone().unwrap_or_default(),
         remote_command_mode,
@@ -325,8 +393,13 @@ pub fn draft_from_saved_ssh_profile(
         command_button_group: metadata.command_button_group.clone(),
         paste_line_delay_ms: metadata.paste_line_delay_ms,
         paste_char_delay_ms: metadata.paste_char_delay_ms,
+        paste_prompt_wait: paste_prompt_wait_draft(metadata.paste_prompt_wait.as_ref()),
+        anti_idle: anti_idle_draft(metadata.anti_idle.as_ref()),
+        input_modes: host_terminal_input_modes(Some(metadata)),
         disable_sftp: metadata.disable_sftp.unwrap_or(false),
         console_compatibility: metadata.console_compatibility.unwrap_or(false),
+        system_open_ssh: metadata.system_open_ssh.unwrap_or(false),
+        discover_environments: environment_discovery_draft(metadata.discover_environments),
         file: String::new(),
         hostname: profile.target.clone(),
         user: profile.user.clone().unwrap_or_default(),
@@ -338,13 +411,14 @@ pub fn draft_from_saved_ssh_profile(
         ),
         identity_files: profile.identity_files.clone().unwrap_or_default(),
         certificate_files: profile.certificate_files.clone().unwrap_or_default(),
-        identities_only: profile.identities_only.unwrap_or(false),
+        identities_only: profile.identities_only,
         identity_agent_mode,
         identity_agent,
         forward_agent: profile.forward_agent.unwrap_or(false),
         forward_x11: forward_x11_draft(profile.forward_x11),
         route_mode: route_mode_of(&profile.proxy_command, &profile.proxy_jump),
         proxy_jump: profile.proxy_jump.clone().unwrap_or_default(),
+        proxy_jump_fallbacks: profile.proxy_jump_fallbacks.clone().unwrap_or_default(),
         proxy_command: profile.proxy_command.clone().unwrap_or_default(),
         forwards: profile.forwards.clone().unwrap_or_default(),
         remote_command_mode,
@@ -359,6 +433,12 @@ pub fn draft_from_saved_ssh_profile(
         session_logging: blank_host_session_logging_draft(),
         login_sequence: login_sequence_draft(metadata.login_sequence.as_ref()),
     })
+}
+
+/// The fallback routes to save (`draftJumpFallbacks`): only a jump route has any.
+pub fn draft_jump_fallbacks(draft: &HostDraft) -> Option<Vec<Vec<String>>> {
+    (draft.route_mode == RouteMode::Jump && !draft.proxy_jump_fallbacks.is_empty())
+        .then(|| draft.proxy_jump_fallbacks.clone())
 }
 
 /// The Host line's aliases.
@@ -437,6 +517,21 @@ pub fn draft_problem(draft: &HostDraft) -> Option<String> {
                 .into(),
         );
     }
+    if draft.route_mode == RouteMode::Jump && !draft.proxy_jump_fallbacks.is_empty() {
+        if draft.proxy_jump.is_empty() {
+            return Some("Add a jump host before adding fallback routes.".into());
+        }
+        if draft.storage == Storage::Openssh
+            && draft
+                .proxy_jump_fallbacks
+                .iter()
+                .any(|route| route.iter().any(|hop| saved_host_hop_id(hop).is_some()))
+        {
+            return Some(
+                "Fallback routes through hosts saved in Muxus need Muxus app data storage.".into(),
+            );
+        }
+    }
     if draft.remote_command_mode == RemoteCommandMode::Command
         && js_trim(&draft.remote_command).is_empty()
     {
@@ -462,7 +557,9 @@ pub fn draft_problem(draft: &HostDraft) -> Option<String> {
             extra.keyword
         ));
     }
-    login_sequence_problem(&draft.login_sequence)
+    paste_prompt_wait_problem(&draft.paste_prompt_wait)
+        .or_else(|| anti_idle_problem(&draft.anti_idle))
+        .or_else(|| login_sequence_problem(&draft.login_sequence))
         .or_else(|| keyword_highlight_rules_problem(&draft.keyword_highlights.rules))
 }
 
@@ -503,12 +600,13 @@ pub fn draft_to_saved_ssh_input(
             },
             identity_files: key.then(|| trimmed_files(&draft.identity_files)),
             certificate_files: key.then(|| trimmed_files(&draft.certificate_files)),
-            identities_only: key.then_some(true),
+            identities_only: if key { draft.identities_only } else { None },
             identity_agent: identity_agent_option(draft),
             forward_agent: draft.forward_agent.then_some(true),
             forward_x11: forward_x11_option(draft.forward_x11),
             proxy_jump: (draft.route_mode == RouteMode::Jump && !draft.proxy_jump.is_empty())
                 .then(|| draft.proxy_jump.clone()),
+            proxy_jump_fallbacks: draft_jump_fallbacks(draft),
             proxy_command: if draft.route_mode == RouteMode::Command {
                 non_empty(&draft.proxy_command)
             } else {
@@ -546,10 +644,8 @@ pub fn draft_to_request(draft: &HostDraft, previous_alias: Option<&str>) -> Host
             },
             identity_files: key.then(|| trimmed_files(&draft.identity_files)),
             certificate_files: key.then(|| trimmed_files(&draft.certificate_files)),
-            // This editor mode promises that only the selected files are offered.
-            // OpenSSH still tries the agent first for IdentityFile alone, so the
-            // promise requires IdentitiesOnly yes.
-            identities_only: key.then_some(true),
+            // Set by auth_choice when the user picks keys; otherwise as the block has it.
+            identities_only: if key { draft.identities_only } else { None },
             identity_agent: identity_agent_option(draft),
             forward_agent: draft.forward_agent.then_some(true),
             forward_x11: forward_x11_option(draft.forward_x11),
@@ -574,9 +670,10 @@ pub fn draft_to_request(draft: &HostDraft, previous_alias: Option<&str>) -> Host
     }
 }
 
-/// The Muxus metadata a save writes next to the host (both storages).
+/// The Muxus metadata a save writes next to the host (both storages;
+/// `metadataPatch` in HostEditorDialog.tsx).
 pub fn draft_metadata_patch(draft: &HostDraft) -> OpenSshMetadataPatch {
-    OpenSshMetadataPatch {
+    let mut patch = OpenSshMetadataPatch {
         display_name: text_patch(&draft.display_name),
         group: text_patch(&draft.group),
         color: optional_patch(&draft.color),
@@ -586,12 +683,27 @@ pub fn draft_metadata_patch(draft: &HostDraft) -> OpenSshMetadataPatch {
         command_button_group: optional_patch(&draft.command_button_group),
         paste_line_delay_ms: optional_patch(&draft.paste_line_delay_ms),
         paste_char_delay_ms: optional_patch(&draft.paste_char_delay_ms),
+        paste_prompt_wait: optional_patch(&paste_prompt_wait_from_draft(&draft.paste_prompt_wait)),
+        anti_idle: optional_patch(&anti_idle_from_draft(&draft.anti_idle)),
         disable_sftp: Some(draft.disable_sftp),
         console_compatibility: Some(draft.console_compatibility),
+        system_open_ssh: Some(draft.system_open_ssh),
+        discover_environments: optional_patch(&environment_discovery_from_draft(
+            draft.discover_environments,
+        )),
         keyword_highlights: highlights_patch(&draft.keyword_highlights),
         login_sequence: optional_patch(&login_sequence_from_draft(&draft.login_sequence)),
-        icon: muxus_core::js::Patch::Keep,
-    }
+        icon: Patch::Keep,
+        // ssh_config cannot hold fallback routes, so Muxus keeps them for the
+        // alias; a Muxus host has them in its profile instead.
+        proxy_jump_fallbacks: match draft.storage {
+            Storage::Openssh => optional_patch(&draft_jump_fallbacks(draft)),
+            Storage::Muxus => Patch::Keep,
+        },
+        ..OpenSshMetadataPatch::default()
+    };
+    apply_terminal_input_modes_patch(&draft.input_modes, &mut patch);
+    patch
 }
 
 /// Agent source represented by the current editor state, for live key detection.
@@ -644,6 +756,36 @@ fn remote_command_draft(value: Option<&str>) -> (RemoteCommandMode, String) {
     }
 }
 
+/// A change from the authentication controls (`authChoice`). Picking the specific-key mode or
+/// its files promises that only those files are offered, and OpenSSH still tries the agent
+/// first for IdentityFile alone, so the choice also sets IdentitiesOnly yes. A host saved
+/// without such a change keeps its own value.
+pub fn auth_choice(draft: &mut HostDraft) {
+    draft.identities_only = Some(true);
+}
+
+/// Sub-label of the specific-key choice (`keyModeHelp`). Choosing it sets IdentitiesOnly yes,
+/// but a host loaded in key mode without it only lists its files.
+pub fn key_mode_help(draft: &HostDraft) -> &'static str {
+    let exact = draft.auth_mode != AuthMode::Key || draft.identities_only == Some(true);
+    match (draft.storage, exact) {
+        (Storage::Openssh, true) => "Writes IdentityFile — exactly these keys are offered",
+        (Storage::Openssh, false) => "Writes IdentityFile",
+        (_, true) => "Exactly these keys are offered for this Muxus connection",
+        (_, false) => "These keys are offered for this Muxus connection",
+    }
+}
+
+/// Caption under the key files (`keyFilesCaption`). Without the host's own IdentitiesOnly yes,
+/// Host *, folder credentials or the agent source may still decide.
+pub fn key_files_caption(draft: &HostDraft) -> &'static str {
+    if draft.identities_only == Some(true) {
+        "Only these key files are offered for login (IdentitiesOnly yes). The agent can still be forwarded after connecting."
+    } else {
+        "IdentitiesOnly yes is not set here, so keys in the SSH agent are offered too unless another setting turns that off. Changing the key or certificate files sets it."
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,6 +794,130 @@ mod tests {
         OpenSshProfileMetadata, ResolvedHostSettings, SavedHostKind, saved_host_hop,
     };
     use muxus_session::login_sequence::editor::LoginSequenceMode;
+
+    fn fallback_draft() -> HostDraft {
+        HostDraft {
+            alias_text: "app".into(),
+            hostname: "app.internal".into(),
+            route_mode: RouteMode::Jump,
+            proxy_jump: vec!["bastion-a".into()],
+            proxy_jump_fallbacks: vec![
+                vec!["bastion-b".into()],
+                vec!["edge".into(), "bastion-c".into()],
+            ],
+            ..blank_draft("", "", Storage::Muxus)
+        }
+    }
+
+    #[test]
+    fn saves_fallback_jump_routes_with_a_muxus_host_on_a_jump_route_only() {
+        let draft = fallback_draft();
+        let SavedHostSessionProfile::Ssh(profile) = draft_to_saved_ssh_input(&draft, None).profile
+        else {
+            panic!("an SSH profile");
+        };
+        assert_eq!(profile.proxy_jump, Some(vec!["bastion-a".to_owned()]));
+        assert_eq!(
+            profile.proxy_jump_fallbacks,
+            Some(draft.proxy_jump_fallbacks.clone())
+        );
+        let direct = HostDraft {
+            route_mode: RouteMode::Direct,
+            ..draft.clone()
+        };
+        let SavedHostSessionProfile::Ssh(profile) = draft_to_saved_ssh_input(&direct, None).profile
+        else {
+            panic!("an SSH profile");
+        };
+        assert_eq!(profile.proxy_jump_fallbacks, None);
+        // A Muxus host keeps them in its profile, an OpenSSH alias in its metadata.
+        assert_eq!(
+            draft_metadata_patch(&draft).proxy_jump_fallbacks,
+            Patch::Keep
+        );
+        let alias = HostDraft {
+            storage: Storage::Openssh,
+            ..draft.clone()
+        };
+        assert_eq!(
+            draft_metadata_patch(&alias).proxy_jump_fallbacks,
+            Patch::Set(draft.proxy_jump_fallbacks.clone())
+        );
+        let alias_direct = HostDraft {
+            route_mode: RouteMode::Direct,
+            ..alias
+        };
+        assert_eq!(
+            draft_metadata_patch(&alias_direct).proxy_jump_fallbacks,
+            Patch::Clear
+        );
+    }
+
+    #[test]
+    fn needs_a_first_jump_host_before_a_fallback() {
+        let draft = fallback_draft();
+        assert_eq!(draft_problem(&draft), None);
+        let problem = draft_problem(&HostDraft {
+            proxy_jump: Vec::new(),
+            ..draft
+        })
+        .unwrap();
+        assert!(problem.contains("jump host before"), "{problem}");
+    }
+
+    #[test]
+    fn keeps_muxus_saved_hosts_out_of_fallbacks_for_an_ssh_config_host() {
+        let problem = draft_problem(&HostDraft {
+            storage: Storage::Openssh,
+            proxy_jump_fallbacks: vec![vec![saved_host_hop("abc")]],
+            ..fallback_draft()
+        })
+        .unwrap();
+        assert!(problem.contains("Muxus app data"), "{problem}");
+    }
+
+    #[test]
+    fn carries_the_new_host_settings_through_edit_and_duplicate() {
+        use muxus_core::api::{AntiIdle, TerminalEnterKey};
+        let mut host = entry();
+        host.metadata = Some(OpenSshProfileMetadata {
+            anti_idle: Some(AntiIdle {
+                interval_seconds: 120,
+                text: " ".into(),
+                enter: false,
+            }),
+            paste_prompt_wait: Some(Default::default()),
+            enter_key: Some(TerminalEnterKey::Lf),
+            system_open_ssh: Some(true),
+            discover_environments: Some(false),
+            proxy_jump_fallbacks: Some(vec![vec!["bastion-b".into()]]),
+            ..host.metadata.clone().unwrap_or_default()
+        });
+        host.options.proxy_command = None;
+        host.options.proxy_jump = Some(vec!["bastion-a".into()]);
+        for duplicate in [false, true] {
+            let draft = draft_from_entry(&host, duplicate);
+            assert_eq!(draft.discover_environments, EnvironmentDiscoveryDraft::Off);
+            let patch = draft_metadata_patch(&draft);
+            assert_eq!(
+                patch.anti_idle,
+                Patch::Set(host.metadata.as_ref().unwrap().anti_idle.clone().unwrap())
+            );
+            assert_eq!(patch.paste_prompt_wait, Patch::Set(Default::default()));
+            assert_eq!(patch.enter_key, Patch::Set(TerminalEnterKey::Lf));
+            assert_eq!(patch.backspace_key, Patch::Clear);
+            assert_eq!(patch.system_open_ssh, Some(true));
+            assert_eq!(patch.discover_environments, Patch::Set(false));
+            assert_eq!(
+                patch.proxy_jump_fallbacks,
+                Patch::Set(vec![vec!["bastion-b".to_owned()]])
+            );
+        }
+        let blank = draft_metadata_patch(&blank_draft("", "", Storage::Openssh));
+        assert_eq!(blank.anti_idle, Patch::Clear);
+        assert_eq!(blank.discover_environments, Patch::Clear);
+        assert_eq!(blank.system_open_ssh, Some(false));
+    }
 
     fn entry() -> SshHostEntry {
         SshHostEntry {
@@ -800,7 +1066,8 @@ mod tests {
             options.certificate_files,
             Some(vec!["~/.ssh/cloud-cert.pub".into()])
         );
-        assert_eq!(options.identities_only, Some(true));
+        // The entry lists IdentityFile alone, and saving keeps it that way.
+        assert_eq!(options.identities_only, None);
         assert_eq!(
             options.identity_agent.as_deref(),
             Some("${ONEPASSWORD_SSH_AUTH_SOCK}")
@@ -829,7 +1096,7 @@ mod tests {
         assert_eq!(draft.remote_command_mode, RemoteCommandMode::Inherit);
         assert_eq!(draft.request_tty, None);
         assert_eq!(draft.strict_host_key_checking, None);
-        assert!(draft.identities_only);
+        assert_eq!(draft.identities_only, Some(true));
         assert!(!draft.disable_sftp);
         assert!(!draft.console_compatibility);
         assert_eq!(draft.terminal_scheme, None);
@@ -863,20 +1130,138 @@ mod tests {
 
     #[test]
     fn makes_the_specific_key_promise_independent_of_the_ssh_agent() {
-        // Old v0.3.0 drafts could carry false here. Saving the explicit editor
-        // mode must repair them instead of writing IdentityFile alone.
-        let draft = HostDraft {
-            auth_mode: AuthMode::Key,
-            identity_files: vec!["~/.ssh/id_ed25519".into()],
-            identities_only: false,
-            ..HostDraft::default()
-        };
-        let options = draft_to_request(&draft, None).options;
+        let mut created = blank_draft("", "", Storage::Openssh);
+        created.auth_mode = AuthMode::Key;
+        auth_choice(&mut created);
+        created.identity_files = vec!["~/.ssh/id_ed25519".into()];
+        auth_choice(&mut created);
+        let options = draft_to_request(&created, None).options;
         assert_eq!(
             options.identity_files,
             Some(vec!["~/.ssh/id_ed25519".into()])
         );
         assert_eq!(options.identities_only, Some(true));
+
+        // Hosts saved by v0.3.0 list IdentityFile alone. Choosing their keys again makes the
+        // promise, so the save repairs them.
+        let loaded = draft_from_entry(&entry(), false);
+        let mut more_keys = loaded.clone();
+        more_keys.identity_files.push("~/.ssh/backup".into());
+        auth_choice(&mut more_keys);
+        assert_eq!(
+            draft_to_request(&more_keys, Some("cloud"))
+                .options
+                .identities_only,
+            Some(true)
+        );
+        let mut no_certs = loaded.clone();
+        no_certs.certificate_files.clear();
+        auth_choice(&mut no_certs);
+        assert_eq!(
+            draft_to_request(&no_certs, Some("cloud"))
+                .options
+                .identities_only,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn keeps_identities_only_as_the_config_has_it_when_other_fields_change() {
+        // A hand-written IdentityFile without IdentitiesOnly still offers agent keys; saving an
+        // unrelated field must not take them away.
+        let mut plain = entry();
+        plain.options.identities_only = None;
+        let mut draft = draft_from_entry(&plain, false);
+        draft.terminal_scheme = Some("nord".into());
+        assert_eq!(draft.auth_mode, AuthMode::Key);
+        assert_eq!(
+            draft_to_request(&draft, Some("cloud"))
+                .options
+                .identities_only,
+            None
+        );
+        assert_eq!(
+            draft_to_request(&draft_from_entry(&plain, true), None)
+                .options
+                .identities_only,
+            None
+        );
+
+        let mut explicit_no = entry();
+        explicit_no.options.identities_only = Some(false);
+        let mut draft = draft_from_entry(&explicit_no, false);
+        draft.user = "ops".into();
+        assert_eq!(
+            draft_to_request(&draft, Some("cloud"))
+                .options
+                .identities_only,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn keeps_identities_only_as_a_saved_muxus_host_has_it_when_other_fields_change() {
+        for identities_only in [None, Some(false)] {
+            let saved: SavedHostProfile = serde_json::from_value(serde_json::json!({
+                "id": "imported-router", "kind": "ssh", "name": "Imported router",
+                "profile": {
+                    "kind": "ssh", "profileId": "imported-router",
+                    "target": "router.example.test", "useConfig": false,
+                    "identityFiles": ["~/.ssh/router"],
+                    "identitiesOnly": identities_only,
+                },
+                "metadata": { "profileId": "imported-router", "connectCount": 0 },
+                "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+            }))
+            .unwrap();
+            let mut draft = draft_from_saved_ssh_profile(&saved, false).unwrap();
+            draft.terminal_background_color = Some("#101820".into());
+            let SavedHostSessionProfile::Ssh(profile) =
+                draft_to_saved_ssh_input(&draft, Some("imported-router")).profile
+            else {
+                panic!("an SSH profile");
+            };
+            assert_eq!(profile.identity_files, Some(vec!["~/.ssh/router".into()]));
+            assert_eq!(profile.identities_only, identities_only);
+        }
+    }
+
+    #[test]
+    fn promises_exactly_these_keys_only_where_the_draft_sets_identities_only_yes() {
+        let mut plain = entry();
+        plain.options.identities_only = None;
+        let loaded = draft_from_entry(&plain, false);
+        let mut explicit_no = entry();
+        explicit_no.options.identities_only = Some(false);
+        let explicit_no = draft_from_entry(&explicit_no, false);
+        let muxus = HostDraft {
+            storage: Storage::Muxus,
+            ..loaded.clone()
+        };
+        for draft in [&loaded, &explicit_no, &muxus] {
+            assert!(!key_mode_help(draft).to_lowercase().contains("exactly"));
+            // Host *, folder credentials or the agent source may still turn agent keys off.
+            assert_eq!(
+                key_files_caption(draft),
+                "IdentitiesOnly yes is not set here, so keys in the SSH agent are offered too unless another setting turns that off. Changing the key or certificate files sets it."
+            );
+        }
+        assert_eq!(key_mode_help(&loaded), "Writes IdentityFile");
+
+        // Choosing keys, or the mode from another one, makes the promise.
+        let mut chosen = loaded.clone();
+        chosen.identity_files = vec!["~/.ssh/cloud".into()];
+        auth_choice(&mut chosen);
+        assert_eq!(
+            key_mode_help(&chosen),
+            "Writes IdentityFile — exactly these keys are offered"
+        );
+        assert!(key_files_caption(&chosen).starts_with("Only these key files are offered"));
+        let blank_muxus = blank_draft("", "", Storage::Muxus);
+        assert_eq!(
+            key_mode_help(&blank_muxus),
+            "Exactly these keys are offered for this Muxus connection"
+        );
     }
 
     #[test]

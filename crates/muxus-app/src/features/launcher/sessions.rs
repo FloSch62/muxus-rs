@@ -60,6 +60,7 @@ pub fn local_shell_launch(saved: &LocalShellProfileConfig) -> (SessionProfile, S
         args: local_shell_launch_arguments(&saved.args),
         cwd: trimmed(&saved.cwd),
         startup_command: trimmed(&saved.startup_command),
+        environment: None,
     };
     let title = trimmed(&saved.name).unwrap_or_else(|| "Local".to_owned());
     (SessionProfile::Local(profile), title)
@@ -402,6 +403,7 @@ mod tests {
                 args: Some(vec!["-d".into(), "Ubuntu".into()]),
                 cwd: Some("C:\\work".into()),
                 startup_command: Some("cd project\nnpm run dev".into()),
+                environment: None,
             }))
         );
     }

@@ -14,6 +14,7 @@ use crate::color::{alpha, darken, lighten};
 use crate::icon::icon;
 use crate::theme::{ActiveTheme, Status, Theme, fonts};
 use crate::widgets::button::elevation;
+use crate::widgets::focus::TabStop;
 use crate::widgets::tooltip::{AnchorBounds, Placement, Tooltip, bounds_probe};
 
 type ChipHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -366,7 +367,19 @@ impl RenderOnce for Chip {
                 (false, Some(color)) => color.dark,
                 (false, None) => alpha(p.text.primary, 0.12),
             };
+            // A clickable chip is a tab stop: MUI's `focusVisible` background
+            // (`action.focusOpacity` is MUI's 0.12).
+            let focus_opacity = 0.12;
+            let focused = match (self.outlined, self.palette) {
+                (true, Some(color)) => alpha(color.main, focus_opacity),
+                (true, None) => p.action.focus,
+                (false, Some(color)) => color.dark,
+                (false, None) => {
+                    alpha(p.action.selected, p.action.selected_opacity + focus_opacity)
+                }
+            };
             chip = chip
+                .tab_stop_with_ripple(focused, true)
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .on_click(move |event, window, cx| handler(event, window, cx));

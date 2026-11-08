@@ -24,6 +24,22 @@ impl SettingsWindow {
                 prefs.confirm_close_connected,
                 |p, value| p.confirm_close_connected = value,
             ))
+            .row(self.switch_row(
+                &theme,
+                "settings-close-tab-on-exit",
+                "Close the tab when its shell exits",
+                Some("After exit, logout or Ctrl+D, the tab closes instead of offering to reconnect. A shell that exits with an error, a lost connection, a serial console and a pinned tab stay open."),
+                prefs.close_tab_on_clean_exit,
+                |p, value| p.close_tab_on_clean_exit = value,
+            ))
+            .row(self.switch_row(
+                &theme,
+                "settings-program-status",
+                "Show program status on tabs",
+                Some("Programs that report their state with OSC 7501, such as coding agents and long builds, mark their tab while they work, when they wait for you, and when they finish or fail."),
+                prefs.show_program_status,
+                |p, value| p.show_program_status = value,
+            ))
             .render(&theme);
         let gesture = self.select_row(
             &theme,
@@ -47,6 +63,32 @@ impl SettingsWindow {
                     SidebarOpenGesture::Click
                 };
                 this.set_prefs(cx, |p| p.sidebar_open_gesture = gesture);
+            },
+        );
+        let discover = self.switch_row(
+            &theme,
+            "settings-discover-environments",
+            "Find containers, clusters and VMs",
+            Some("When an SSH session connects, and for this computer when Muxus starts, ask docker, podman, kubectl, pvesh and virsh what runs there, and count it beside the host. Hosts that cannot run commands, such as routers, are never asked."),
+            prefs.discover_environments,
+            |p, value| p.discover_environments = value,
+        );
+        let refresh = self.select_row(
+            &theme,
+            "Refresh containers, clusters and VMs",
+            Some("How often hosts with a connected session, and this computer, are asked again. The host editor can switch finding them on or off for one host."),
+            "settings-environment-refresh",
+            220.,
+            crate::features::environments::refresh_options()
+                .into_iter()
+                .map(|(seconds, text)| (seconds.to_string(), text))
+                .collect(),
+            &number_to_string(prefs.environment_refresh_seconds),
+            cx,
+            |this, value, _, cx| {
+                if let Ok(seconds) = value.parse::<f64>() {
+                    this.set_prefs(cx, |p| p.environment_refresh_seconds = seconds);
+                }
             },
         );
         let storage = self.select_row(
@@ -100,7 +142,11 @@ impl SettingsWindow {
             )),
             vec![
                 tabs,
-                group("Hosts sidebar").row(gesture).render(&theme),
+                group("Hosts sidebar")
+                    .row(gesture)
+                    .row(discover)
+                    .row(refresh)
+                    .render(&theme),
                 group("New hosts").row(storage).render(&theme),
                 group("Connecting")
                     .row(self.switch_row(

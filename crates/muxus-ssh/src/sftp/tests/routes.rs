@@ -476,7 +476,7 @@ async fn a_missing_file_fails_before_the_download_starts() {
 }
 
 #[tokio::test]
-async fn drag_downloads_need_a_live_ticket_for_their_connection() {
+async fn drag_downloads_need_a_ticket_for_their_connection() {
     let fx = Fixture::new().await;
     fx.write("/srv/a.txt", "drag me");
     let listing = fx.service.list(&fx.conn_id, "/srv").await.unwrap();
@@ -490,19 +490,11 @@ async fn drag_downloads_need_a_live_ticket_for_their_connection() {
     assert_eq!(download.name, "a.txt");
     assert_eq!(download.read_all().await.unwrap(), b"drag me");
 
-    // Tickets stay valid for their lifetime, but only for the connection that listed them; a
-    // mismatch burns the ticket.
+    // A ticket only works for the connection that listed it.
     let expired = Problem::new(401, "download ticket is missing or expired");
     assert_eq!(
         fx.service
             .drag_download("other", &ticket)
-            .await
-            .unwrap_err(),
-        expired
-    );
-    assert_eq!(
-        fx.service
-            .drag_download(&fx.conn_id, &ticket)
             .await
             .unwrap_err(),
         expired
@@ -514,17 +506,54 @@ async fn drag_downloads_need_a_live_ticket_for_their_connection() {
             .unwrap_err(),
         expired
     );
+    // A listing left on screen: the same file can be dragged out again later.
+    let again = fx
+        .service
+        .drag_download(&fx.conn_id, &ticket)
+        .await
+        .unwrap();
+    assert_eq!(again.read_all().await.unwrap(), b"drag me");
+}
 
-    let short_lived = SftpService::with_ticket_ttl(fx.manager.clone(), Duration::ZERO);
-    let listing = short_lived.list(&fx.conn_id, "/srv").await.unwrap();
-    let ticket = listing.entries[0].download_ticket.clone().unwrap();
+#[tokio::test]
+async fn drag_download_tickets_keep_one_ticket_per_file_across_listings() {
+    let fx = Fixture::new().await;
+    fx.write("/srv/a.txt", "drag me");
+    let first = fx.service.list(&fx.conn_id, "/srv").await.unwrap();
+    let again = fx.service.list(&fx.conn_id, "/srv").await.unwrap();
     assert_eq!(
-        short_lived
-            .drag_download(&fx.conn_id, &ticket)
-            .await
-            .unwrap_err(),
-        expired
+        first.entries[0].download_ticket,
+        again.entries[0].download_ticket
     );
+    assert!(first.entries[0].download_ticket.is_some());
+}
+
+#[tokio::test]
+async fn drag_download_tickets_stop_working_once_the_connection_closes() {
+    let fx = Fixture::new().await;
+    fx.write("/srv/a.txt", "drag me");
+    let listing = fx.service.list(&fx.conn_id, "/srv").await.unwrap();
+    let ticket = listing.entries[0].download_ticket.clone().unwrap();
+
+    let connection = fx.manager.get(&fx.conn_id).expect("the connection");
+    connection.close();
+    tokio::time::timeout(Duration::from_secs(10), connection.closed())
+        .await
+        .expect("the connection closes");
+    // The tickets go right after the close is seen.
+    let expired = Problem::new(401, "download ticket is missing or expired");
+    let mut answer = Ok(());
+    for _ in 0..100 {
+        answer = match fx.service.drag_download(&fx.conn_id, &ticket).await {
+            Err(problem) if problem == expired => Err(problem),
+            _ => Ok(()),
+        };
+        if answer.is_err() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(answer, Err(expired));
 }
 
 // --- SFTP remote editor -----------------------------------------------------------------------

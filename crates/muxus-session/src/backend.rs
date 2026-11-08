@@ -80,10 +80,16 @@ pub struct BackendOptions {
     pub update_manifest_url: String,
     /// Directory of the X server bundled with the Windows app.
     pub x11_server_directory: Option<PathBuf>,
+    /// The app's helper that the bundled X server runs cmd.exe through, so its keymap compiles
+    /// open no console windows (`muxus-hidden-cmd`, next to the executable).
+    pub x11_server_shell: Option<PathBuf>,
     /// Start the saved tunnels marked "start with Muxus".
     pub autostart_tunnels: bool,
     /// What connection diagnostics probe with; `None` is the real network, `ping` and agent.
     pub diagnostic_probes: Option<Arc<dyn DiagnosticProbes>>,
+    /// Put before every other argument of the `ssh` a host set to "Use system OpenSSH" runs;
+    /// tests point it at a config of their own (`-F`).
+    pub system_openssh_args: Vec<String>,
 }
 
 impl std::fmt::Debug for BackendOptions {
@@ -128,8 +134,10 @@ impl BackendOptions {
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             update_manifest_url: process_update_manifest_url(),
             x11_server_directory: std::env::var_os("MUXUS_X11_SERVER_DIR").map(PathBuf::from),
+            x11_server_shell: None,
             autostart_tunnels: true,
             diagnostic_probes: None,
+            system_openssh_args: Vec::new(),
         }
     }
 
@@ -171,8 +179,10 @@ impl BackendOptions {
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             update_manifest_url: UPDATE_MANIFEST_URL.to_string(),
             x11_server_directory: None,
+            x11_server_shell: None,
             autostart_tunnels: true,
             diagnostic_probes: None,
+            system_openssh_args: Vec::new(),
         }
     }
 }
@@ -205,10 +215,14 @@ pub(crate) struct Shared {
     pub connections: SshConnectionManager,
     pub forwards: ForwardManager,
     pub sftp: SftpService,
+    /// Scripts running on live SSH connections.
+    pub script_runs: crate::scripts::runs::ScriptRuns,
     pub x11: Arc<LocalX11>,
     pub terminal_inputs: TerminalInputs,
     pub sessions: SessionRegistry,
     pub host_stats: SharedReadings,
+    /// Container and VM discoveries in progress (`routes/environments.ts`'s `inFlight`).
+    pub environments: crate::environments::InFlight,
     pub diagnostic_probes: Arc<dyn DiagnosticProbes>,
     pub update_check: Mutex<Arc<tokio::sync::OnceCell<muxus_core::api::UpdateCheckResult>>>,
     closed: AtomicBool,
@@ -324,6 +338,7 @@ impl Backend {
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         self.shared.runtime.spawn(async move {
             shared.sessions.close_all();
+            shared.script_runs.stop_all();
             shared.forwards.stop_all();
             shared.connections.close_all();
             shared.x11.close();
@@ -453,6 +468,7 @@ impl Parts {
             runtime,
             owned_runtime: Mutex::new(owned),
             sftp: SftpService::new(self.connections.clone()),
+            script_runs: crate::scripts::runs::ScriptRuns::new(self.connections.clone()),
             config: self.config,
             local_env: self.local_env,
             env_lookup: self.env_lookup,
@@ -467,6 +483,7 @@ impl Parts {
             terminal_inputs: TerminalInputs::default(),
             sessions: SessionRegistry::default(),
             host_stats: SharedReadings::new(),
+            environments: Default::default(),
             diagnostic_probes: self.diagnostic_probes,
             update_check: Mutex::new(Arc::new(tokio::sync::OnceCell::new())),
             closed: AtomicBool::new(false),
@@ -495,8 +512,10 @@ async fn initialize(options: BackendOptions, runtime: Handle) -> ApiResult<Parts
         app_version,
         update_manifest_url,
         x11_server_directory,
+        x11_server_shell,
         autostart_tunnels,
         diagnostic_probes,
+        system_openssh_args,
         runtime: _,
     } = options;
     let key_store: Arc<dyn VaultKeyStore> =
@@ -544,6 +563,7 @@ async fn initialize(options: BackendOptions, runtime: Handle) -> ApiResult<Parts
     let local_env = LocalEnv::with_home(&home);
     let x11 = Arc::new(LocalX11::new(LocalX11Options {
         bundled_server_directory: x11_server_directory,
+        bundled_server_shell: x11_server_shell,
         ..LocalX11Options::default()
     }));
     let connections = SshConnectionManager::new(manager_options(
@@ -553,6 +573,12 @@ async fn initialize(options: BackendOptions, runtime: Handle) -> ApiResult<Parts
         vault.clone(),
         x11.clone(),
     ));
+    connections
+        .system_sessions()
+        .configure(muxus_ssh::system_openssh::SessionTools {
+            extra_args: system_openssh_args,
+            ..Default::default()
+        });
     let tunnels_db = database.clone();
     let forwards = ForwardManager::new(
         connections.clone(),
@@ -660,9 +686,21 @@ fn manager_options(
     options.disable_sftp_for_profile = Some(Arc::new(move |id: &str| {
         db.sftp_disabled_for_saved_host(id).unwrap_or(false)
     }));
-    let db = database;
+    let db = database.clone();
     options.console_compatibility_for_profile = Some(Arc::new(move |id: &str| {
         db.console_compatibility_for_saved_host(id).unwrap_or(false)
+    }));
+    let db = database.clone();
+    options.jump_fallbacks_for_host = Some(Arc::new(move |alias: &str| {
+        db.jump_fallbacks_for_alias(alias).unwrap_or_default()
+    }));
+    let db = database.clone();
+    options.system_open_ssh_for_host = Some(Arc::new(move |alias: &str| {
+        db.system_open_ssh_for_alias(alias).unwrap_or(false)
+    }));
+    let db = database;
+    options.system_open_ssh_for_profile = Some(Arc::new(move |id: &str| {
+        db.system_open_ssh_for_saved_host(id).unwrap_or(false)
     }));
     options.x11 = Some(x11);
     options

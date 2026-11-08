@@ -78,6 +78,30 @@ pub fn auto_reconnect_delay_ms(input: AutoReconnectInput) -> Option<u64> {
     AUTO_RECONNECT_DELAYS_MS.get(input.attempts).copied()
 }
 
+/// The inputs to [`closes_tab_on_exit`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloseOnExitInput<'a> {
+    /// The close-on-clean-exit preference.
+    pub enabled: bool,
+    pub profile_kind: ProfileKind,
+    /// Pinned tabs are kept, as "Close other tabs" keeps them.
+    pub pinned: bool,
+    pub exit: Option<&'a TerminalExit>,
+}
+
+/// Whether an ended session closes its tab: the preference is on and the shell exited by itself
+/// with status 0, as after `exit` or Ctrl+D. A failed or lost connection keeps its tab for the
+/// reconnect prompt, and so does a serial console, whose port only closes when the device or
+/// adapter goes away.
+pub fn closes_tab_on_exit(input: CloseOnExitInput<'_>) -> bool {
+    input.enabled
+        && !input.pinned
+        && input.profile_kind != ProfileKind::Serial
+        && input.exit.is_some_and(|exit| {
+            exit.reason == ExitReason::Completed && matches!(exit.code, None | Some(0))
+        })
+}
+
 /// Whether an ended session offers the diagnose key: a network session that failed or dropped,
 /// not a shell that exited on its own.
 pub fn can_diagnose_connection(profile_kind: ProfileKind, reason: ExitReason) -> bool {
@@ -452,5 +476,70 @@ mod tests {
             auto_reconnect_notice(5_000, 2, true),
             "Reconnecting in 5s (attempt 2 of 3) — D diagnoses, any other key reconnects now"
         );
+    }
+
+    // ---- closing the tab when the shell exits ----
+
+    fn ended<'a>(exit: Option<&'a TerminalExit>) -> CloseOnExitInput<'a> {
+        CloseOnExitInput {
+            enabled: true,
+            profile_kind: ProfileKind::Local,
+            pinned: false,
+            exit,
+        }
+    }
+
+    #[test]
+    fn closes_a_local_ssh_or_telnet_tab_whose_shell_exited_with_status_0() {
+        let clean = exit(ExitReason::Completed, Some(0), None);
+        assert!(closes_tab_on_exit(ended(Some(&clean))));
+        assert!(closes_tab_on_exit(CloseOnExitInput {
+            profile_kind: ProfileKind::Ssh,
+            ..ended(Some(&clean))
+        }));
+        // Telnet reports no status: the remote end closing the connection is the exit.
+        let telnet = exit(ExitReason::Completed, None, None);
+        assert!(closes_tab_on_exit(CloseOnExitInput {
+            profile_kind: ProfileKind::Telnet,
+            ..ended(Some(&telnet))
+        }));
+    }
+
+    #[test]
+    fn keeps_the_tab_while_the_preference_is_off() {
+        let clean = exit(ExitReason::Completed, Some(0), None);
+        assert!(!closes_tab_on_exit(CloseOnExitInput {
+            enabled: false,
+            ..ended(Some(&clean))
+        }));
+    }
+
+    #[test]
+    fn keeps_the_tab_for_a_non_zero_status_a_failure_or_a_lost_connection() {
+        let status = exit(ExitReason::Completed, Some(1), None);
+        assert!(!closes_tab_on_exit(ended(Some(&status))));
+        let failed = exit(ExitReason::Failed, None, None);
+        assert!(!closes_tab_on_exit(ended(Some(&failed))));
+        let lost = exit(ExitReason::Disconnected, None, None);
+        assert!(!closes_tab_on_exit(CloseOnExitInput {
+            profile_kind: ProfileKind::Ssh,
+            ..ended(Some(&lost))
+        }));
+        // The backend went away without saying how the session ended.
+        assert!(!closes_tab_on_exit(ended(None)));
+    }
+
+    #[test]
+    fn keeps_serial_consoles_and_pinned_tabs() {
+        let serial = exit(ExitReason::Completed, None, None);
+        assert!(!closes_tab_on_exit(CloseOnExitInput {
+            profile_kind: ProfileKind::Serial,
+            ..ended(Some(&serial))
+        }));
+        let clean = exit(ExitReason::Completed, Some(0), None);
+        assert!(!closes_tab_on_exit(CloseOnExitInput {
+            pinned: true,
+            ..ended(Some(&clean))
+        }));
     }
 }

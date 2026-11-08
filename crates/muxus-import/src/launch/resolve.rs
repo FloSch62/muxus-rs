@@ -324,11 +324,18 @@ pub fn resolve_connection_link<'a>(
             if let SavedHostSessionProfile::Ssh(ssh) = &mut profile
                 && pin.is_some()
             {
-                ssh.host_key_fingerprint = pin;
+                ssh.host_key_fingerprint = pin.clone();
             }
-            ConnectionLinkLaunch::Host {
-                host,
-                profile: profile.into(),
+            match SessionProfile::try_from(profile) {
+                Ok(profile) => ConnectionLinkLaunch::Host { host, profile },
+                // Only SSH and Telnet hosts are link candidates, never a web page.
+                Err(_) => ConnectionLinkLaunch::AdHoc {
+                    profile: SessionProfile::Ssh(SshProfile {
+                        host_key_fingerprint: pin,
+                        ..SshProfile::new(connection_link_target(link))
+                    }),
+                    title: link_title(link),
+                },
             }
         }
         Some(host @ ManagedHost::Ssh(entry)) => {
@@ -399,7 +406,13 @@ pub fn resolution_error<T>(
     let label = kind.label();
     match resolution {
         TargetResolution::Found(_) => None,
-        TargetResolution::NotFound => Some(format!("No {label} named “{name}” was found.")),
+        // Jump list entries name hosts and workspaces by ID, which means nothing to the user.
+        TargetResolution::NotFound if kind == CommandLineTargetKind::Folder => {
+            Some(format!("No folder named “{name}” was found."))
+        }
+        TargetResolution::NotFound => Some(format!(
+            "This {label} is no longer in Muxus. It may have been renamed or deleted."
+        )),
         TargetResolution::Ambiguous { .. } => Some(format!(
             "More than one {label} matches “{name}”. Use its exact {}.",
             if kind == CommandLineTargetKind::Folder {
@@ -563,6 +576,8 @@ pub fn plan_command_line_launch<'a>(
                 resolution_error(CommandLineTargetKind::Folder, name, &other),
             ),
         },
+        // The desktop shell opened this window for it; there is nothing left to do.
+        CommandLineLaunch::NewWindow => (LaunchAction::Fail, None),
         CommandLineLaunch::Workspace { name } => {
             match resolve_command_line_workspace(name, catalogs.workspaces) {
                 TargetResolution::Found(workspace) => {

@@ -9,18 +9,23 @@
 //!   hosts' shells run locally.
 
 mod closing;
+mod compare;
 mod confirm;
 mod desktop;
+mod environments;
 mod features;
 mod host_actions;
 mod launcher;
 mod overlays;
 mod panes;
 mod paste_dialog;
+mod paste_progress;
 mod perf;
 mod prefs;
+mod program_status;
 mod prompts;
 mod scenes;
+mod scripts;
 mod session_views;
 mod sftp;
 mod shell;
@@ -29,20 +34,28 @@ mod shell_tests;
 mod shortcuts;
 mod sidebar;
 mod sidebar_dnd;
+mod sidebar_keys;
 mod sidebar_menus;
 mod sidebar_panel;
+mod sidebar_selection;
+mod sidebar_shells;
+#[cfg(test)]
+mod sidebar_tests;
 mod status_bar;
 mod tab_actions;
+mod tab_drag;
 mod terminal;
 mod terminal_actions;
 mod toast;
 mod top_bar;
+mod web_hosts;
 mod window_features;
 
 use std::sync::Arc;
 
 use muxus_app::data_source::{BackendSource, DataSource, LocalSource, LoginEnvironment};
-use muxus_app::features::desktop::events as desktop_events;
+use muxus_app::features::desktop::events::{self as desktop_events, DesktopEvent};
+use muxus_app::features::desktop::launch_menu_os;
 use muxus_app::features::desktop::main_log::{
     MainLogLevel, init_main_log, install_crash_capture, main_log,
 };
@@ -53,6 +66,9 @@ use muxus_app::model::demo::{demo_catalog, demo_folder_styles};
 use muxus_app::model::demo_shell::DemoSource;
 use muxus_app::sidebar::folder_prefs::FolderPrefs;
 use muxus_session::data_dir::DataLocation;
+use muxus_session::updater::store::{
+    DistributionMetadata, is_store_distribution, running_from_windows_store,
+};
 use muxus_session::{Backend, BackendOptions, UPDATE_FEED_VAR};
 use muxus_ui::gpui_kit::{AppContext, Bounds, WindowBounds, WindowOptions, size};
 use muxus_ui::theme::Mode;
@@ -100,7 +116,38 @@ fn start_backend(login: &LoginEnvironment) -> Result<Backend, String> {
         vars: login.vars(),
         ..muxus_local::LocalEnvironment::current()
     });
+    if options.x11_server_directory.is_none() {
+        options.x11_server_directory = bundled_x11_server_directory();
+    }
+    options.x11_server_shell = hidden_cmd();
     Backend::start_blocking(options).map_err(|err| err.to_string())
+}
+
+/// `muxus-hidden-cmd.exe`, which cargo builds and the package ships next to this executable.
+fn hidden_cmd() -> Option<std::path::PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let helper = std::env::current_exe()
+        .ok()?
+        .with_file_name("muxus-hidden-cmd.exe");
+    helper.exists().then_some(helper)
+}
+
+/// Windows builds ship VcXsrv for X11 forwarding (`cargo xtask vcxsrv`): next to the
+/// executable in a package, in the workspace's `vendor/vcxsrv` for a development build
+/// (`main.ts`).
+fn bundled_x11_server_directory() -> Option<std::path::PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    if cfg!(debug_assertions) {
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()?
+            .parent()?;
+        return Some(workspace.join("vendor").join("vcxsrv"));
+    }
+    Some(std::env::current_exe().ok()?.parent()?.join("vcxsrv"))
 }
 
 /// Keeps the single-instance lock (and its socket) for the whole run.
@@ -124,8 +171,10 @@ pub fn run() {
     // first (`main.ts`): a second launch hands its command line over and exits before it
     // could seed or open the database the first one is using.
     let mut primary = None;
+    let location = DataLocation::from_process();
+    // A development build has a taskbar identity of its own (`main.ts`).
+    let development = location.paths.development;
     if use_backend {
-        let location = DataLocation::from_process();
         if let Err(error) = location.create_folder() {
             eprintln!(
                 "could not create {}: {error}",
@@ -219,6 +268,18 @@ pub fn run() {
                 Mode::Light
             };
             muxus_ui::init(mode, cx);
+            muxus_app::features::desktop::app_menu::install(cx);
+            // The taskbar jump list (Windows) or Dock menu (macOS). Windows need the jump
+            // list's AppUserModelID before the first of them opens; the menu itself follows
+            // once the backend runs.
+            let launch_menu = launch_menu_os::launch_menu_kind(is_store_distribution(
+                &DistributionMetadata::built_in(),
+                running_from_windows_store(),
+            ));
+            let app_user_model_id = launch_menu_os::app_user_model_id(development);
+            if launch_menu == Some(launch_menu_os::LaunchMenuKind::JumpList) {
+                launch_menu_os::set_app_user_model_id(&app_user_model_id, cx);
+            }
             if let Some(instance) = primary {
                 let events = instance.events();
                 cx.set_global(InstanceGuard(instance));
@@ -231,6 +292,15 @@ pub fn run() {
                     backend: backend.clone(),
                 });
                 features::install(&backend, cx);
+                if let Some(kind) = launch_menu {
+                    launch_menu_os::start_launch_menu(
+                        backend.clone(),
+                        kind,
+                        app_user_model_id.clone(),
+                        |launch, cx| desktop::deliver(DesktopEvent::Launch(launch), cx),
+                        cx,
+                    );
+                }
                 // The release feed still names the Electron builds; a Rust build offers
                 // updates only from a feed it is pointed at.
                 if std::env::var(UPDATE_FEED_VAR).is_ok_and(|feed| !feed.trim().is_empty()) {
@@ -354,6 +424,8 @@ pub enum MainWindowLaunch {
         id: Option<String>,
         name: String,
     },
+    /// Another, empty window (`--new-window`, the launcher's New Window action).
+    Blank,
 }
 
 /// What every main window is built from.
@@ -401,7 +473,9 @@ pub fn open_main_window(launch: MainWindowLaunch, cx: &mut muxus_ui::gpui_kit::A
                         name: name.clone(),
                     }
                 }
-                MainWindowLaunch::Host(_) | MainWindowLaunch::Session { .. } => {
+                MainWindowLaunch::Host(_)
+                | MainWindowLaunch::Session { .. }
+                | MainWindowLaunch::Blank => {
                     muxus_app::features::workspaces::WorkspaceInitialSelection::Blank
                 }
             };

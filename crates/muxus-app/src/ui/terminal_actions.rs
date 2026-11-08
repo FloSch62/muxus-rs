@@ -4,6 +4,7 @@
 //! (`keymap/commands.ts`), clipboard paste with its preview, and exports.
 
 use muxus_app::export::export_filename;
+use muxus_app::hosts::system_openssh::SystemOpenSshMenuItem;
 use muxus_app::keymap::bindings::KeybindingOverrides;
 use muxus_app::keymap::hints::chord_label;
 use muxus_app::model::{ProfileKind, SessionProfile};
@@ -88,7 +89,19 @@ impl AppShell {
         {
             view.update(cx, |view, cx| view.close_search(window, cx));
         }
-        let pacing = self.paste_pacing(tab_id);
+        // A bracketed paste keeps the delays alone: it shows no prompt after each line.
+        let bracketed = self
+            .terminal_of(tab_id)
+            .is_some_and(|view| view.read(cx).emulator().bracketed_paste());
+        let pacing =
+            muxus_core::paste_pacing::paste_pacing_for(&self.paste_pacing(tab_id), bracketed);
+        let mirrored = self
+            .multi_exec
+            .read(cx)
+            .state()
+            .mirrored_tab_ids(tab_id)
+            .len()
+            .saturating_sub(1);
         let (family, size, line_height) = (
             self.prefs.font_family.clone(),
             self.prefs.mono_font_size as f32,
@@ -96,7 +109,17 @@ impl AppShell {
         );
         let tab = tab_id.to_string();
         let dialog = cx.new(|cx| {
-            PasteDialog::new(tab, text, pacing, 0, &family, size, line_height, window, cx)
+            PasteDialog::new(
+                tab,
+                text,
+                pacing,
+                mirrored,
+                &family,
+                size,
+                line_height,
+                window,
+                cx,
+            )
         });
         let subscription = cx.subscribe_in(&dialog, window, Self::on_paste_dialog_event);
         self.menu = None;
@@ -118,7 +141,7 @@ impl AppShell {
             line_delay_ms,
         } = event
         {
-            self.paste_into_session(&tab_id, text, Some(*line_delay_ms), cx);
+            self.paste_into_session(&tab_id, text, Some(*line_delay_ms), true, cx);
         }
         self.focus_terminal(&tab_id, window, cx);
         cx.notify();
@@ -170,6 +193,7 @@ impl AppShell {
         let theme = *cx.theme();
         let id = tab_id.to_string();
         let selection = selection.to_string();
+        let compare_selection = selection.clone();
         let has_selection = !selection.is_empty();
         menu::paper(&theme)
             .child(
@@ -251,6 +275,18 @@ impl AppShell {
                         }
                     })),
             )
+            .child(
+                MenuItem::new("terminal-compare", "Compare with…")
+                    .icon("CompareArrows")
+                    .on_click(cx.listener({
+                        let id = id.clone();
+                        let selection = compare_selection.clone();
+                        move |this, _, window, cx| {
+                            this.compare_terminal(&id, &selection, cx);
+                            this.close_terminal_menu(&id, window, cx);
+                        }
+                    })),
+            )
             .child(menu_divider(&theme))
             .child(
                 MenuItem::new("terminal-clear", "Clear scrollback")
@@ -289,7 +325,12 @@ impl AppShell {
                 .map(SessionProfile::kind),
             Some(ProfileKind::Serial | ProfileKind::Telnet | ProfileKind::Ssh)
         );
+        // `ssh` only sends BREAK through an escape sequence, which system OpenSSH sessions turn off.
+        let system_open_ssh = tab
+            .as_ref()
+            .is_some_and(|tab| tab.system_open_ssh == Some(true));
         let can_break = supports_break
+            && !system_open_ssh
             && tab.as_ref().is_some_and(|tab| {
                 tab.status == TabStatus::Connected
                     || (tab.status == TabStatus::Connecting && tab.conn_id.is_some())
@@ -369,11 +410,25 @@ impl AppShell {
                 MenuItem::new("send-break", "Send BREAK")
                     .icon("PowerInputOutlined")
                     .chord(chord("terminal.send-break"))
+                    .unavailable_with_system_open_ssh(system_open_ssh)
                     .disabled(!can_break)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.menu = None;
                         if let Some(id) = this.tabs.active_id.clone() {
                             this.send_break(&id, cx);
+                        }
+                        cx.notify();
+                    })),
+            );
+            paper = paper.child(
+                MenuItem::new("send-text-file", "Send text file…")
+                    .icon("UploadFileOutlined")
+                    .chord(chord("terminal.send-text-file"))
+                    .disabled(!can_break)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.menu = None;
+                        if let Some(id) = this.tabs.active_id.clone() {
+                            this.request_send_text_file(&id, window, cx);
                         }
                         cx.notify();
                     })),
@@ -494,6 +549,13 @@ impl AppShell {
                 }
                 None => false,
             },
+            "terminal.send-text-file" => match &active {
+                Some(id) => {
+                    let id = id.clone();
+                    self.request_send_text_file(&id, window, cx)
+                }
+                None => false,
+            },
             "terminal.cancel-login-sequence" => match &active {
                 Some(id)
                     if self
@@ -538,6 +600,9 @@ impl AppShell {
                     true
                 }
             }
+            // Ctrl+A / Ctrl+E, as Command+Left/Right send in VS Code and Ghostty.
+            "terminal.line-start" => self.type_keystroke(b"\x01", cx),
+            "terminal.line-end" => self.type_keystroke(b"\x05", cx),
             "terminal.command-menu" => self.open_command_menu(window, cx),
             "terminal.send-secret" => view.is_some() && self.open_send_secret_menu(window, cx),
             "terminal.multi-exec" => {
@@ -557,6 +622,23 @@ impl AppShell {
 }
 
 impl AppShell {
+    /// `typeKeystroke`: bytes sent as a key typed in the active terminal (with its host's keys
+    /// and echo, `sendKeyboardInput`), mirrored like one under multi-execution. `false` without
+    /// a live session there, so the key goes on.
+    pub fn type_keystroke(&mut self, data: &[u8], cx: &mut Context<Self>) -> bool {
+        let Some(id) = self.tabs.active_id.clone() else {
+            return false;
+        };
+        let Some(view) = self.terminal_of(&id) else {
+            return false;
+        };
+        if !view.update(cx, |view, cx| view.send_keyboard_input(data, cx)) {
+            return false;
+        }
+        self.mirror_input(&id, data, cx);
+        true
+    }
+
     /// `requestForceReconnectAll`: replace every remote connection, after asking.
     pub fn request_force_reconnect_all(
         &mut self,

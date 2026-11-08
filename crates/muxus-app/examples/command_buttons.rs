@@ -47,6 +47,7 @@ fn button(
         group_id: group.map(Into::into),
         color,
         secret_id: None,
+        shortcut: None,
     }
 }
 

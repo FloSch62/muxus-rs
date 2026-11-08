@@ -6,12 +6,15 @@ use std::rc::Rc;
 
 use muxus_term::custom_schemes::{
     CustomSchemeColors, CustomTerminalScheme, MAX_CUSTOM_TERMINAL_SCHEMES,
-    MAX_TERMINAL_SCHEME_FILE_BYTES, MAX_TERMINAL_SCHEME_NAME_LENGTH, SCHEME_ANSI_COLOR_KEYS,
-    SCHEME_BASE_COLOR_KEYS, SCHEME_BRIGHT_ANSI_COLOR_KEYS, create_terminal_scheme_document,
-    custom_scheme_copy_of, merge_custom_terminal_schemes, parse_terminal_scheme_file,
+    MAX_TERMINAL_SCHEME_NAME_LENGTH, SCHEME_ANSI_COLOR_KEYS, SCHEME_BASE_COLOR_KEYS,
+    SCHEME_BRIGHT_ANSI_COLOR_KEYS, create_terminal_scheme_document, custom_scheme_copy_of,
     terminal_scheme_from_custom,
 };
 use muxus_term::palette::terminal_scheme;
+use muxus_term::scheme_import::{
+    ImportSeverity, TerminalSchemeFile, apply_terminal_scheme_import, read_terminal_scheme_files,
+    summarize_terminal_scheme_import,
+};
 use muxus_ui::color::{hex, try_hex};
 use muxus_ui::gpui_kit::{
     AnyElement, Context, Hsla, IntoElement, ParentElement, SharedString, Styled, Window, div, px,
@@ -25,7 +28,7 @@ use super::super::texts;
 use super::fields::field;
 use super::kit::{BODY2, CAPTION, color_well, group, row, secondary_text, snap};
 use super::scheme::{
-    custom_terminal_schemes, scheme_label, scheme_menu_entries, store_custom_schemes,
+    SchemeMode, custom_terminal_schemes, scheme_label, scheme_menu_entries, store_custom_schemes,
     term_custom_schemes,
 };
 use super::window::{MenuEntry, SettingsWindow};
@@ -86,7 +89,7 @@ impl SettingsWindow {
         let mut section = group(texts::counted_title("Custom color schemes", schemes.len()))
             .description(secondary_text(
                 theme,
-                "Your own schemes are offered in the terminal theme pickers above and in every host's terminal appearance. Start from a copy of any scheme, or import a Windows Terminal (.json) or iTerm2 (.itermcolors) color scheme.",
+                "Your own schemes are offered in the terminal theme pickers above and in every host's terminal appearance. Start from a copy of any scheme, or import one or more Windows Terminal (.json) or iTerm2 (.itermcolors) color schemes.",
             ))
             .action(
                 div()
@@ -265,7 +268,7 @@ impl SettingsWindow {
 
     fn open_new_scheme_menu(&mut self, cx: &mut Context<Self>) {
         let custom = custom_terminal_schemes(self.prefs(cx));
-        let entries = scheme_menu_entries(&custom, "Copy of \u{b7} ");
+        let entries = scheme_menu_entries(&custom, "Copy of \u{b7} ", SchemeMode::Light);
         self.open_menu(
             "new-custom-scheme",
             260.,
@@ -331,50 +334,72 @@ impl SettingsWindow {
         }
     }
 
+    /// `importSchemes`: one or more files in any supported format, reported in one message.
     fn import_custom_schemes(&mut self, cx: &mut Context<Self>) {
-        self.pick_file(cx, |this, path, cx| {
-            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            if size as usize > MAX_TERMINAL_SCHEME_FILE_BYTES {
-                this.show_toast(Status::Error, "That color scheme file is too large.", cx);
+        let answer = crate::util::file_dialog::pick_paths(
+            muxus_ui::gpui_kit::PathPromptOptions {
+                files: true,
+                directories: false,
+                multiple: true,
+                prompt: None,
+            },
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            let Some(paths) = answer.await.filter(|paths| !paths.is_empty()) else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.apply_scheme_files(&paths, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn apply_scheme_files(&mut self, paths: &[std::path::PathBuf], cx: &mut Context<Self>) {
+        let read = read_terminal_scheme_files(paths.iter().map(|path| {
+            TerminalSchemeFile {
+                filename: path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                size: std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+                read: move || std::fs::read_to_string(path).map_err(|error| error.to_string()),
+            }
+        }));
+        let current = term_custom_schemes(self.prefs(cx));
+        let result = match apply_terminal_scheme_import(&current, &read.schemes) {
+            Ok(result) => result,
+            Err(error) => {
+                self.show_toast(Status::Error, error.to_string(), cx);
                 return;
             }
-            let text = match std::fs::read_to_string(&path) {
-                Ok(text) => text,
-                Err(error) => {
-                    this.show_toast(Status::Error, error.to_string(), cx);
-                    return;
-                }
-            };
-            let filename = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let current = term_custom_schemes(this.prefs(cx));
-            let result = parse_terminal_scheme_file(&text, &filename).and_then(|imported| {
-                merge_custom_terminal_schemes(&current, &imported).map(|merged| (imported, merged))
-            });
-            match result {
-                Ok((imported, merged)) => {
-                    let first = imported
-                        .first()
-                        .and_then(|first| merged.iter().find(|scheme| scheme.id == first.id))
-                        .cloned();
-                    this.state.scheme_selected =
-                        first.as_ref().map(|s| s.id.clone()).unwrap_or_default();
-                    for scheme in &imported {
-                        this.drop_inputs(&format!("custom-scheme-name-{}", scheme.id));
-                    }
-                    let stored = store_custom_schemes(&merged);
-                    this.set_prefs(cx, move |p| p.custom_terminal_schemes = stored);
-                    let message = match (imported.len(), first) {
-                        (1, Some(first)) => format!("Imported {}.", first.name),
-                        (count, _) => format!("Imported {count} color schemes."),
-                    };
-                    this.show_toast(Status::Success, message, cx);
-                }
-                Err(error) => this.show_toast(Status::Error, error.to_string(), cx),
+        };
+        if let Some(first) = result.imported.first() {
+            self.state.scheme_selected = first.id.clone();
+            for scheme in &result.imported {
+                self.drop_inputs(&format!("custom-scheme-name-{}", scheme.id));
             }
-        });
+            let stored = store_custom_schemes(&result.schemes);
+            self.set_prefs(cx, move |p| p.custom_terminal_schemes = stored);
+        }
+        let summary = summarize_terminal_scheme_import(
+            &result.imported,
+            result.already_present,
+            &read.failures,
+        );
+        let status = match summary.severity {
+            ImportSeverity::Success => Status::Success,
+            ImportSeverity::Info => Status::Info,
+            ImportSeverity::Warning => Status::Warning,
+            ImportSeverity::Error => Status::Error,
+        };
+        let message = match summary.details {
+            Some(details) => format!("{}\n{details}", summary.message),
+            None => summary.message,
+        };
+        self.show_toast(status, message, cx);
     }
 
     /// `SchemeColorEditor`: the preview, the base colors and the ANSI grid.

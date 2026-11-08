@@ -8,6 +8,10 @@
 //!   (buttons, fields, switches, spinners, …) defined outside `muxus-ui`.
 //! - `ci`: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`,
 //!   `cargo test --workspace`, then `layering` and `style`.
+//! - `vcxsrv`: prepares the X server Windows builds ship for X11 forwarding in
+//!   `vendor/vcxsrv` (see `vcxsrv.rs`).
+
+mod vcxsrv;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -33,10 +37,12 @@ fn layers() -> BTreeMap<&'static str, u8> {
         ("muxus-vnc", 2),
         ("muxus-mgmt", 2),
         ("muxus-import", 2),
+        ("muxus-os", 2),
         ("muxus-term", 2),
         ("muxus-session", 3),
         ("muxus-ui", 4),
         ("muxus-term-view", 5),
+        ("muxus-webview", 5),
         ("muxus-app", 6),
     ])
 }
@@ -404,8 +410,28 @@ fn main() -> ExitCode {
                 && report("layering", layering())
                 && report("style", style())
         }
+        "vcxsrv" => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            let result = match args.as_slice() {
+                [] => vcxsrv::prepare(&root()),
+                [flag, directory] if flag == "--source" => {
+                    vcxsrv::save_source(Path::new(directory))
+                }
+                _ => Err("usage: cargo xtask vcxsrv [--source DIR]".into()),
+            };
+            match result {
+                Ok(path) => {
+                    eprintln!("VcXsrv {} in {}", vcxsrv::VCXSRV_VERSION, path.display());
+                    true
+                }
+                Err(error) => {
+                    eprintln!("vcxsrv: {error}");
+                    false
+                }
+            }
+        }
         _ => {
-            eprintln!("usage: cargo xtask <ci|layering|style>");
+            eprintln!("usage: cargo xtask <ci|layering|style|vcxsrv>");
             false
         }
     };

@@ -13,7 +13,7 @@ mod live;
 pub mod logic;
 mod navigator;
 mod overlays;
-mod palette;
+pub mod palette;
 mod path_text;
 mod results;
 mod scene;

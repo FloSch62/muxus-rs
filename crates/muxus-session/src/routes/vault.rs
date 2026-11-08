@@ -6,6 +6,7 @@ use muxus_core::api::{
     VaultSecretInput, VaultSecretSaveResult,
 };
 use muxus_core::js::utf16_len;
+use muxus_core::paste_pacing::with_enter_key;
 use muxus_store::vault::{
     SecretInput, VAULT_SECRET_NAME_MAX_LENGTH, VAULT_SECRET_USERNAME_MAX_LENGTH, VaultError,
     secret_input::secret_keystrokes,
@@ -295,13 +296,14 @@ impl Backend {
                 return Err(secret_missing());
             }
             let mut seen = std::collections::HashSet::new();
-            let writers: Vec<_> = request
+            // Each session presses Enter as its own host's key sends it.
+            let targets: Vec<_> = request
                 .terminal_ids
                 .iter()
                 .filter(|terminal| seen.insert(terminal.as_str()))
-                .filter_map(|terminal| shared.terminal_inputs.writer(terminal))
+                .filter_map(|terminal| shared.terminal_inputs.target(terminal))
                 .collect();
-            if writers.is_empty() {
+            if targets.is_empty() {
                 return Err(terminal_unavailable());
             }
             let value = match shared
@@ -319,8 +321,17 @@ impl Backend {
                 }
                 Err(error) => return Err(error.into()),
             };
-            let keystrokes = secret_keystrokes(&value, request.enter);
-            let sent = writers.iter().filter(|write| write(&keystrokes)).count();
+            let sent = targets
+                .iter()
+                .filter(|target| {
+                    let mut keystrokes = secret_keystrokes(&value, false);
+                    if request.enter {
+                        keystrokes
+                            .extend_from_slice(with_enter_key("\r", target.enter_key).as_bytes());
+                    }
+                    (target.write)(&keystrokes)
+                })
+                .count();
             if sent == 0 {
                 return Err(terminal_unavailable());
             }

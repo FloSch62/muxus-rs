@@ -517,6 +517,7 @@ fn keeps_a_secret_command_button_as_a_reference_to_the_vault() {
         group_id: None,
         color: None,
         secret_id: Some("vault-secret-1".into()),
+        shortcut: None,
     };
     sandbox.set_prefs(|prefs| prefs.command_buttons = vec![enable.clone()]);
 
@@ -880,6 +881,34 @@ fn the_ssh_session_summary_is_part_of_a_backup() {
         sandbox.backup().preferences()["sshSessionSummary"],
         json!(true)
     );
+}
+
+#[test]
+fn restores_the_close_tab_on_clean_exit_and_look_alike_paste_switches() {
+    for key in [
+        "closeTabOnCleanExit",
+        "pasteWarnLookalikes",
+        "showProgramStatus",
+    ] {
+        assert_eq!(sanitize(json!({ key: true }))[key], json!(true), "{key}");
+        assert!(!sanitize(json!({ key: 1 })).contains_key(key), "{key}");
+        assert!(!sanitize(json!({ key: "no" })).contains_key(key), "{key}");
+        // Older backups leave it at the default.
+        assert!(!sanitize(json!({})).contains_key(key), "{key}");
+    }
+}
+
+#[test]
+fn the_look_alike_paste_and_clean_exit_switches_are_part_of_a_backup() {
+    let sandbox = Sandbox::new();
+    sandbox.set_prefs(|prefs| {
+        prefs.paste_warn_lookalikes = false;
+        prefs.close_tab_on_clean_exit = true;
+    });
+    let document = sandbox.backup();
+    let preferences = document.preferences();
+    assert_eq!(preferences["pasteWarnLookalikes"], json!(false));
+    assert_eq!(preferences["closeTabOnCleanExit"], json!(true));
 }
 
 #[test]
@@ -1295,11 +1324,24 @@ fn keeps_the_per_host_terminal_override_in_portable_metadata() {
             "terminalBackgroundColor": "#002b36",
             "pasteLineDelayMs": 200,
             "pasteCharDelayMs": 0,
+            "pastePromptWait": { "timeoutMs": 20_000 },
+            "antiIdle": { "intervalSeconds": 120, "text": " ", "enter": false },
+            "backspaceKey": "ctrl-h",
+            "enterKey": "crlf",
+            "localEcho": true,
         }),
     );
 
     let document = sandbox.backup();
     let metadata = &document.saved_hosts()[0]["metadata"];
+    assert_eq!(metadata["pastePromptWait"], json!({ "timeoutMs": 20_000 }));
+    assert_eq!(
+        metadata["antiIdle"],
+        json!({ "intervalSeconds": 120, "text": " ", "enter": false })
+    );
+    assert_eq!(metadata["backspaceKey"], json!("ctrl-h"));
+    assert_eq!(metadata["enterKey"], json!("crlf"));
+    assert_eq!(metadata["localEcho"], json!(true));
 
     assert_eq!(metadata["terminalScheme"], json!("solarized-dark"));
     assert_eq!(metadata["terminalFontColor"], json!("#fdf6e3"));
@@ -1649,9 +1691,18 @@ fn upserts_and_organizes_a_selected_serial_profile() {
             "commandButtonGroup": null,
             "pasteLineDelayMs": null,
             "pasteCharDelayMs": null,
+            "pastePromptWait": null,
+            "antiIdle": null,
+            "backspaceKey": null,
+            "enterKey": null,
+            "implicitCr": false,
+            "localEcho": false,
             "disableSftp": false,
             "consoleCompatibility": false,
+            "systemOpenSsh": false,
+            "discoverEnvironments": null,
             "loginSequence": null,
+            "proxyJumpFallbacks": null,
         })
     );
 
@@ -1685,6 +1736,92 @@ fn upserts_and_organizes_a_selected_serial_profile() {
         saved[0].metadata.terminal_background_color.as_deref(),
         Some("#2e3440")
     );
+}
+
+/// The metadata PATCH a restore sends for the imported serial host with `extra` added.
+fn restored_metadata(extra: Value) -> Value {
+    let mut metadata = serde_json::to_value(&imported_serial().saved_hosts[0].metadata).unwrap();
+    metadata.as_object_mut().unwrap().extend(object(extra));
+    serde_json::to_value(metadata_patch(&metadata).unwrap()).unwrap()
+}
+
+#[test]
+fn restores_prompt_waiting_and_drops_a_setting_that_does_not_check_out() {
+    let restored = |wait: Value| {
+        restored_metadata(json!({ "pastePromptWait": wait }))["pastePromptWait"].clone()
+    };
+    let own = json!({ "promptPattern": "[>#\\]]\\s*$", "timeoutMs": 20_000 });
+    assert_eq!(restored(own.clone()), own);
+    assert_eq!(restored(json!({})), json!({}));
+    assert_eq!(restored(json!({ "promptPattern": "([" })), Value::Null);
+    assert_eq!(restored(json!({ "errorPattern": "" })), Value::Null);
+    assert_eq!(restored(json!({ "timeoutMs": 10 })), Value::Null);
+    assert_eq!(restored(json!([])), Value::Null);
+}
+
+#[test]
+fn restores_anti_idle_and_drops_a_setting_that_does_not_check_out() {
+    let restored =
+        |anti_idle: Value| restored_metadata(json!({ "antiIdle": anti_idle }))["antiIdle"].clone();
+    let space = json!({ "intervalSeconds": 120, "text": " ", "enter": false });
+    assert_eq!(restored(space.clone()), space);
+    assert_eq!(
+        restored(json!({ "intervalSeconds": 1, "text": " ", "enter": false })),
+        Value::Null
+    );
+    assert_eq!(
+        restored(json!({ "intervalSeconds": 120, "text": "", "enter": false })),
+        Value::Null
+    );
+    // A hidden Enter or Ctrl+C in the text is not restored.
+    assert_eq!(
+        restored(json!({ "intervalSeconds": 120, "text": "a\rb\u{3}", "enter": false })),
+        Value::Null
+    );
+}
+
+#[test]
+fn restores_keys_and_echo_and_drops_values_this_release_does_not_know() {
+    let restored = |modes: Value| {
+        let patch = restored_metadata(modes);
+        json!({
+            "backspaceKey": patch["backspaceKey"],
+            "enterKey": patch["enterKey"],
+            "implicitCr": patch["implicitCr"],
+            "localEcho": patch["localEcho"],
+        })
+    };
+    let modes = json!({ "backspaceKey": "ctrl-h", "enterKey": "lf", "implicitCr": true, "localEcho": true });
+    let defaults =
+        json!({ "backspaceKey": null, "enterKey": null, "implicitCr": false, "localEcho": false });
+    assert_eq!(restored(modes.clone()), modes);
+    assert_eq!(
+        restored(
+            json!({ "backspaceKey": "bs", "enterKey": "\r\n", "implicitCr": 1, "localEcho": "yes" })
+        ),
+        defaults
+    );
+}
+
+#[test]
+fn restores_system_openssh_discovery_and_fallback_routes() {
+    let patch = restored_metadata(json!({
+        "systemOpenSsh": true,
+        "discoverEnvironments": false,
+        "proxyJumpFallbacks": [["bastion-b"], ["edge", "bastion-c"]],
+    }));
+    assert_eq!(patch["systemOpenSsh"], json!(true));
+    assert_eq!(patch["discoverEnvironments"], json!(false));
+    assert_eq!(
+        patch["proxyJumpFallbacks"],
+        json!([["bastion-b"], ["edge", "bastion-c"]])
+    );
+    let patch = restored_metadata(json!({
+        "discoverEnvironments": "no",
+        "proxyJumpFallbacks": [[]],
+    }));
+    assert_eq!(patch["discoverEnvironments"], Value::Null);
+    assert_eq!(patch["proxyJumpFallbacks"], Value::Null);
 }
 
 #[test]

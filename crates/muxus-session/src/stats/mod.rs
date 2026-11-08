@@ -528,8 +528,31 @@ pub async fn read_remote_host_stats(
     })
 }
 
-/// Read the machine local terminals run on.
+/// The same reading through anything that can feed a script to the host's sh (a system
+/// OpenSSH session's shared login).
+pub async fn read_host_stats_with<F, Fut>(run_script: F) -> Result<HostStatsReading, String>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: Future<Output = Result<String, String>>,
+{
+    let output = run_script(HOST_STATS_SCRIPT.to_string()).await?;
+    Ok(match parse_host_stats(&output) {
+        Some(sample) => HostStatsReading::Supported(Box::new(sample)),
+        None => HostStatsReading::Unsupported,
+    })
+}
+
+/// Read the machine local terminals run on. Windows has no `sh`: everything comes from the
+/// system (`muxus_os::machine`, Node's `os` module in TS). Elsewhere the script runs locally,
+/// and a reading without CPU time (macOS has no cumulative counters in the script) takes it
+/// from the system too.
 pub async fn read_local_host_stats() -> HostStatsSample {
+    #[cfg(windows)]
+    {
+        tokio::task::spawn_blocking(muxus_os::machine::windows_host_stats)
+            .await
+            .unwrap_or_default()
+    }
     #[cfg(unix)]
     {
         use std::process::Stdio;
@@ -555,17 +578,15 @@ pub async fn read_local_host_stats() -> HostStatsSample {
             }
             Err(_) => HostStatsSample::default(),
         };
+        muxus_os::machine::fill_cpu_time(&mut sample);
         if sample.hostname.is_none() {
             sample.hostname = local_hostname();
         }
         sample
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
-        HostStatsSample {
-            hostname: std::env::var("COMPUTERNAME").ok(),
-            ..HostStatsSample::default()
-        }
+        HostStatsSample::default()
     }
 }
 
@@ -592,7 +613,7 @@ pub fn host_stats_response(reading: &HostStatsReading, sampled_at_ms: i64) -> Ho
             sample: sample.as_ref().clone(),
         },
         HostStatsReading::Unsupported => HostStatsResponse::Unsupported {
-            message: "The host did not run the statistics command.".into(),
+            message: "The host does not run the statistics command.".into(),
         },
     }
 }

@@ -19,6 +19,10 @@ pub enum ConnectionLeaseOwner {
     Desktop,
     Management,
     Stats,
+    /// Container, cluster and VM discovery and its lookups.
+    Environments,
+    /// A script running on hosts (`features::scripts` in the app).
+    Script,
 }
 
 /// A transport the registry can close.

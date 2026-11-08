@@ -25,10 +25,12 @@ muxus-rdp = { path = "crates/muxus-rdp" }
 muxus-vnc = { path = "crates/muxus-vnc" }
 muxus-mgmt = { path = "crates/muxus-mgmt" }
 muxus-import = { path = "crates/muxus-import" }
+muxus-os = { path = "crates/muxus-os" }
 muxus-term = { path = "crates/muxus-term" }
 muxus-session = { path = "crates/muxus-session" }
 muxus-ui = { path = "crates/muxus-ui" }
 muxus-term-view = { path = "crates/muxus-term-view" }
+muxus-webview = { path = "crates/muxus-webview" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

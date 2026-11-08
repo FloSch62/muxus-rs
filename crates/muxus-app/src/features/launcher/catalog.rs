@@ -42,7 +42,9 @@ pub enum LauncherAction {
     Workspaces,
     History,
     Commands,
+    Scripts,
     Tunnels,
+    Environments,
     Sftp,
     FindTerminal,
 }
@@ -56,7 +58,9 @@ impl LauncherAction {
             LauncherAction::Workspaces => "workspaces",
             LauncherAction::History => "history",
             LauncherAction::Commands => "commands",
+            LauncherAction::Scripts => "scripts",
             LauncherAction::Tunnels => "tunnels",
+            LauncherAction::Environments => "environments",
             LauncherAction::Sftp => "sftp",
             LauncherAction::FindTerminal => "find-terminal",
         }
@@ -95,6 +99,8 @@ pub enum LauncherPayload {
         profile: LocalShellProfileConfig,
         wsl: bool,
     },
+    /// A container, lab node, VM or cluster found on a host.
+    Environment(Box<crate::features::environments::launcher::EnvironmentLaunchItem>),
     Action(LauncherAction),
     Keymap {
         command_id: String,
@@ -129,6 +135,7 @@ impl LauncherResult {
             LauncherPayload::Tunnel { .. } => QuickLauncherKind::Tunnel,
             LauncherPayload::History { .. } => QuickLauncherKind::History,
             LauncherPayload::LocalShell { .. } => QuickLauncherKind::LocalShell,
+            LauncherPayload::Environment(_) => QuickLauncherKind::Environment,
             LauncherPayload::Action(_) => QuickLauncherKind::Action,
             LauncherPayload::Keymap { .. } => QuickLauncherKind::Keymap,
         }
@@ -146,9 +153,13 @@ impl LauncherResult {
     /// The small caps tag at the row's end (`ResultKindLabel`); keymap rows
     /// show their chord instead.
     pub fn kind_label(&self) -> &'static str {
+        if let LauncherPayload::Environment(item) = &self.payload {
+            return item.kind.tag();
+        }
         match self.kind() {
             QuickLauncherKind::QuickConnect => "CONNECT",
             QuickLauncherKind::LocalShell => "LOCAL",
+            QuickLauncherKind::Environment => "ENVIRONMENT",
             QuickLauncherKind::Editor => "FILE",
             QuickLauncherKind::Tab => "TAB",
             QuickLauncherKind::Host => "HOST",
@@ -521,7 +532,7 @@ pub fn build_catalog_results(input: CatalogInput<'_>) -> Vec<LauncherResult> {
         .collect();
     for tunnel in input.tunnels {
         let running = running_by_tunnel.get(tunnel.id.as_str()).copied();
-        results.push(result(
+        let mut entry = result(
             format!("tunnel:{}", tunnel.id),
             tunnel.name.clone().unwrap_or_else(|| tunnel.target.clone()),
             format!("{} · {}", tunnel_state(running), describe_tunnel(tunnel)),
@@ -537,7 +548,12 @@ pub fn build_catalog_results(input: CatalogInput<'_>) -> Vec<LauncherResult> {
                 tunnel: tunnel.clone(),
                 running: running.cloned(),
             },
-        ));
+        );
+        // A running tunnel can always be stopped.
+        entry.disabled_reason = (running.is_none()
+            && crate::hosts::system_openssh::tunnel_uses_system_open_ssh(tunnel, input.ssh_hosts))
+        .then(|| crate::hosts::system_openssh::SYSTEM_OPENSSH_UNAVAILABLE.into());
+        results.push(entry);
     }
 
     results
@@ -631,10 +647,13 @@ pub fn build_query_results(
 /// Whether the active tab can take a BREAK (`supportsBreak` / `canSendBreak`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BreakState {
-    /// Send BREAK only exists for serial, Telnet and SSH tabs.
+    /// Send BREAK and Send text file only exist for serial, Telnet and SSH tabs.
     None,
     Waiting,
     Ready,
+    /// A system OpenSSH session: `ssh` only sends BREAK through an escape sequence, which its
+    /// sessions here turn off.
+    SystemOpenSsh,
 }
 
 impl BreakState {
@@ -650,6 +669,9 @@ impl BreakState {
         });
         if !supports {
             return BreakState::None;
+        }
+        if tab.system_open_ssh == Some(true) {
+            return BreakState::SystemOpenSsh;
         }
         // An SSH console that has printed nothing yet still counts: a silent
         // console is exactly when BREAK is wanted.
@@ -725,10 +747,30 @@ pub fn build_action_results(
             &["buttons", "snippets"],
         ),
         action_result(
+            LauncherAction::Scripts,
+            "Run a script on hosts",
+            "All at once, in batches or one by one, with each host's output",
+            &["script", "batch", "bulk", "many hosts"],
+        ),
+        action_result(
             LauncherAction::Tunnels,
             "Open port forwarding",
             "Manage saved tunnels and live forwards",
             &["ssh", "forward", "proxy"],
+        ),
+        action_result(
+            LauncherAction::Environments,
+            "Show containers & VMs",
+            "Docker, Podman, Containerlab, Kubernetes, Proxmox and libvirt on your hosts",
+            &[
+                "docker",
+                "podman",
+                "kubernetes",
+                "containerlab",
+                "proxmox",
+                "libvirt",
+                "virtual machines",
+            ],
         ),
     ];
     let mut sftp = action_result(
@@ -737,7 +779,13 @@ pub fn build_action_results(
         "Browse files over SFTP for the active SSH session",
         &["files", "upload", "download"],
     );
-    sftp.disabled_reason = (!active_ssh).then(|| "Select a connected SSH session first".into());
+    sftp.disabled_reason = (!active_ssh).then(|| {
+        if active_break == BreakState::SystemOpenSsh {
+            "Not available for this system OpenSSH session".into()
+        } else {
+            "Select a connected SSH session first".into()
+        }
+    });
     results.push(sftp);
     let mut find = action_result(
         LauncherAction::FindTerminal,
@@ -754,7 +802,8 @@ pub fn build_action_results(
         if !command.palette {
             continue;
         }
-        let sends_break = command.id == "terminal.send-break";
+        let sends_break =
+            command.id == "terminal.send-break" || command.id == "terminal.send-text-file";
         if sends_break && active_break == BreakState::None {
             continue;
         }
@@ -775,8 +824,12 @@ pub fn build_action_results(
                 chord: chords.first().cloned(),
             },
         );
-        entry.disabled_reason = (sends_break && active_break == BreakState::Waiting)
-            .then(|| "Wait for the session to connect first".into());
+        entry.disabled_reason = if sends_break && active_break == BreakState::SystemOpenSsh {
+            Some(crate::hosts::system_openssh::SYSTEM_OPENSSH_UNAVAILABLE.into())
+        } else {
+            (sends_break && active_break == BreakState::Waiting)
+                .then(|| "Wait for the session to connect first".into())
+        };
         results.push(entry);
     }
 
@@ -791,6 +844,7 @@ fn category_key(category: crate::keymap::commands::CommandCategory) -> &'static 
         CommandCategory::Tabs => "tabs",
         CommandCategory::Terminal => "terminal",
         CommandCategory::App => "app",
+        CommandCategory::Buttons => "buttons",
     }
 }
 
@@ -937,6 +991,27 @@ pub fn folder_detail(group: Option<&str>) -> String {
     } else {
         format!("{} · ", segments.join(" / "))
     }
+}
+
+/// Containers, lab nodes, VMs and contexts on the hosts read so far: offered only for a
+/// query, after the hosts and before the actions.
+pub fn build_environment_results(
+    items: &[crate::features::environments::launcher::EnvironmentLaunchItem],
+) -> Vec<LauncherResult> {
+    items
+        .iter()
+        .map(|item| {
+            result(
+                item.id.clone(),
+                item.label.clone(),
+                item.detail.clone(),
+                item.keywords.clone(),
+                140,
+                false,
+                LauncherPayload::Environment(Box::new(item.clone())),
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1140,6 +1215,7 @@ mod tests {
             group_id: None,
             color: None,
             secret_id: None,
+            shortcut: None,
         }];
         let groups = [default_command_group()];
         let counts = HashMap::new();

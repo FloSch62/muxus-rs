@@ -19,18 +19,18 @@ use muxus_ui::gpui_kit::{
 };
 use muxus_ui::label::label;
 use muxus_ui::theme::{ActiveTheme, Theme};
-use muxus_ui::widgets::{Button, Checkbox};
+use muxus_ui::widgets::form_field::FormField;
+use muxus_ui::widgets::{Autocomplete, AutocompleteOption, Button, Checkbox, Slider, SliderRange};
 
 use super::super::js::{number_to_string, to_fixed};
 use super::super::texts;
-use super::fields::field;
 use super::kit::{
     BODY2, BODY2_LINE, ToggleItem, ToggleStyle, caption, color_well, group, page, row,
-    secondary_text, slider, slider_value, snap, toggle_group,
+    secondary_text, slider_value, snap, toggle_group,
 };
 use super::layout_preview::layout_preview;
-use super::scheme::{custom_terminal_schemes, scheme_menu_entries, scheme_value};
-use super::window::{SettingsWindow, SliderDrag};
+use super::scheme::{SchemeMode, custom_terminal_schemes, scheme_menu_entries, scheme_value};
+use super::window::SettingsWindow;
 
 impl SettingsWindow {
     /// A chord label for a command under the current bindings.
@@ -324,6 +324,7 @@ impl SettingsWindow {
             theme,
             "light-terminal-theme",
             &prefs.light_terminal_scheme,
+            SchemeMode::Light,
             cx,
             |p, id| {
                 p.light_terminal_scheme = id;
@@ -333,6 +334,7 @@ impl SettingsWindow {
             theme,
             "dark-terminal-theme",
             &prefs.dark_terminal_scheme,
+            SchemeMode::Dark,
             cx,
             |p, id| {
                 p.dark_terminal_scheme = id;
@@ -382,6 +384,7 @@ impl SettingsWindow {
         theme: &Theme,
         key: &'static str,
         value: &str,
+        first: SchemeMode,
         cx: &mut Context<Self>,
         set: fn(&mut muxus_store::prefs::PrefsState, String),
     ) -> AnyElement {
@@ -390,7 +393,7 @@ impl SettingsWindow {
         let scheme = terminal_scheme(Some(value), &custom).clone();
         let anchor = self.anchor(key);
         let open = self.menu_open(key);
-        let entries = scheme_menu_entries(&custom, "");
+        let entries = scheme_menu_entries(&custom, "", first);
         let selected = value.to_string();
         let this = cx.entity().downgrade();
         super::kit::row_select(
@@ -515,18 +518,36 @@ impl SettingsWindow {
             |this, value, _, cx| this.set_prefs(cx, |p| p.font_family = value),
         );
         self.sync_input("font-family", &prefs.font_family, window, cx);
-        let anchor = self.anchor("font-family");
         self.state.font_input_focused = input.read(cx).focus_handle(cx).is_focused(window);
-        let font_field = div()
-            .relative()
-            .w(px(280.))
-            .child(
-                field("settings-font-family", &input)
-                    .width(280.)
+        // `<Autocomplete freeSolo options={terminalFontFamilies(installed)}>`: any name
+        // can be typed; the list offers the bundled, installed and generic families.
+        let options: Vec<AutocompleteOption> = muxus_term::font_catalog::terminal_font_families(
+            installed_refs.as_deref().unwrap_or(&[]),
+        )
+        .into_iter()
+        .map(AutocompleteOption::new)
+        .collect();
+        let (picked, cleared) = (self.prefs.clone(), self.prefs.clone());
+        let font_field = div().w(px(280.)).child(
+            Autocomplete::new(
+                "settings-font-family-autocomplete",
+                &input,
+                FormField::input("settings-font-family", &input)
+                    .keep_placeholder()
                     .error(error)
-                    .render(theme, window, cx),
+                    .width(280.),
+                options,
             )
-            .child(muxus_ui::widgets::bounds_probe(&anchor));
+            .free_solo()
+            .loading(installed.is_none())
+            .on_pick(move |option, _, cx| {
+                let family = option.label.to_string();
+                picked.update(cx, |model, cx| model.update(cx, |p| p.font_family = family));
+            })
+            .on_clear(move |_, cx| {
+                cleared.update(cx, |model, cx| model.update(cx, |p| p.font_family.clear()));
+            }),
+        );
         let description = if error {
             muxus_ui::label::paragraph(description)
                 .size(super::kit::CAPTION)
@@ -543,23 +564,18 @@ impl SettingsWindow {
         let font_size = prefs.mono_font_size;
         let line_height = prefs.line_height;
         let size_slider = self.pref_slider(
-            theme,
             "font-size",
-            ((font_size - 8.) / 16.) as f32,
+            font_size,
+            SliderRange::new(8., 24.),
             false,
-            |p, fraction| {
-                p.mono_font_size = js_round(8. + f64::from(fraction) * 16.);
-            },
+            |p, value| p.mono_font_size = value,
         );
         let height_slider = self.pref_slider(
-            theme,
             "line-height",
-            ((line_height - 1.) / 0.6) as f32,
+            line_height,
+            SliderRange::new(1., 1.6).step(0.05),
             false,
-            |p, fraction| {
-                let steps = js_round(f64::from(fraction) * 0.6 / 0.05);
-                p.line_height = ((1. + steps * 0.05) * 100.).round() / 100.;
-            },
+            |p, value| p.line_height = value,
         );
         group("Terminal font")
             .row(
@@ -587,60 +603,40 @@ impl SettingsWindow {
             .render(theme)
     }
 
-    /// A slider bound to a preference: a press jumps there, a drag follows.
+    /// `RowSlider`: a small 180px slider bound to a preference.
     pub fn pref_slider(
         &mut self,
-        theme: &Theme,
         key: &'static str,
-        fraction: f32,
+        value: f64,
+        range: SliderRange,
         disabled: bool,
-        set: fn(&mut muxus_store::prefs::PrefsState, f32),
+        set: fn(&mut muxus_store::prefs::PrefsState, f64),
     ) -> AnyElement {
-        let anchor = self.anchor(key);
         let prefs = self.prefs.clone();
-        let entity = self.self_handle.clone();
-        let drag_anchor = anchor.clone();
-        slider(
-            SharedString::from(format!("slider-{key}")),
-            theme,
-            fraction,
-            disabled,
-            &anchor,
-            Rc::new(move |fraction, _, cx| {
-                prefs.update(cx, |model, cx| model.update(cx, |p| set(p, fraction)));
-                let drag_anchor = drag_anchor.clone();
-                if let Some(entity) = entity.as_ref().and_then(|entity| entity.upgrade()) {
-                    entity.update(cx, |this, _| {
-                        this.drag = Some(SliderDrag {
-                            on_move_2d: None,
-                            anchor: drag_anchor,
-                            on_move: Rc::new(move |this, fraction, cx| {
-                                this.set_prefs(cx, |p| set(p, fraction));
-                            }),
-                        });
-                    });
-                }
-            }),
-        )
-        .into_any_element()
+        Slider::new(SharedString::from(format!("slider-{key}")), value, range)
+            .small()
+            .width(180.)
+            .disabled(disabled)
+            .on_change(move |value, _, cx| {
+                prefs.update(cx, |model, cx| model.update(cx, |p| set(p, value)));
+            })
+            .into_any_element()
     }
 
     fn split_panes(&mut self, theme: &Theme, prefs: &muxus_store::prefs::PrefsState) -> AnyElement {
         let dim = prefs.dim_inactive_panes;
         let strength = clamp_inactive_pane_dim_strength(prefs.inactive_pane_dim_strength);
-        let range = MAX_INACTIVE_PANE_DIM_STRENGTH - MIN_INACTIVE_PANE_DIM_STRENGTH;
+        // Percent in steps of 5 between the bounds.
         let strength_slider = self.pref_slider(
-            theme,
             "dim-strength",
-            ((strength - MIN_INACTIVE_PANE_DIM_STRENGTH) / range) as f32,
+            strength * 100.,
+            SliderRange::new(
+                MIN_INACTIVE_PANE_DIM_STRENGTH * 100.,
+                MAX_INACTIVE_PANE_DIM_STRENGTH * 100.,
+            )
+            .step(5.),
             !dim,
-            |p, fraction| {
-                // Steps of 5 percentage points between the bounds.
-                let min = MIN_INACTIVE_PANE_DIM_STRENGTH * 100.;
-                let max = MAX_INACTIVE_PANE_DIM_STRENGTH * 100.;
-                let value = min + js_round(f64::from(fraction) * (max - min) / 5.) * 5.;
-                p.inactive_pane_dim_strength = value / 100.;
-            },
+            |p, value| p.inactive_pane_dim_strength = value / 100.,
         );
         group("Split panes")
             .row(self.switch_row(

@@ -40,7 +40,7 @@ impl Terminal {
                     response: &mut self.response_buffer,
                     host: &self.host,
                     title_state: &mut self.title_state,
-                    warning_bell_volume: &mut self.warning_bell_volume,
+                    warning_bell_volume: &mut self.bell_volumes.warning,
                     pixel_size: (self.pixel_width, self.pixel_height),
                     size: (cols, rows),
                 },
@@ -95,7 +95,7 @@ fn handle_rect_ops(
             let right = pr.saturating_sub(1);
 
             let mut fill_cell = crate::cell::Cell::with_colors(pc, attrs.fg, attrs.bg);
-            fill_cell.flags = attrs.flags;
+            fill_cell.flags = attrs.flags.with_width(fill_cell.width() as u8);
 
             grid.fill_rectangle(fill_cell, top, left, bottom, right);
         }

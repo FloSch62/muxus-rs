@@ -389,7 +389,10 @@ impl RdpServerDisplay for Display {
         }
     }
 
-    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(
+        &mut self,
+        _ctx: ironrdp_server::DisplayContext,
+    ) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(Updates(false)))
     }
 }
@@ -1167,4 +1170,188 @@ async fn dismissing_the_logon_prompt_closes_the_session() {
         ("The connection closed.".to_owned(), ExitReason::Failed)
     );
     sandbox.stop().await;
+}
+
+/// Live checks against the `muxus-desktop-lab` image (xrdp with TLS, a FreeRDP shadow server
+/// that only speaks NLA, TigerVNC with VncAuth, x11vnc without authentication and sshd; user
+/// `muxus`, password `muxus`, VNC password `muxus123`; the shadow server's SAM file must be in
+/// SAM format, `winpr-hash3 -u muxus -p muxus -f sam`, or NLA finds no user). Skipped unless
+/// `MUXUS_DESKTOP_LIVE_HOST` names the machine running it; `MUXUS_DESKTOP_LIVE_PORT_OFFSET`
+/// is added to the container's ports when they are published elsewhere:
+///
+/// ```text
+/// docker run -d --rm --name desktop-lab -p 23389:3389 -p 23390:3390 -p 25901:5901 \
+///   -p 25902:5902 -p 20022:22 muxus-desktop-lab
+/// MUXUS_DESKTOP_LIVE_HOST=127.0.0.1 MUXUS_DESKTOP_LIVE_PORT_OFFSET=20000 \
+///   cargo test -p muxus-session --lib desktop::tests::live -- --ignored --test-threads 1
+/// ```
+mod live {
+    use super::*;
+
+    const LIVE_TIMEOUT: Duration = Duration::from_secs(60);
+
+    fn lab() -> (String, u16) {
+        let host = std::env::var("MUXUS_DESKTOP_LIVE_HOST")
+            .expect("MUXUS_DESKTOP_LIVE_HOST names the machine running muxus-desktop-lab");
+        let offset = std::env::var("MUXUS_DESKTOP_LIVE_PORT_OFFSET")
+            .ok()
+            .and_then(|offset| offset.parse().ok())
+            .unwrap_or(0);
+        (host, offset)
+    }
+
+    /// Answer every question as the user would, until the desktop is up and has drawn.
+    async fn reach_desktop(handle: &DesktopHandle, vnc_password: &str) -> (u16, u16, Vec<String>) {
+        let mut questions = Vec::new();
+        let mut connection = None;
+        loop {
+            let event = tokio::time::timeout(LIVE_TIMEOUT, handle.next_event())
+                .await
+                .expect("an event in time")
+                .expect("the session is still open");
+            match event {
+                DesktopEvent::HostKey(_) => {
+                    questions.push("host key".to_owned());
+                    handle.answer_host_key(true);
+                }
+                DesktopEvent::Certificate(challenge) => {
+                    questions.push(format!("certificate {:?}", challenge.state));
+                    handle.answer_certificate(true);
+                }
+                DesktopEvent::AuthPrompt(info) => {
+                    let name = info.name.clone().unwrap_or_default();
+                    // A logon asked again was rejected: say why instead of trying forever.
+                    assert!(
+                        !questions.contains(&name),
+                        "{name} asked again: {:?}",
+                        info.instructions
+                    );
+                    questions.push(name.clone());
+                    let answers = info
+                        .prompts
+                        .iter()
+                        .map(|field| {
+                            if field.prompt.to_lowercase().contains("user") {
+                                "muxus".to_owned()
+                            } else if name == "VNC authentication" {
+                                vnc_password.to_owned()
+                            } else {
+                                "muxus".to_owned()
+                            }
+                        })
+                        .collect();
+                    handle.answer_auth(Some(AuthPromptResponse {
+                        answers,
+                        ..AuthPromptResponse::default()
+                    }));
+                }
+                DesktopEvent::Connected(up) => connection = Some(up),
+                DesktopEvent::Frame => {
+                    if let Some(connection) = &connection {
+                        let size = connection.desktop_size();
+                        let dirty = connection.take_dirty();
+                        if size.0 > 0 && !dirty.is_empty() {
+                            return (size.0, size.1, questions);
+                        }
+                    }
+                }
+                DesktopEvent::Exit { message, .. } => {
+                    panic!("the session ended: {message}; questions: {questions:?}")
+                }
+                _ => {}
+            }
+        }
+    }
+
+    async fn check(
+        profile: serde_json::Value,
+        vnc_password: &str,
+        ssh_config: &[&str],
+    ) -> Vec<String> {
+        let sandbox = Sandbox::start().await;
+        if !ssh_config.is_empty() {
+            sandbox.write_ssh_config(ssh_config);
+        }
+        let handle = sandbox.open(profile);
+        let (width, height, questions) = reach_desktop(&handle, vnc_password).await;
+        assert!(width >= 640 && height >= 480, "{width}x{height}");
+        handle.close();
+        let (message, reason) = exit_of(&handle).await;
+        assert_eq!(
+            (message.as_str(), reason),
+            ("The connection closed.", ExitReason::Disconnected)
+        );
+        sandbox.stop().await;
+        questions
+    }
+
+    #[tokio::test]
+    #[ignore = "needs the muxus-desktop-lab container"]
+    async fn logs_on_to_xrdp_over_tls_then_trusts_its_certificate() {
+        let (host, offset) = lab();
+        let questions = check(
+            serde_json::json!({ "kind": "rdp", "host": host, "port": offset + 3389, "username": "muxus" }),
+            "",
+            &[],
+        )
+        .await;
+        // RDP takes the logon before it connects; the self-signed certificate comes after.
+        assert_eq!(questions[0], "Remote Desktop logon");
+        assert!(
+            questions[1..].iter().any(|q| q.starts_with("certificate")),
+            "{questions:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "needs the muxus-desktop-lab container"]
+    async fn logs_on_to_a_server_that_only_speaks_nla() {
+        let (host, offset) = lab();
+        let questions = check(
+            serde_json::json!({ "kind": "rdp", "host": host, "port": offset + 3390 }),
+            "",
+            &[],
+        )
+        .await;
+        assert!(
+            questions.contains(&"Remote Desktop logon".to_owned()),
+            "{questions:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "needs the muxus-desktop-lab container"]
+    async fn answers_tigervnc_with_its_password() {
+        let (host, offset) = lab();
+        let questions = check(
+            serde_json::json!({ "kind": "vnc", "host": host, "port": offset + 5901 }),
+            "muxus123",
+            &[],
+        )
+        .await;
+        assert_eq!(questions, ["VNC authentication"]);
+    }
+
+    #[tokio::test]
+    #[ignore = "needs the muxus-desktop-lab container"]
+    async fn reaches_x11vnc_through_the_containers_ssh_server() {
+        let (host, offset) = lab();
+        let host_name = format!("  HostName {host}");
+        let port = format!("  Port {}", offset + 22);
+        let questions = check(
+            serde_json::json!({
+                "kind": "vnc", "host": "127.0.0.1", "port": 5902,
+                "sshGateway": { "target": "lab" },
+            }),
+            "",
+            &[
+                "Host lab",
+                host_name.as_str(),
+                "  User muxus",
+                port.as_str(),
+            ],
+        )
+        .await;
+        assert_eq!(questions[0], "host key");
+    }
 }

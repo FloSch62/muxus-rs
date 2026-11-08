@@ -13,6 +13,7 @@ pub mod demo;
 pub mod dialogs;
 pub mod logic;
 pub mod palette;
+pub mod range_services;
 pub mod services;
 pub mod view;
 pub mod widgets;

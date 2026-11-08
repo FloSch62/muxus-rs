@@ -13,13 +13,17 @@
 //! sync with [`TerminalView::set_settings`] and reacts to [`TerminalViewEvent`]s. Keyboard
 //! shortcuts are the app's: bind the [actions](crate#actions) in the `Terminal` key context.
 
+mod box_drawing;
 mod keys;
 mod paint;
+mod powerline;
+mod scrollbar;
 mod view;
 
 pub use muxus_term;
 pub use view::{TerminalView, new_terminal_view};
 
+use muxus_core::input_modes::TerminalInputModes;
 use muxus_core::stream::TerminalSize;
 use muxus_term::keywords::KeywordHighlightRule;
 use muxus_term::links::LinkActivation;
@@ -63,7 +67,7 @@ pub struct TerminalSettings {
     pub line_height: f32,
     pub cursor_style: CursorShape,
     pub cursor_blink: bool,
-    /// Scrollback lines; takes effect for new terminals.
+    /// Scrollback lines; a running terminal drops its oldest lines when it shrinks.
     pub scrollback: usize,
     /// The resolved theme (`themeWithColorOverrides(terminalScheme(..))`).
     pub theme: TerminalTheme,
@@ -77,8 +81,15 @@ pub struct TerminalSettings {
     /// File paths are clickable (local shells, SSH sessions with SFTP).
     pub file_links: bool,
     pub allow_osc52_write: bool,
+    /// Programs' OSC 7501 status reports are passed on and the protocol's query is answered
+    /// (`showProgramStatus`).
+    pub program_status: bool,
     /// Ask before pasting text with line breaks ([`TerminalViewEvent::ConfirmPaste`]).
     pub paste_warn_multiline: bool,
+    /// Ask before pasting text with invisible or look-alike characters, even a single line.
+    pub paste_warn_lookalikes: bool,
+    /// What the host's Backspace and Enter keys send, its implicit CR and local echo.
+    pub input_modes: TerminalInputModes,
     /// The effective keyword-highlighting rules (global, profile and host rules resolved).
     pub keyword_rules: Vec<KeywordHighlightRule>,
     pub minimum_contrast_ratio: f64,
@@ -104,7 +115,10 @@ impl Default for TerminalSettings {
             link_activation: LinkActivation::Alt,
             file_links: false,
             allow_osc52_write: true,
+            program_status: true,
             paste_warn_multiline: true,
+            paste_warn_lookalikes: true,
+            input_modes: TerminalInputModes::default(),
             keyword_rules: Vec::new(),
             minimum_contrast_ratio: TERMINAL_MINIMUM_CONTRAST_RATIO,
             is_mac: cfg!(target_os = "macos"),
@@ -130,15 +144,23 @@ pub enum TerminalViewEvent {
         position: gpui_kit::Point<gpui_kit::Pixels>,
         selection: String,
     },
-    /// A multi-line paste waits for the app's confirmation; call
-    /// [`TerminalView::paste_confirmed`] with the (possibly edited) text.
+    /// A multi-line paste, or one with invisible or look-alike characters, waits for the app's
+    /// confirmation; call [`TerminalView::paste_confirmed`] with the (possibly edited) text.
     ConfirmPaste(String),
+    /// The user pasted this text, already sent to the session (multi-execution pastes it into the
+    /// mirrored terminals, each with its own host's keys).
+    Pasted(String),
     /// The clipboard held no text (an image, or nothing): the app may upload an image and paste
     /// its path.
     ClipboardWithoutText,
+    /// The user asked to paste the clipboard (a right click, or the view's paste action) and the
+    /// app pastes it ([`TerminalView::set_app_pastes`]).
+    PasteRequested,
     /// The grid changed size (sent to the transport as well).
     Resized(TerminalSize),
-    /// The user typed or pasted this, already sent to the session (multi-execution mirrors it).
+    /// The user typed this, already sent to the session with the host's keys; the bytes are the
+    /// keystrokes as typed (multi-execution mirrors them through
+    /// [`TerminalView::send_keyboard_input`], so each host applies its own keys).
     Input(Vec<u8>),
     /// The user typed into an ended session (the app offers to reconnect).
     InputAfterExit(Vec<u8>),
@@ -151,4 +173,7 @@ pub enum TerminalViewEvent {
     },
     /// The transport failed.
     Failed(String),
+    /// A program reported its status (OSC 7501), or a new prompt or a reset ended what
+    /// programs reported (`attachProgramStatus`).
+    ProgramStatus(muxus_term::program_status::ProgramStatusSignal),
 }

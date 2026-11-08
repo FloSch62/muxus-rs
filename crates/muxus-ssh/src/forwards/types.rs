@@ -36,6 +36,7 @@ impl ForwardRequestExt for ForwardRequest {
             target_host: None,
             target_port: None,
             tunnel_id: None,
+            independent: None,
         }
     }
 
@@ -53,6 +54,7 @@ impl ForwardRequestExt for ForwardRequest {
             target_host: Some(host.into()),
             target_port: Some(port),
             tunnel_id: None,
+            independent: None,
         }
     }
 
@@ -64,6 +66,7 @@ impl ForwardRequestExt for ForwardRequest {
             target_host: forward.target_host.clone(),
             target_port: forward.target_port,
             tunnel_id: None,
+            independent: None,
         }
     }
 

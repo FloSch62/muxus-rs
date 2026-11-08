@@ -94,6 +94,54 @@ fn reads_match_the_typescript_database_layer() {
         "consoleCompatibilityForSavedHost",
         value(db.console_compatibility_for_saved_host(&id("ssh")).unwrap()),
     );
+    check(
+        "systemOpenSshForAlias",
+        value(db.system_open_ssh_for_alias("production").unwrap()),
+    );
+    check(
+        "systemOpenSshForSavedHost",
+        value(db.system_open_ssh_for_saved_host(&id("ssh")).unwrap()),
+    );
+    check(
+        "jumpFallbacksForAlias",
+        value(db.jump_fallbacks_for_alias("production").unwrap()),
+    );
+    check(
+        "hostAntiIdleAlias",
+        value(db.host_anti_idle(HostRef::Alias("production")).unwrap()),
+    );
+    check(
+        "hostAntiIdleSaved",
+        value(
+            db.host_anti_idle(HostRef::ProfileId(&id("telnet")))
+                .unwrap(),
+        ),
+    );
+    // `hostInputKeys` leaves out the keys a host does not set.
+    let input_keys = |host: HostRef<'_>| {
+        let (backspace_key, enter_key) = db.host_input_keys(host).unwrap();
+        let mut keys = Map::new();
+        if let Some(key) = backspace_key {
+            keys.insert("backspaceKey".into(), value(key));
+        }
+        if let Some(key) = enter_key {
+            keys.insert("enterKey".into(), value(key));
+        }
+        Value::Object(keys)
+    };
+    check(
+        "hostInputKeysAlias",
+        input_keys(HostRef::Alias("production")),
+    );
+    check(
+        "hostInputKeysSaved",
+        input_keys(HostRef::ProfileId(&id("telnet"))),
+    );
+    check(
+        "hostInputKeysMissing",
+        input_keys(HostRef::Alias("missing")),
+    );
+    check("scripts", value(db.list_scripts().unwrap()));
     check("savedHosts", value(db.list_saved_host_profiles().unwrap()));
     check(
         "savedHost",
@@ -211,6 +259,11 @@ fn reads_match_the_typescript_database_layer() {
     );
 }
 
+/// Every JSON metadata column of a host, in one string per row.
+const METADATA_JSON_SQL: &str = "SELECT COALESCE(keyword_highlights_json, '') || COALESCE(login_sequence_json, '') \
+     || COALESCE(paste_prompt_wait_json, '') || COALESCE(anti_idle_json, '') \
+     || COALESCE(proxy_jump_fallbacks_json, '') FROM connection_profiles ORDER BY id";
+
 #[test]
 fn stored_json_columns_round_trip_byte_for_byte() {
     // Re-saving what the TypeScript stored must write the very same JSON text.
@@ -230,9 +283,7 @@ fn stored_json_columns_round_trip_byte_for_byte() {
     );
     let layouts_before =
         raw("SELECT layout_json || multi_exec_groups_json FROM workspaces ORDER BY id");
-    let metadata_before = raw(
-        "SELECT COALESCE(keyword_highlights_json, '') || COALESCE(login_sequence_json, '') FROM connection_profiles ORDER BY id",
-    );
+    let metadata_before = raw(METADATA_JSON_SQL);
     let tunnels_before = raw("SELECT COALESCE(ssh_options_json, '') FROM tunnels ORDER BY id");
     let folders_before = raw(
         "SELECT auth_json || COALESCE(login_sequence_json, '') FROM folder_settings ORDER BY id",
@@ -248,6 +299,8 @@ fn stored_json_columns_round_trip_byte_for_byte() {
         let patch = muxus_core::api::OpenSshMetadataPatch {
             keyword_highlights: host.metadata.keyword_highlights.into(),
             login_sequence: host.metadata.login_sequence.into(),
+            paste_prompt_wait: host.metadata.paste_prompt_wait.into(),
+            anti_idle: host.metadata.anti_idle.into(),
             ..Default::default()
         };
         db.update_saved_host_metadata(&host.id, &patch).unwrap();
@@ -259,6 +312,9 @@ fn stored_json_columns_round_trip_byte_for_byte() {
         let patch = muxus_core::api::OpenSshMetadataPatch {
             keyword_highlights: metadata.keyword_highlights.into(),
             login_sequence: metadata.login_sequence.into(),
+            paste_prompt_wait: metadata.paste_prompt_wait.into(),
+            anti_idle: metadata.anti_idle.into(),
+            proxy_jump_fallbacks: metadata.proxy_jump_fallbacks.into(),
             ..Default::default()
         };
         db.update_open_ssh_metadata(&alias, &patch).unwrap();
@@ -307,12 +363,7 @@ fn stored_json_columns_round_trip_byte_for_byte() {
         raw("SELECT layout_json || multi_exec_groups_json FROM workspaces ORDER BY id"),
         layouts_before
     );
-    assert_eq!(
-        raw(
-            "SELECT COALESCE(keyword_highlights_json, '') || COALESCE(login_sequence_json, '') FROM connection_profiles ORDER BY id"
-        ),
-        metadata_before
-    );
+    assert_eq!(raw(METADATA_JSON_SQL), metadata_before);
     assert_eq!(
         raw("SELECT COALESCE(ssh_options_json, '') FROM tunnels ORDER BY id"),
         tunnels_before

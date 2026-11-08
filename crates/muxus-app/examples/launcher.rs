@@ -76,6 +76,7 @@ fn main() {
             active_id: Some(id),
             shown_command_group: DEFAULT_COMMAND_GROUP_ID.into(),
             wsl_shell_profiles: Vec::new(),
+            environments: Vec::new(),
             workspaces: query.is_empty().then(|| {
                 let host = Rc::new(DemoLayoutHost {
                     tabs: RefCell::new(TabsState::with_pane("pane-1", IdGen::sequential())),

@@ -339,9 +339,12 @@ pub fn managed_host_key(host: &ManagedHost) -> String {
 
 /// Whether the host context menu may offer the SSH-backed file browser.
 pub fn managed_host_supports_sftp(host: &ManagedHost) -> bool {
+    // Console compatibility shapes the built-in client's session; system OpenSSH ignores it.
     let allowed = |metadata: Option<&HostMetadata>| {
-        metadata
-            .is_none_or(|m| m.disable_sftp != Some(true) && m.console_compatibility != Some(true))
+        metadata.is_none_or(|m| {
+            m.disable_sftp != Some(true)
+                && (m.system_open_ssh == Some(true) || m.console_compatibility != Some(true))
+        })
     };
     match host {
         ManagedHost::Ssh(entry) => allowed(entry.metadata.as_ref()),
@@ -409,6 +412,10 @@ pub fn managed_host_copy_command(
         SavedHostSessionProfile::Serial(profile) => CopyCommand {
             label: "Copy device path",
             text: profile.path.clone(),
+        },
+        SavedHostSessionProfile::Web(profile) => CopyCommand {
+            label: "Copy address",
+            text: profile.url.clone(),
         },
     }
 }
@@ -757,7 +764,7 @@ pub(crate) mod tests {
             ),
             Some(ManagedHost::ssh(ssh_entry.clone()))
         );
-        let mut telnet_profile = telnet.session_profile();
+        let mut telnet_profile = telnet.session_profile().unwrap();
         if let SessionProfile::Telnet(TelnetProfile { profile_id, .. }) = &mut telnet_profile {
             *profile_id = Some(telnet.id.clone());
         }
@@ -1071,6 +1078,7 @@ pub(crate) mod tests {
             cert_file: None,
             key_file: None,
             encoding: None,
+            ssh_gateway_fallbacks: None,
         };
         assert_eq!(
             gnmic_command(&profile),

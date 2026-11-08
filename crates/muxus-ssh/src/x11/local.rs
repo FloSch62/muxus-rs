@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rand::RngCore;
+use rand::TryRng;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -125,6 +125,9 @@ pub struct LocalX11Options {
     /// Directory of the X server bundled with the Windows app (vcxsrv.exe). Only Windows builds
     /// use it.
     pub bundled_server_directory: Option<PathBuf>,
+    /// `COMSPEC` for that server (see `BundledXServerOptions::command_shell`): the app's
+    /// helper that runs cmd.exe without a console window. Only Windows builds use it.
+    pub bundled_server_shell: Option<PathBuf>,
     /// Reads `DISPLAY`, `XAUTHORITY` and `HOME`; default the process environment.
     pub env: EnvLookup,
     pub platform: Platform,
@@ -141,6 +144,7 @@ impl Default for LocalX11Options {
             display: None,
             xauthority: None,
             bundled_server_directory: None,
+            bundled_server_shell: None,
             env: process_env(),
             platform: Platform::current(),
             hostname: None,
@@ -156,6 +160,7 @@ impl std::fmt::Debug for LocalX11Options {
             .field("display", &self.display)
             .field("xauthority", &self.xauthority)
             .field("bundled_server_directory", &self.bundled_server_directory)
+            .field("bundled_server_shell", &self.bundled_server_shell)
             .field("platform", &self.platform)
             .field("hostname", &self.hostname)
             .finish_non_exhaustive()
@@ -267,6 +272,7 @@ impl LocalX11 {
                 bundled_options: BundledXServerOptions {
                     // Display numbers held by this process's bundled servers.
                     claimed_displays: Some(Arc::default()),
+                    command_shell: options.bundled_server_shell,
                     ..options.bundled
                 },
                 #[cfg(any(windows, test))]
@@ -457,7 +463,9 @@ impl LocalX11 {
     /// Per-transport state: one fake cookie and the handler for incoming X11 channels.
     pub fn attach(&self) -> X11Transport {
         let mut cookie = [0u8; 16];
-        rand::rngs::OsRng.fill_bytes(&mut cookie);
+        rand::rngs::SysRng
+            .try_fill_bytes(&mut cookie)
+            .expect("the operating system random source is unavailable");
         X11Transport {
             inner: Arc::new(TransportInner {
                 local: self.clone(),

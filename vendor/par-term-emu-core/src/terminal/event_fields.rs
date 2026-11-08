@@ -53,6 +53,14 @@ pub fn event_fields(event: &TerminalEvent) -> Vec<(String, EventField)> {
         TerminalEvent::TitleChanged(title) => {
             put!("title", EventField::Str(title.clone()));
         }
+        TerminalEvent::PointerShapeChanged(shape) => {
+            put!(
+                "shape",
+                shape
+                    .as_deref()
+                    .map_or(EventField::None, |s| EventField::Str(s.to_string()))
+            );
+        }
         TerminalEvent::SizeChanged(cols, rows) => {
             put!("cols", EventField::Int(*cols as i64));
             put!("rows", EventField::Int(*rows as i64));
@@ -61,7 +69,8 @@ pub fn event_fields(event: &TerminalEvent) -> Vec<(String, EventField)> {
             put!("mode", EventField::Str(mode.clone()));
             put!("enabled", EventField::Bool(*enabled));
         }
-        TerminalEvent::GraphicsAdded(row) => {
+        TerminalEvent::GraphicsAdded { image_id, row } => {
+            put!("image_id", EventField::Int(*image_id as i64));
             put!("row", EventField::Int(*row as i64));
         }
         TerminalEvent::HyperlinkAdded { url, row, col, id } => {

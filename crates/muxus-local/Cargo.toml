@@ -9,7 +9,7 @@ rust-version.workspace = true
 [dependencies]
 muxus-core.workspace = true
 async-channel = "2"
-base64 = "0.22"
+base64 = "0.23"
 portable-pty = "0.9"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

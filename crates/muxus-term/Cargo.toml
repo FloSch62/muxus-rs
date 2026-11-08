@@ -8,13 +8,13 @@ rust-version.workspace = true
 
 [dependencies]
 async-channel = "2"
-base64 = "0.22"
+base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-fancy-regex = "0.14"
+fancy-regex = "0.20"
 futures-lite = "2"
 memchr = "2"
 muxus-core.workspace = true
-par-term-emu-core-rust = { version = "=0.60.0", default-features = false }
+par-term-emu-core-rust = { version = "=0.80.0", default-features = false }
 percent-encoding = "2"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

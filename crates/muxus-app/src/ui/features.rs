@@ -79,8 +79,20 @@ pub fn focus_shell_window(shell: &Entity<AppShell>, cx: &mut App) {
 
 /// A notification in the main window the user works in (`showToast`).
 pub fn toast(status: Status, message: SharedString, cx: &mut App) {
+    toast_with_details(status, message, None, cx);
+}
+
+/// `showToast(severity, message, details)` in the main window the user works in.
+pub fn toast_with_details(
+    status: Status,
+    message: SharedString,
+    details: Option<SharedString>,
+    cx: &mut App,
+) {
     match active_shell(cx) {
-        Some(shell) => shell.update(cx, |shell, cx| shell.show_toast(status, message, cx)),
+        Some(shell) => shell.update(cx, |shell, cx| {
+            shell.show_toast_with_details(status, message, details, cx)
+        }),
         None => eprintln!("{message}"),
     }
 }
@@ -104,7 +116,7 @@ pub fn with_active_shell(
 /// The services every feature screen shares, installed once after `muxus_ui::init` and
 /// `SettingsPrefs::init`.
 pub fn install(backend: &Backend, cx: &mut App) {
-    muxus_app::features::launcher::kit::set_toast_hook(toast, cx);
+    muxus_app::features::launcher::kit::set_toast_hook(toast_with_details, cx);
     // The interface scale is one preference for every window (`applyInterfaceZoom`).
     if let Some(shared) = SettingsPrefs::global(cx) {
         let zoom = shared.read(cx).prefs().interface_zoom;
@@ -130,6 +142,13 @@ pub fn install(backend: &Backend, cx: &mut App) {
         cx,
     );
     muxus_app::features::remote_desktop::init(cx);
+    crate::ui::compare::install(backend, cx);
+    crate::ui::web_hosts::install(backend, cx);
+    // Lab topologies in the containerlab viewer, in the same window processes as web pages.
+    muxus_app::features::environments::viewer::install(
+        backend.paths().user_data.join("web-pages"),
+        cx,
+    );
     let mut hooks: SettingsHooks = settings_hooks(cx);
     hooks.open_log_viewer = Some(std::rc::Rc::new(|_, cx| {
         with_active_shell(cx, |shell, window, cx| shell.open_log_viewer(window, cx));

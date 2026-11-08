@@ -57,6 +57,42 @@ fn scroll_eviction_drops_one_row_not_a_buffer_rebuild() {
 }
 
 #[test]
+fn a_smaller_scrollback_drops_the_oldest_lines_as_trimmed() {
+    // Muxus patch: the scrollback preference changes on a running terminal.
+    let mut grid = Grid::new(10, 3, 10);
+    for i in 0..8 {
+        grid.set(0, 0, Cell::new((b'A' + i as u8) as char));
+        grid.scroll_up(1);
+    }
+    assert_eq!(grid.scrollback_len(), 8);
+    assert_eq!(grid.total_lines_scrolled(), 8);
+
+    grid.set_max_scrollback(5);
+    assert_eq!(grid.max_scrollback(), 5);
+    assert_eq!(grid.scrollback_len(), 5);
+    // The oldest lines went; the count of scrolled lines is kept, so the
+    // remaining lines keep their absolute numbers.
+    assert_eq!(grid.total_lines_scrolled(), 8);
+    assert_eq!(grid.scrollback_line(0).unwrap()[0].c, 'D');
+    assert_eq!(grid.scrollback_line(4).unwrap()[0].c, 'H');
+
+    // Growing keeps every line and lets more in.
+    grid.set_max_scrollback(20);
+    assert_eq!(grid.scrollback_len(), 5);
+    for i in 0..10 {
+        grid.set(0, 0, Cell::new((b'a' + i as u8) as char));
+        grid.scroll_up(1);
+    }
+    assert_eq!(grid.scrollback_len(), 15);
+
+    // None at all.
+    grid.set_max_scrollback(0);
+    assert_eq!(grid.scrollback_len(), 0);
+    grid.scroll_up(1);
+    assert_eq!(grid.scrollback_len(), 0);
+}
+
+#[test]
 fn snapshot_round_trips_per_line_storage() {
     // Acceptance 2/3 companion: capture flattens per-line rows into the
     // flat snapshot payload; restore re-slices it per line. Content and
@@ -83,6 +119,24 @@ fn snapshot_round_trips_per_line_storage() {
         assert_eq!(line.len(), 10);
         assert_eq!(line[0].c, (b'A' + i as u8) as char);
     }
+}
+
+#[test]
+fn snapshot_after_narrowing_truncates_wider_scrollback_rows() {
+    // Scrollback rows keep the width they were pushed at; a grid narrowed
+    // without reflow must still flatten to fixed-width lines (it used to
+    // underflow `cols - row.len()` and panic every snapshot).
+    let mut grid = Grid::new(10, 3, 100);
+    for col in 0..10 {
+        grid.set(col, 0, Cell::new('W'));
+    }
+    grid.scroll_up(1);
+    grid.resize_without_reflow(4, 3);
+    assert_eq!(grid.scrollback_line(0).unwrap().len(), 10);
+
+    let snap = grid.capture_snapshot();
+    assert_eq!(snap.scrollback_cells.len(), 4);
+    assert!(snap.scrollback_cells.iter().all(|c| c.c == 'W'));
 }
 
 #[test]
@@ -1023,7 +1077,7 @@ fn test_styled_exports_golden_bytes() {
     );
     assert_eq!(
         grid.export_scrollback_styled(None),
-        "\x1b[0;31;1mC\x1b[0m\n\x1b[0;31;1mA\x1b[0mb"
+        "\x1b[0;31;1mA\x1b[0mb\x1b[0;31;1mC\x1b[0m\n"
     );
     assert_eq!(
         grid.export_visible_screen_styled(),
@@ -1038,6 +1092,31 @@ fn test_styled_exports_golden_bytes() {
         " \x1b[0;42mx\x1b[0m"
     );
     assert_eq!(grid.export_row_styled(grid.row(1).unwrap()), "");
+}
+
+/// `export_scrollback_styled(Some(n))` keeps the NEWEST `n` scrollback rows,
+/// newest-first like the full export (the oldest-`n` selection was a bug).
+#[test]
+fn styled_scrollback_limit_keeps_the_newest_rows() {
+    let mut grid = Grid::new(4, 1, 10);
+    for c in ['a', 'b', 'c', 'd'] {
+        let mut cell = Cell::new(c);
+        cell.set_fg(Color::Named(NamedColor::Red));
+        grid.set(0, 0, cell);
+        grid.scroll_up(1);
+    }
+    assert_eq!(grid.scrollback_len(), 4);
+    let full = grid.export_scrollback_styled(None);
+    assert_eq!(
+        full,
+        "\x1b[0;31md\x1b[0m\n\x1b[0;31mc\x1b[0m\n\x1b[0;31mb\x1b[0m\n\x1b[0;31ma\x1b[0m\n"
+    );
+    assert_eq!(
+        grid.export_scrollback_styled(Some(2)),
+        "\x1b[0;31md\x1b[0m\n\x1b[0;31mc\x1b[0m\n"
+    );
+    assert_eq!(grid.export_scrollback_styled(Some(9)), full);
+    assert_eq!(grid.export_scrollback_styled(Some(0)), "");
 }
 
 #[test]
@@ -1876,4 +1955,18 @@ fn delete_lines_with_n_past_region_size_empties_region_not_panics() {
     for i in 0..5 {
         assert_eq!(grid.get(0, i).unwrap().c, ' ');
     }
+}
+
+/// Muxus patch: a plain resize (not `Grid::resize_xterm`) leaves the scrollback alone.
+#[test]
+fn without_the_switch_the_scrollback_keeps_its_widths() {
+    let mut grid = Grid::new(10, 2, 100);
+    for (col, ch) in "0123456789".chars().enumerate() {
+        grid.set(col, 0, Cell::new(ch));
+    }
+    grid.scroll_up(1);
+    grid.resize(4, 2);
+    assert_eq!(grid.scrollback_len(), 1);
+    assert_eq!(grid.scrollback_line(0).unwrap().len(), 10);
+    assert!(grid.take_buffer_reflow().is_none());
 }

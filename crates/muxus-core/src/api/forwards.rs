@@ -44,6 +44,9 @@ pub struct ForwardRequest {
     pub target_port: Option<u16>,
     /// Saved tunnel this forward realizes (running-state matching in the UI).
     pub tunnel_id: Option<String>,
+    /// Keep running when the terminal sessions on its connection close, until
+    /// stopped (a web page's proxy, which its window stops).
+    pub independent: Option<bool>,
 }
 
 /// Where a running forward came from.

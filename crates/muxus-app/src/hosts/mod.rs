@@ -7,6 +7,7 @@ pub mod managed;
 pub mod organization;
 pub mod saved;
 pub mod search;
+pub mod system_openssh;
 pub mod tree;
 
 #[cfg(test)]

@@ -21,10 +21,10 @@ use super::command_buttons::{
 use super::custom_schemes::is_custom_terminal_scheme_array;
 use super::highlight_profiles::is_keyword_highlight_profile_array;
 use super::layout::{
-    DEFAULT_SIDEBAR_WIDTH, MAX_INACTIVE_PANE_DIM_STRENGTH, MIN_INACTIVE_PANE_DIM_STRENGTH,
-    PREVIOUS_DEFAULT_SIDEBAR_WIDTH, is_status_bar_item_list,
+    DEFAULT_SIDEBAR_WIDTH, MAX_INACTIVE_PANE_DIM_STRENGTH, MIN_ENVIRONMENTS_PANEL_WIDTH,
+    MIN_INACTIVE_PANE_DIM_STRENGTH, PREVIOUS_DEFAULT_SIDEBAR_WIDTH, is_status_bar_item_list,
 };
-use super::state::is_local_shell_profile_array;
+use super::state::{ENVIRONMENT_REFRESH_SECONDS, is_local_shell_profile_array};
 
 fn is_one_of(value: Option<&Value>, allowed: &[&str]) -> bool {
     value
@@ -119,6 +119,20 @@ pub fn migrate_prefs_state(persisted: &Value, version: f64) -> Value {
         })
     });
     drop_unless(state, "sshSessionSummary", is_bool);
+    drop_unless(state, "closeTabOnCleanExit", is_bool);
+    drop_unless(state, "showProgramStatus", is_bool);
+    drop_unless(state, "discoverEnvironments", is_bool);
+    drop_unless(state, "environmentsPanelWidth", |v| {
+        v.and_then(Value::as_f64)
+            .is_some_and(|width| width.is_finite() && width >= MIN_ENVIRONMENTS_PANEL_WIDTH)
+    });
+    drop_unless(state, "environmentRefreshSeconds", |v| {
+        v.and_then(Value::as_f64).is_some_and(|seconds| {
+            ENVIRONMENT_REFRESH_SECONDS
+                .iter()
+                .any(|&allowed| f64::from(allowed) == seconds)
+        })
+    });
     drop_unless(state, "pasteLineDelayMs", |v| {
         v.is_some_and(|v| valid_paste_delay(v, MAX_PASTE_LINE_DELAY_MS))
     });

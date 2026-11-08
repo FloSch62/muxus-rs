@@ -12,10 +12,12 @@ mod edit;
 mod erase;
 mod export;
 mod rect;
+mod reflow;
 mod scroll;
 mod snapshot;
 mod zone;
 
+pub use reflow::{BufferPositions, BufferReflow};
 pub use snapshot::GridSnapshot;
 
 /// One recorded vertical scroll (ENH-038): `[top, bottom]` rotated by
@@ -124,6 +126,9 @@ pub struct Grid {
     /// value from it, so consumers diff against a remembered generation
     /// instead of clearing shared state.
     pub(in crate::grid) gen: u64,
+    /// Muxus patch: where the last xterm.js resize moved each line
+    /// ([`Grid::resize_xterm`]).
+    pub(in crate::grid) last_buffer_reflow: Option<BufferReflow>,
 }
 
 impl Grid {
@@ -149,6 +154,7 @@ impl Grid {
             scroll_ops: VecDeque::new(),
             scroll_epoch: 0,
             gen: 0,
+            last_buffer_reflow: None,
         }
     }
 
@@ -383,8 +389,7 @@ impl Grid {
                 fg: pen.fg,
                 bg: pen.bg,
                 underline_color: pen.underline_color,
-                flags: pen.flags,
-                width: 1,
+                flags: pen.flags.with_width(1),
             };
         }
     }
@@ -441,6 +446,30 @@ impl Grid {
     /// Get maximum scrollback capacity
     pub fn max_scrollback(&self) -> usize {
         self.max_scrollback
+    }
+
+    /// Muxus patch: change the scrollback capacity of a running grid (a
+    /// preference change, xterm's `options.scrollback`). A smaller capacity
+    /// drops the oldest lines, as a scroll at capacity evicts them: the
+    /// lines count as trimmed (`total_lines_scrolled` is kept) and zones
+    /// below the new floor are evicted. A grid without scrollback (the
+    /// alternate screen) keeps none.
+    pub fn set_max_scrollback(&mut self, max_scrollback: usize) {
+        self.max_scrollback = max_scrollback;
+        if self.scrollback_rows.len() <= max_scrollback {
+            return;
+        }
+        let excess = self.scrollback_rows.len() - max_scrollback;
+        self.scrollback_rows.drain(..excess);
+        self.scrollback_wrapped.drain(..excess);
+        self.scrollback_lines = self.scrollback_rows.len();
+        let floor = self
+            .total_lines_scrolled
+            .saturating_sub(self.scrollback_lines);
+        self.evict_zones(floor);
+        // The buffer's lines moved under every remembered position.
+        self.invalidate_scroll_log();
+        self.mark_rows_content(0, self.rows.saturating_sub(1));
     }
 
     /// Store the lines entering the scrollback without their trailing
@@ -582,8 +611,11 @@ impl Grid {
     ) -> Vec<Cell> {
         let mut flat = Vec::with_capacity(rows.len() * cols);
         for row in rows {
-            flat.extend_from_slice(row);
-            flat.resize(flat.len() + (cols - row.len()), Cell::default());
+            // A row pushed before the grid narrowed is wider than `cols`:
+            // the flat format is fixed-width, so it truncates.
+            let start = flat.len();
+            flat.extend_from_slice(&row[..row.len().min(cols)]);
+            flat.resize(start + cols, Cell::default());
         }
         flat
     }

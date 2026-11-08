@@ -15,7 +15,7 @@ pub mod service;
 pub mod types;
 pub mod upload;
 
-pub use fs::SftpError;
+pub use fs::{SftpError, SftpSource};
 pub use lease::SftpWindowLease;
 pub use progress::{ByteProgress, CancelSignal, ProgressMeter, UploadStep};
 pub use service::{SftpDownload, SftpService, UploadOptions};

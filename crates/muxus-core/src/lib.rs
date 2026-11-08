@@ -9,14 +9,20 @@
 // variants would only add indirection to short-lived messages.
 #![allow(clippy::large_enum_variant)]
 
+pub mod anti_idle;
 pub mod api;
+pub mod appimage_env;
 pub mod collate;
 pub mod connection_links;
+pub mod environments;
 pub mod folder_paths;
+pub mod gateways;
 pub mod gnmi_path;
+pub mod input_modes;
 pub mod js;
 pub mod management;
 pub mod paste_pacing;
+pub mod paste_prompt;
 pub mod platform;
 pub mod protocol;
 pub mod session_log_file;

@@ -17,13 +17,15 @@ use std::rc::Rc;
 use crate::zoom::px;
 use gpui_kit::base::input::{Input, InputState};
 use gpui_kit::{
-    AnyElement, App, ClickEvent, ElementId, Entity, Focusable, FontWeight, Hsla,
-    InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
-    StatefulInteractiveElement, Styled, Transformation, Window, div, percentage, relative,
+    AnyElement, App, Bounds, ClickEvent, ElementId, Entity, Focusable, FontWeight, Hsla,
+    InteractiveElement, IntoElement, KeyboardButton, KeyboardClickEvent, MouseButton,
+    ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Transformation,
+    Window, div, percentage, relative,
 };
 
 use crate::icon::icon;
 use crate::theme::{ActiveTheme, Theme, fonts};
+use crate::widgets::focus;
 use crate::widgets::text_field::style_input;
 use crate::widgets::tooltip::{AnchorBounds, bounds_probe};
 use crate::widgets::typography::{VariantExt, body1, body2, caption, para, rem, text};
@@ -85,6 +87,8 @@ pub struct FormField {
     element_focus: Option<gpui_kit::FocusHandle>,
     /// Paint the placeholder in the text color (a date mask Chrome draws like a value).
     strong_placeholder: bool,
+    /// Chips before the input (an `Autocomplete multiple`'s values), wrapping with it.
+    tags: Vec<AnyElement>,
 }
 
 impl FormField {
@@ -121,6 +125,7 @@ impl FormField {
             end_edge: false,
             element_focus: None,
             strong_placeholder: false,
+            tags: Vec::new(),
         }
     }
 
@@ -317,6 +322,15 @@ impl FormField {
         self.padding_right = Some(padding);
         self
     }
+
+    /// Chips in the field before an input (`Autocomplete multiple`, whose values are the
+    /// input's start adornment): 3px around each, wrapping onto more rows with the input,
+    /// which keeps at least 30px. Like any start adornment they keep the label on the
+    /// outline. Only an [`FieldBody::Input`] field shows them.
+    pub fn tags(mut self, tags: Vec<AnyElement>) -> Self {
+        self.tags = tags;
+        self
+    }
 }
 
 fn label_text(label: &str, required: bool) -> SharedString {
@@ -388,6 +402,16 @@ impl RenderOnce for FormField {
             FieldBody::Input(state) => Some(state.read(cx).focus_handle(cx)),
             _ => self.element_focus.clone(),
         };
+        // A select (a clickable field without an input of its own) is a tab stop;
+        // keyboard focus outlines it as MUI's focused select. Enter or Space opens it.
+        let select_focus = (!matches!(self.body, FieldBody::Input(_))
+            && self.element_focus.is_none()
+            && !self.disabled
+            && (self.select || self.on_click.is_some()))
+        .then(|| focus::keyed_focus(&self.id, window, cx));
+        let keyboard_focused = select_focus
+            .as_ref()
+            .is_some_and(|focus| focus::focus_visible(focus, window));
         let (focused, filled) = match &self.body {
             FieldBody::Input(state) => {
                 style_input(state, &theme, cx);
@@ -399,10 +423,11 @@ impl RenderOnce for FormField {
                 let filled = !state.read(cx).value().is_empty();
                 (focused, filled)
             }
-            FieldBody::Value(value) => (self.open, !value.is_empty()),
-            FieldBody::Muted(_) => (self.open, true),
+            FieldBody::Value(value) => (self.open || keyboard_focused, !value.is_empty()),
+            FieldBody::Muted(_) => (self.open || keyboard_focused, true),
             FieldBody::Element(_) => (
                 self.open
+                    || keyboard_focused
                     || self
                         .element_focus
                         .as_ref()
@@ -410,7 +435,9 @@ impl RenderOnce for FormField {
                 true,
             ),
         };
-        let shrunk = self.label.is_some() && (self.shrink || focused || filled);
+        // MUI: a start adornment (the chips of `Autocomplete multiple`) keeps the label shrunk.
+        let tagged = matches!(self.body, FieldBody::Input(_)) && !self.tags.is_empty();
+        let shrunk = self.label.is_some() && (self.shrink || focused || filled || tagged);
         let colors = inks(&theme, focused, self.error, self.disabled);
 
         // MUI hides the placeholder while the label sits inside the field.
@@ -462,20 +489,50 @@ impl RenderOnce for FormField {
         let mut content = div().flex_1().min_w_0().flex();
         content = if self.multiline {
             content.items_start().py(px(8.5))
+        } else if tagged {
+            // `Autocomplete`'s small outlined root: 6px around the chips and the input.
+            content.items_center().py(px(6.))
         } else {
             content.h_full().items_center()
         };
-        let mut content = content
-            .pl(px(14.))
-            .pr(px(match (self.end.is_some(), self.end_edge) {
+        let mut content = content.pl(px(if tagged { 6. } else { 14. })).pr(px(
+            match (self.end.is_some(), self.end_edge) {
                 (true, true) => 2.,
                 (true, false) => 14.,
                 (false, _) => pad_right,
-            }));
+            },
+        ));
         if let Some(start) = self.start {
             content = content.child(div().flex().flex_none().mr(px(8.)).child(start));
         }
         let body: AnyElement = match self.body {
+            FieldBody::Input(state) if tagged => div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .children(
+                    self.tags
+                        .into_iter()
+                        .map(|tag| div().flex().min_w_0().max_w_full().m(px(3.)).child(tag)),
+                )
+                .child(
+                    // `.MuiAutocomplete-input`: `width: 0; min-width: 30px; flex-grow: 1`
+                    // with 2.5px × 4px padding (8px on the left).
+                    div()
+                        .flex_1()
+                        .min_w(px(30.))
+                        .h(px(line + 5.))
+                        .pl(px(8.))
+                        .pr(px(4.))
+                        .flex()
+                        .items_center()
+                        .font_family(family)
+                        .text_size(px(size))
+                        .child(Input::new(&state)),
+                )
+                .into_any_element(),
             FieldBody::Input(state) => div()
                 .flex_1()
                 .min_w_0()
@@ -501,7 +558,10 @@ impl RenderOnce for FormField {
             .group(group)
             .relative()
             .flex()
-            .when_multiline(self.multiline, height + line * (self.min_rows - 1) as f32)
+            .when_multiline(
+                self.multiline || tagged,
+                height + line * (self.min_rows - 1) as f32,
+            )
             .rounded(px(theme.radius))
             .font_family(fonts::UI)
             .text_size(px(b1.size))
@@ -578,6 +638,30 @@ impl RenderOnce for FormField {
         }
         if let Some(anchor) = &self.anchor {
             input_root = input_root.child(bounds_probe(anchor));
+        }
+        if let Some(focus) = &select_focus {
+            input_root = input_root
+                .track_focus(focus)
+                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default());
+            // MUI's Select opens on the up and down arrows too, not only Enter and Space.
+            if self.select
+                && !self.disabled
+                && let Some(handler) = self.on_click.clone()
+            {
+                input_root = input_root.on_key_down(move |event, window, cx| {
+                    let keystroke = &event.keystroke;
+                    if matches!(keystroke.key.as_str(), "up" | "down")
+                        && !keystroke.modifiers.modified()
+                    {
+                        cx.stop_propagation();
+                        let click = ClickEvent::Keyboard(KeyboardClickEvent {
+                            button: KeyboardButton::Enter,
+                            bounds: Bounds::default(),
+                        });
+                        handler(&click, window, cx);
+                    }
+                });
+            }
         }
         if !self.disabled {
             if self.select || self.on_click.is_some() {

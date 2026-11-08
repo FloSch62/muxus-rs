@@ -86,7 +86,7 @@ fn validate_connections(data: &Map<String, Value>, version: u32) -> Result<(), T
             && non_empty_string(host.get("name"))
             && match kind {
                 Some(Some("telnet" | "serial")) => true,
-                Some(Some("ssh" | "rdp" | "vnc" | "gnmi" | "netconf")) => version >= 2,
+                Some(Some("ssh" | "rdp" | "vnc" | "gnmi" | "netconf" | "web")) => version >= 2,
                 _ => false,
             }
             && host.get("metadata").is_some_and(Value::is_object)

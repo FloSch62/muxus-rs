@@ -26,13 +26,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use muxus_core::api::{
-    FolderAuthSettings, FolderSettingsRecord, HostBlockOptions, HostKeywordHighlightConfig,
-    HostOrderRequest, HostUpsertRequest, LoginSequence, ManagedHostRef, OpenSshMetadataPatch,
-    OpenSshProfileMetadata, SavedHostProfile, SavedHostProfileInput, SessionLoggingPolicyInput,
-    SshHostEntry, TunnelInput, TunnelRecord,
+    AntiIdle, FolderAuthSettings, FolderSettingsRecord, HostBlockOptions,
+    HostKeywordHighlightConfig, HostOrderRequest, HostUpsertRequest, LoginSequence, ManagedHostRef,
+    OpenSshMetadataPatch, OpenSshProfileMetadata, SavedHostProfile, SavedHostProfileInput,
+    SessionLoggingPolicyInput, SshHostEntry, TerminalBackspaceKey, TerminalEnterKey, TunnelInput,
+    TunnelRecord, is_anti_idle, is_jump_routes,
 };
 use muxus_core::collate::locale_compare;
+use muxus_core::input_modes::{TerminalInputModes, apply_terminal_input_modes_patch};
 use muxus_core::js::{self, Patch};
+use muxus_core::paste_pacing::{PastePromptWaitSetting, is_paste_prompt_wait};
 use muxus_core::protocol::SavedHostSessionProfile;
 use muxus_session::login_sequence::editor::is_login_sequence;
 use muxus_session::routes::folders::FolderSettingsUpsert;
@@ -85,9 +88,12 @@ pub const PREFERENCE_KEYS: &[&str] = &[
     "rightClickAction",
     "terminalFileLinkActivation",
     "pasteWarnMultiline",
+    "pasteWarnLookalikes",
     "pasteLineDelayMs",
     "pasteCharDelayMs",
     "confirmCloseConnected",
+    "closeTabOnCleanExit",
+    "showProgramStatus",
     "sshSessionSummary",
     "rememberPasswordsByDefault",
     "newSshHostStorage",
@@ -350,11 +356,29 @@ pub struct PortableHostMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paste_char_delay_ms: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paste_prompt_wait: Option<PastePromptWaitSetting>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anti_idle: Option<AntiIdle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backspace_key: Option<TerminalBackspaceKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enter_key: Option<TerminalEnterKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implicit_cr: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_echo: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disable_sftp: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub console_compatibility: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_open_ssh: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discover_environments: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login_sequence: Option<LoginSequence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_jump_fallbacks: Option<Vec<Vec<String>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_order: Option<i64>,
 }
@@ -374,9 +398,18 @@ impl PortableHostMetadata {
             command_button_group: metadata.command_button_group.clone(),
             paste_line_delay_ms: metadata.paste_line_delay_ms,
             paste_char_delay_ms: metadata.paste_char_delay_ms,
+            paste_prompt_wait: metadata.paste_prompt_wait.clone(),
+            anti_idle: metadata.anti_idle.clone(),
+            backspace_key: metadata.backspace_key,
+            enter_key: metadata.enter_key,
+            implicit_cr: metadata.implicit_cr,
+            local_echo: metadata.local_echo,
             disable_sftp: metadata.disable_sftp,
             console_compatibility: metadata.console_compatibility,
+            system_open_ssh: metadata.system_open_ssh,
+            discover_environments: metadata.discover_environments,
             login_sequence: metadata.login_sequence.clone(),
+            proxy_jump_fallbacks: metadata.proxy_jump_fallbacks.clone(),
             sort_order: metadata.sort_order,
         }
     }
@@ -1182,7 +1215,36 @@ fn metadata_patch(metadata: &Value) -> Result<OpenSshMetadataPatch, TransferErro
             Some(value) => deserialize(value).map(Some),
         }
     }
-    Ok(OpenSshMetadataPatch {
+    /// A setting that does not check out is dropped, not the host.
+    fn checked<T: DeserializeOwned>(
+        metadata: &Value,
+        key: &str,
+        valid: fn(&Value) -> bool,
+    ) -> Patch<T> {
+        match metadata.get(key) {
+            Some(value) if valid(value) => {
+                serde_json::from_value(value.clone()).map_or(Patch::Clear, Patch::Set)
+            }
+            _ => Patch::Clear,
+        }
+    }
+    // A backup without keys or echo, or with values this release does not
+    // know, keeps xterm.js's.
+    let modes = TerminalInputModes {
+        backspace_key: metadata
+            .get("backspaceKey")
+            .and_then(Value::as_str)
+            .and_then(TerminalBackspaceKey::parse)
+            .unwrap_or_default(),
+        enter_key: metadata
+            .get("enterKey")
+            .and_then(Value::as_str)
+            .and_then(TerminalEnterKey::parse)
+            .unwrap_or_default(),
+        implicit_cr: metadata.get("implicitCr") == Some(&Value::Bool(true)),
+        local_echo: metadata.get("localEcho") == Some(&Value::Bool(true)),
+    };
+    let mut patch = OpenSshMetadataPatch {
         display_name: nullable(metadata, "displayName")?,
         group: nullable(metadata, "group")?,
         color: nullable(metadata, "color")?,
@@ -1194,15 +1256,27 @@ fn metadata_patch(metadata: &Value) -> Result<OpenSshMetadataPatch, TransferErro
         command_button_group: nullable(metadata, "commandButtonGroup")?,
         paste_line_delay_ms: nullable(metadata, "pasteLineDelayMs")?,
         paste_char_delay_ms: nullable(metadata, "pasteCharDelayMs")?,
+        // Off for a backup without one.
+        paste_prompt_wait: checked(metadata, "pastePromptWait", is_paste_prompt_wait),
+        anti_idle: checked(metadata, "antiIdle", is_anti_idle),
         disable_sftp: flag(metadata, "disableSftp")?,
         console_compatibility: flag(metadata, "consoleCompatibility")?,
+        system_open_ssh: flag(metadata, "systemOpenSsh")?,
+        discover_environments: match metadata.get("discoverEnvironments") {
+            Some(Value::Bool(value)) => Patch::Set(*value),
+            _ => Patch::Clear,
+        },
         login_sequence: match metadata.get("loginSequence") {
             Some(sequence) if is_login_sequence(sequence) => {
                 serde_json::from_value(sequence.clone()).map_or(Patch::Clear, Patch::Set)
             }
             _ => Patch::Clear,
         },
-    })
+        proxy_jump_fallbacks: checked(metadata, "proxyJumpFallbacks", is_jump_routes),
+        ..OpenSshMetadataPatch::default()
+    };
+    apply_terminal_input_modes_patch(&modes, &mut patch);
+    Ok(patch)
 }
 
 /// The restored log file settings, written into this machine's log folder.

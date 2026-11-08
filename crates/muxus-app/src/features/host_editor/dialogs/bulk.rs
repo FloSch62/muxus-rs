@@ -54,6 +54,9 @@ use muxus_ui::widgets::form_field::{FieldBody, FormField};
 use muxus_ui::widgets::typography::{body2, caption, para, text};
 use muxus_ui::widgets::typography::{button, rem};
 
+#[path = "bulk_typing.rs"]
+mod typing;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum BulkEditEvent {
     Close,
@@ -90,6 +93,7 @@ const SECTIONS: [(Section, &str, &str, &str, &[BulkHostField]); 6] = [
             BulkHostField::ForwardAgent,
             BulkHostField::ForwardX11,
             BulkHostField::ConsoleCompatibility,
+            BulkHostField::SystemOpenSsh,
             BulkHostField::DisableSftp,
         ],
     ),
@@ -105,6 +109,12 @@ const SECTIONS: [(Section, &str, &str, &str, &[BulkHostField]); 6] = [
             BulkHostField::CommandButtonGroup,
             BulkHostField::PasteLineDelayMs,
             BulkHostField::PasteCharDelayMs,
+            BulkHostField::PastePromptWait,
+            BulkHostField::AntiIdle,
+            BulkHostField::BackspaceKey,
+            BulkHostField::EnterKey,
+            BulkHostField::ImplicitCr,
+            BulkHostField::LocalEcho,
         ],
     ),
     (
@@ -620,6 +630,12 @@ impl BulkEditDialog {
                     &self.changes.disable_sftp,
                     &plan,
                 );
+                let system = self.field(
+                    BulkHostField::SystemOpenSsh,
+                    &summary.system_open_ssh,
+                    &self.changes.system_open_ssh,
+                    &plan,
+                );
                 let ssh_count = user.summary.count();
                 let hosts = self.hosts();
                 let open_ssh = hosts
@@ -777,6 +793,19 @@ impl BulkEditDialog {
                     .child(div().child(agent_select).children(self.status(&theme, BulkHostField::ForwardAgent, &agent, false, None, false, cx)))
                     .child(div().child(x11_select).children(self.status(&theme, BulkHostField::ForwardX11, &x11, false, None, false, cx)))
                     .child(divider(&theme))
+                    .child(
+                        div()
+                            .child(self.bulk_checkbox(
+                                &theme,
+                                "bulk-system-openssh",
+                                &system,
+                                "Use system OpenSSH",
+                                "Connects with this computer's ssh program, for authentication such as Kerberos (GSSAPI). Windows gets the terminal only; elsewhere the file browser, statistics and container listing work too.",
+                                |this, v, cx| this.set(BulkHostField::SystemOpenSsh, v, |s| &s.system_open_ssh, |c| &mut c.system_open_ssh, cx),
+                                cx,
+                            ))
+                            .children(self.status(&theme, BulkHostField::SystemOpenSsh, &system, false, None, false, cx)),
+                    )
                     .child(
                         div()
                             .child(self.bulk_checkbox(
@@ -1069,6 +1098,7 @@ impl BulkEditDialog {
                                 ),
                             )),
                     )
+                    .child(self.typing_settings(window, cx))
                     .into_any_element()
             }
             Section::Highlighting => {

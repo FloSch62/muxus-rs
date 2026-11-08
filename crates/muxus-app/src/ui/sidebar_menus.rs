@@ -3,11 +3,13 @@
 //! item. Actions that open dialogs or write to the store go to the window as
 //! [`SidebarEvent::Action`].
 
+use muxus_app::features::host_editor::logic::management_prefill::management_host_prefill;
 use muxus_app::hosts::ManagedHost;
 use muxus_app::hosts::managed::{managed_host_copy_command, managed_host_supports_sftp};
 use muxus_app::hosts::tree::{
     ContainerRef, TreeChild, all_containers, folder_siblings, sibling_host_keys,
 };
+use muxus_store::prefs::state::LocalShellProfileConfig;
 use muxus_ui::gpui_kit::{
     AnyElement, App, ClickEvent, ClipboardItem, Context, IntoElement, ParentElement, Pixels, Point,
     Window,
@@ -33,8 +35,13 @@ pub enum SidebarMenu {
     Panel {
         position: Point<Pixels>,
     },
+    /// Right-click on Local terminal, a saved shell profile or a WSL distribution.
     LocalShell {
         position: Point<Pixels>,
+        /// `None` for the Local terminal row, which opens the default shell.
+        profile: Option<LocalShellProfileConfig>,
+        /// An installed WSL distribution listed automatically, not a saved profile.
+        wsl: bool,
     },
 }
 
@@ -175,12 +182,84 @@ impl SessionSidebar {
                                 cx,
                             )),
                     );
+                if muxus_app::features::scripts::is_script_host(&host) {
+                    let system =
+                        muxus_app::hosts::system_openssh::managed_host_uses_system_open_ssh(&host);
+                    let mut item = MenuItem::new(
+                        "host-run-script",
+                        if for_selection {
+                            format!("Run script on {selected} selected hosts…")
+                        } else {
+                            "Run script…".into()
+                        },
+                    )
+                    .icon("TerminalOutlined")
+                    .disabled(system && !for_selection)
+                    .on_click(Self::action(
+                        SidebarAction::RunScript {
+                            hosts: targets.clone(),
+                            what: if for_selection {
+                                "The selection"
+                            } else {
+                                "This host"
+                            }
+                            .into(),
+                        },
+                        cx,
+                    ));
+                    if system && !for_selection {
+                        item = item
+                            .detail(muxus_app::hosts::system_openssh::SYSTEM_OPENSSH_UNAVAILABLE);
+                    }
+                    paper = paper.child(item);
+                }
                 if managed_host_supports_sftp(&host) {
-                    paper = paper.child(
-                        MenuItem::new("host-sftp", "Open SFTP file browser")
-                            .icon("FolderOpenOutlined")
-                            .on_click(Self::action(SidebarAction::OpenSftp(host.clone()), cx)),
-                    );
+                    // Windows OpenSSH cannot share a login, so nothing runs beside its terminal.
+                    let system_on_windows =
+                        muxus_app::hosts::system_openssh::managed_host_uses_system_open_ssh(&host)
+                            && muxus_core::platform::Platform::current()
+                                == muxus_core::platform::Platform::Windows;
+                    let mut item = MenuItem::new("host-sftp", "Open SFTP file browser")
+                        .icon("FolderOpenOutlined")
+                        .disabled(system_on_windows)
+                        .on_click(Self::action(SidebarAction::OpenSftp(host.clone()), cx));
+                    if system_on_windows {
+                        item = item.detail(
+                            muxus_app::hosts::system_openssh::SYSTEM_OPENSSH_WINDOWS_UNAVAILABLE,
+                        );
+                    }
+                    paper = paper.child(item);
+                }
+                if let Some(environment_host) =
+                    muxus_app::features::environments::model::environment_host_for_managed(&host)
+                {
+                    // These hosts are only read over a terminal's login; nothing can dial one
+                    // just for this.
+                    let system = environment_host.uses_system_open_ssh();
+                    let unavailable = if system
+                        && muxus_core::platform::Platform::current()
+                            == muxus_core::platform::Platform::Windows
+                    {
+                        Some(muxus_app::hosts::system_openssh::SYSTEM_OPENSSH_WINDOWS_UNAVAILABLE)
+                    } else if system && !self.environment_marks.live.contains(&environment_host.key)
+                    {
+                        Some("Connect a terminal to this host first")
+                    } else {
+                        None
+                    };
+                    let mut item = MenuItem::new("host-environments", "Containers & VMs")
+                        .icon("ViewInArOutlined")
+                        .disabled(unavailable.is_some())
+                        .on_click(Self::action(
+                            SidebarAction::Environments(
+                                crate::ui::environments::EnvironmentsRequest::Show(host.clone()),
+                            ),
+                            cx,
+                        ));
+                    if let Some(reason) = unavailable {
+                        item = item.detail(reason);
+                    }
+                    paper = paper.child(item);
                 }
                 paper = paper
                     .child(
@@ -254,7 +333,11 @@ impl SessionSidebar {
                             MenuItem::new("host-gnmi", "Add gNMI host for it…")
                                 .icon("SensorsOutlined")
                                 .on_click(Self::action(
-                                    SidebarAction::NewHost(management_host_for(&host, true)),
+                                    SidebarAction::NewHost(management_host_prefill(
+                                        &host,
+                                        true,
+                                        &self.catalog.profiles,
+                                    )),
                                     cx,
                                 )),
                         )
@@ -262,7 +345,11 @@ impl SessionSidebar {
                             MenuItem::new("host-netconf", "Add NETCONF host for it…")
                                 .icon("AccountTreeOutlined")
                                 .on_click(Self::action(
-                                    SidebarAction::NewHost(management_host_for(&host, false)),
+                                    SidebarAction::NewHost(management_host_prefill(
+                                        &host,
+                                        false,
+                                        &self.catalog.profiles,
+                                    )),
                                     cx,
                                 )),
                         );
@@ -370,6 +457,18 @@ impl SessionSidebar {
                             .disabled(count == 0)
                             .on_click(Self::action(SidebarAction::EditHosts(hosts.clone()), cx)),
                     )
+                    .child(
+                        MenuItem::new("folder-run-script", "Run script on hosts in this folder…")
+                            .icon("TerminalOutlined")
+                            .disabled(count == 0)
+                            .on_click(Self::action(
+                                SidebarAction::RunScript {
+                                    hosts: hosts.clone(),
+                                    what: format!("“{label}”"),
+                                },
+                                cx,
+                            )),
+                    )
                     .child(menu_divider(theme))
                     .child(
                         MenuItem::new("folder-up", "Move up")
@@ -450,7 +549,9 @@ impl SessionSidebar {
                 (position, paper)
             }
             SidebarMenu::Panel { position } => {
-                let folder_edits = !self.filtering();
+                // Folder edits rewrite paths across hosts the filter may be hiding, so
+                // they are only offered against the full list.
+                let folder_edits = self.reorder_enabled();
                 let sortable = self.reorder_enabled() && self.tree.hosts.len() > 1;
                 let move_label = if self.on_right {
                     "Move sidebar to the left"
@@ -492,23 +593,51 @@ impl SessionSidebar {
                     );
                 (position, paper)
             }
-            SidebarMenu::LocalShell { position } => {
-                let paper = menu::paper(theme)
-                    .child(
-                        MenuItem::new("shell-open", "Open")
-                            .icon("Terminal")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.menu = None;
-                                cx.emit(SidebarEvent::OpenLocalTerminal);
-                                cx.notify();
-                            })),
-                    )
-                    .child(menu_divider(theme))
-                    .child(
-                        MenuItem::new("shell-settings", "Local shell settings…")
-                            .icon("SettingsOutlined")
-                            .on_click(Self::action(SidebarAction::LocalShellSettings, cx)),
+            SidebarMenu::LocalShell {
+                position,
+                profile,
+                wsl,
+            } => {
+                let open = profile.clone();
+                let mut paper = menu::paper(theme).child(
+                    MenuItem::new("shell-open", "Open")
+                        .icon("Terminal")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.menu = None;
+                            cx.emit(match &open {
+                                Some(profile) => SidebarEvent::OpenLocalShell(profile.clone()),
+                                None => SidebarEvent::OpenLocalTerminal,
+                            });
+                            cx.notify();
+                        })),
+                );
+                if wsl && let Some(profile) = &profile {
+                    paper = paper.child(
+                        MenuItem::new("shell-save", "Save as profile")
+                            .icon("BookmarkAddOutlined")
+                            .on_click(Self::action(
+                                SidebarAction::SaveWslProfile(profile.clone()),
+                                cx,
+                            )),
                     );
+                }
+                let paper = paper.child(menu_divider(theme)).child(
+                    MenuItem::new(
+                        "shell-settings",
+                        if wsl {
+                            "WSL settings…"
+                        } else {
+                            "Local shell settings…"
+                        },
+                    )
+                    .icon("SettingsOutlined")
+                    .on_click(Self::action(
+                        SidebarAction::LocalShellSettings {
+                            item: profile.map(|profile| profile.id),
+                        },
+                        cx,
+                    )),
+                );
                 (position, paper)
             }
         };
@@ -517,74 +646,5 @@ impl SessionSidebar {
             let _ = sidebar.update(cx, |this, cx| this.close_menu(cx));
         };
         menu::popup(position, dismiss, paper).into_any_element()
-    }
-}
-
-/// `managementHostFor`: a new gNMI (`gnmi`) or NETCONF host for an SSH host, its address,
-/// user, folder and a name saying which protocol it speaks.
-fn management_host_for(host: &ManagedHost, gnmi: bool) -> NewHost {
-    let protocol = if gnmi { "gNMI" } else { "NETCONF" };
-    let kind = if gnmi {
-        muxus_app::model::SavedHostKind::Gnmi
-    } else {
-        muxus_app::model::SavedHostKind::Netconf
-    };
-    match host {
-        ManagedHost::Ssh(entry) => {
-            let target = if gnmi {
-                entry.resolved.hostname.clone()
-            } else {
-                entry.alias.clone()
-            };
-            let user = entry
-                .resolved
-                .user
-                .as_deref()
-                .map(|user| format!("{user}@"))
-                .unwrap_or_default();
-            NewHost {
-                prefill_target: Some(format!("{user}{target}")),
-                prefill_name: Some(format!(
-                    "{} ({protocol})",
-                    muxus_app::hosts::managed::managed_host_display_name(host)
-                )),
-                group: entry.metadata.as_ref().and_then(|m| m.group.clone()),
-                kind: Some(kind),
-            }
-        }
-        ManagedHost::Profile(entry) => {
-            let (address, user) = match &entry.profile {
-                muxus_app::model::SavedHostSessionProfile::Ssh(profile) => {
-                    let address = match profile.target.split_once('@') {
-                        Some((_, rest)) => rest.to_string(),
-                        None => profile.target.clone(),
-                    };
-                    let user = profile.user.clone().or_else(|| {
-                        profile
-                            .target
-                            .split_once('@')
-                            .map(|(user, _)| user.to_string())
-                    });
-                    (address, user)
-                }
-                _ => (String::new(), None),
-            };
-            let parts: Vec<&str> = address.split(':').collect();
-            let target = if parts.len() == 2 {
-                parts[0].to_string()
-            } else {
-                address.clone()
-            };
-            let user = user.map(|user| format!("{user}@")).unwrap_or_default();
-            NewHost {
-                prefill_target: Some(format!("{user}{target}")),
-                prefill_name: Some(format!(
-                    "{} ({protocol})",
-                    muxus_app::hosts::managed::managed_host_display_name(host)
-                )),
-                group: entry.metadata.group.clone(),
-                kind: Some(kind),
-            }
-        }
     }
 }

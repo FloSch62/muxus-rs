@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD};
 use bytes::Bytes;
+use muxus_core::gateways::{gateway_candidates, gateway_retry_status, stops_fallback};
 use muxus_core::js::{js_trim, now_iso};
 use muxus_core::management::{
     GnmiEncoding, GnmiNotification, GnmiSessionInfo, GnmiTlsMode, GrpcJson, ManagementError,
@@ -242,8 +243,10 @@ fn gateway_key(gateway: Option<&SshGateway>) -> String {
     }
 }
 
-fn password_ref(profile: &GnmiProfile, username: &str) -> PasswordRef {
-    let gateway = gateway_key(profile.ssh_gateway.as_ref());
+/// Saved passwords and pins belong to the gateway the session went through.
+fn password_ref(profile: &GnmiProfile, used: Option<&SshGateway>, username: &str) -> PasswordRef {
+    let used = used.or(profile.ssh_gateway.as_ref());
+    let gateway = gateway_key(used);
     PasswordRef {
         account: desktop_password_account(
             "gnmi",
@@ -259,10 +262,7 @@ fn password_ref(profile: &GnmiProfile, username: &str) -> PasswordRef {
             &profile.host,
             profile.port,
             &gateway,
-            profile
-                .ssh_gateway
-                .as_ref()
-                .map(|gateway| gateway.target.as_str()),
+            used.map(|gateway| gateway.target.as_str()),
             "",
         ),
     }
@@ -315,6 +315,8 @@ impl Running {
 struct State {
     profile: Option<ManagementProfile>,
     lease: Option<Arc<dyn SshLease>>,
+    /// The SSH gateway in use: the first that answered, when fallbacks are listed.
+    used_gateway: Option<SshGateway>,
     gnmi: Option<GnmiClient>,
     gnmi_info: Option<GnmiSessionInfo>,
     encoding: GnmiEncoding,
@@ -390,6 +392,7 @@ impl ManagementSession {
                 state: Mutex::new(State {
                     profile: None,
                     lease: None,
+                    used_gateway: None,
                     gnmi: None,
                     gnmi_info: None,
                     encoding: GnmiEncoding::JsonIetf,
@@ -485,6 +488,42 @@ impl ConnectFailure {
 impl Session {
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.inner.state.lock().expect("session state lock")
+    }
+
+    /// The SSH gateway this session went through, once one answered.
+    fn used_gateway(&self) -> Option<SshGateway> {
+        self.state().used_gateway.clone()
+    }
+
+    /// Connect to the first gateway that answers (`connectGateway`). A gateway that fails passes
+    /// the attempt to the next, saying so in the status line; a cancelled sign-in or a rejected
+    /// host key stops there. The last failure is returned.
+    async fn connect_gateway(
+        &self,
+        candidates: &[SshGateway],
+    ) -> Result<(Arc<dyn SshLease>, SshGateway), ConnectFailure> {
+        for (index, gateway) in candidates.iter().enumerate() {
+            self.status(
+                &format!("Connecting to the SSH gateway {} …", gateway.target),
+                true,
+            );
+            match self.inner.env.connect_ssh_gateway(gateway, self.io()).await {
+                Ok(lease) => return Ok((lease, gateway.clone())),
+                Err(message) => {
+                    let Some(next) = candidates.get(index + 1) else {
+                        return Err(message.into());
+                    };
+                    if self.is_closed() || stops_fallback(&message) {
+                        return Err(message.into());
+                    }
+                    self.status(
+                        &gateway_retry_status(&gateway.target, &message, &next.target),
+                        false,
+                    );
+                }
+            }
+        }
+        Err("no SSH gateway is set".into())
     }
 
     fn is_closed(&self) -> bool {
@@ -743,21 +782,19 @@ impl Session {
         profile: &GnmiProfile,
         full: &ManagementProfile,
     ) -> Result<(), ConnectFailure> {
-        if let Some(gateway) = &profile.ssh_gateway {
-            self.status(
-                &format!("Connecting to the SSH gateway {} …", gateway.target),
-                true,
-            );
-            let lease = self
-                .inner
-                .env
-                .connect_ssh_gateway(gateway, self.io())
-                .await?;
+        let candidates = gateway_candidates(
+            profile.ssh_gateway.as_ref(),
+            profile.ssh_gateway_fallbacks.as_deref(),
+        );
+        if !candidates.is_empty() {
+            let (lease, gateway) = self.connect_gateway(&candidates).await?;
             if self.is_closed() {
                 return Ok(());
             }
             self.watch_lease(&lease, format!("The SSH gateway {}", gateway.target));
-            self.state().lease = Some(lease);
+            let mut state = self.state();
+            state.lease = Some(lease);
+            state.used_gateway = Some(gateway);
         }
 
         // Reach the device first: an unreachable host or an untrusted
@@ -791,7 +828,7 @@ impl Session {
         let mut used_saved = false;
         let mut remember: Option<(PasswordRef, String)> = None;
         if let (Some(name), Some(vault)) = (&username, &passwords) {
-            let reference = password_ref(profile, name);
+            let reference = password_ref(profile, self.used_gateway().as_ref(), name);
             if vault.has(&reference.account)
                 && let Ok(Some(saved)) = vault.read(&reference, &io).await
             {
@@ -836,10 +873,7 @@ impl Session {
                             profile.host,
                             profile.port
                         ),
-                        via: profile
-                            .ssh_gateway
-                            .as_ref()
-                            .map(|gateway| gateway.target.clone()),
+                        via: self.used_gateway().map(|gateway| gateway.target),
                         connected_at: now_iso(),
                         version: capabilities.version,
                         encodings: capabilities.encodings,
@@ -894,7 +928,8 @@ impl Session {
         used_saved: bool,
     ) -> Result<LoginAnswer, String> {
         let ask_username = known.is_none();
-        let reference = known.map(|name| password_ref(profile, name));
+        let used = self.used_gateway();
+        let reference = known.map(|name| password_ref(profile, used.as_ref(), name));
         let passwords = self.inner.env.passwords();
         let mut prompts = Vec::new();
         if ask_username {
@@ -960,7 +995,10 @@ impl Session {
         let remember = (response.remember_password == Some(true))
             .then_some(())
             .and(username.as_ref())
-            .map(|name| (password_ref(profile, name), password.clone()));
+            .map(|name| {
+                let used = self.used_gateway();
+                (password_ref(profile, used.as_ref(), name), password.clone())
+            });
         Ok(LoginAnswer {
             username,
             password: Some(password),
@@ -973,10 +1011,10 @@ impl Session {
         let lease = self.state().lease.clone();
         Ok(match lease {
             Some(lease) => {
-                let via = profile
-                    .ssh_gateway
-                    .as_ref()
-                    .map(|gateway| gateway.target.clone())
+                let via = self
+                    .used_gateway()
+                    .or_else(|| profile.ssh_gateway.clone())
+                    .map(|gateway| gateway.target)
                     .unwrap_or_default();
                 self.status(&format!("Connecting to {target} through {via} …"), true);
                 lease.open_direct_tcpip(&profile.host, profile.port).await?
@@ -1053,7 +1091,8 @@ impl Session {
         profile: &GnmiProfile,
         certificate: &PresentedCertificate,
     ) -> (bool, bool) {
-        let gateway = gateway_key(profile.ssh_gateway.as_ref());
+        let used = self.used_gateway();
+        let gateway = gateway_key(used.as_ref().or(profile.ssh_gateway.as_ref()));
         let pinned = self
             .inner
             .env

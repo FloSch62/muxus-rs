@@ -305,7 +305,11 @@ impl Render for CommandButtonMenu {
                 )
                 .dense()
                 .disabled(!usable)
-                .focused(focused);
+                .focused(focused)
+                .chord(
+                    crate::keymap::command_buttons::command_button_shortcut(button)
+                        .map(crate::keymap::chords::format_chord_string),
+                );
                 if any_color {
                     let slot = div().size(dot).flex_none().rounded_full();
                     let slot = match button.color {

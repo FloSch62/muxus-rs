@@ -96,6 +96,11 @@ fn canonical_code(token: &str) -> String {
 }
 
 pub fn parse_chord(text: &str) -> Option<Chord> {
+    parse_chord_on(text, IS_MAC)
+}
+
+/// [`parse_chord`] as another platform reads it (`Mod` is Command on macOS).
+pub fn parse_chord_on(text: &str, is_mac: bool) -> Option<Chord> {
     let mut parts: Vec<&str> = text
         .split('+')
         .map(str::trim)
@@ -115,7 +120,7 @@ pub fn parse_chord(text: &str) -> Option<Chord> {
     for part in parts {
         match part.to_lowercase().as_str() {
             "mod" => {
-                if IS_MAC {
+                if is_mac {
                     chord.meta = true;
                 } else {
                     chord.ctrl = true;
@@ -254,6 +259,37 @@ pub fn is_bindable_chord(chord: &Chord) -> bool {
         return true;
     }
     chord.ctrl || chord.alt || chord.meta
+}
+
+/// Chords the shell owns. xterm.js types a control character for Ctrl without Alt or Cmd on a
+/// letter, Space, Backspace, 3–8, / [ \ or ], and for Ctrl+Shift on 2, 6, - or Backspace. Plain
+/// Ctrl+2 sends nothing there, but the keymap leaves Ctrl+2…8 to the terminal as a row. Ctrl+Shift
+/// with a letter stays free, as the defaults use it.
+pub fn sends_control_character(chord: &Chord) -> bool {
+    if !chord.ctrl || chord.alt || chord.meta {
+        return false;
+    }
+    // ^H, with or without Shift.
+    if chord.code == "Backspace" {
+        return true;
+    }
+    let code = chord.code.as_str();
+    if chord.shift {
+        // ^@, ^^ and ^_ are typed with Shift.
+        return matches!(code, "Digit2" | "Digit6" | "Minus");
+    }
+    let letter = code
+        .strip_prefix("Key")
+        .is_some_and(|rest| rest.len() == 1 && rest.chars().all(|c| c.is_ascii_uppercase()));
+    let digit = code
+        .strip_prefix("Digit")
+        .is_some_and(|rest| matches!(rest, "2" | "3" | "4" | "5" | "6" | "7" | "8"));
+    letter
+        || digit
+        || matches!(
+            code,
+            "Space" | "Slash" | "BracketLeft" | "Backslash" | "BracketRight"
+        )
 }
 
 fn key_label(code: &str) -> String {

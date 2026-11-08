@@ -128,7 +128,9 @@ impl HostEditor {
                 None
             },
         );
-        let alias_help = if config_backed {
+        let alias_help = if let Some(helper) = self.range_helper() {
+            helper
+        } else if config_backed {
             match &primary {
                 Some(primary) => format!("Connect with: ssh {primary}"),
                 None => "The name you connect as — also works in any terminal".into(),
@@ -715,12 +717,16 @@ impl HostEditor {
         let config_backed = self.ssh.storage == Storage::Openssh;
         let entity = cx.entity().downgrade();
         let (console, sftp) = (entity.clone(), entity.clone());
-        let mut col = stack(2.).child(
+        let system = self.ssh.system_open_ssh;
+        let system_on_windows = self.system_open_ssh_on_windows();
+        let mut col = stack(2.).child(self.ssh_client_section(cx)).child(
             stack(0.5)
                 .child(heading(&theme, "Console compatibility", 600.))
                 .child(
-                    FormControlLabel::new("console-compat", FormControl::Switch(self.ssh.console_compatibility), "").label_element(para("Enable console compatibility mode", muxus_ui::widgets::typography::body1(), p.text.primary))
+                    // Greyed rather than cleared, so turning system OpenSSH off restores it.
+                    FormControlLabel::new("console-compat", FormControl::Switch(self.ssh.console_compatibility && !system), "").label_element(para("Enable console compatibility mode", muxus_ui::widgets::typography::body1(), p.text.primary))
                     .flush()
+                    .disabled(system)
                     .on_click(move |_, _, cx| {
                         let _ = console.update(cx, |this, cx| {
                             this.ssh.console_compatibility = !this.ssh.console_compatibility;
@@ -729,13 +735,18 @@ impl HostEditor {
                     }),
                 )
                 .child(para(
-                    "Skips SFTP, shell integration, and SendEnv/SetEnv requests. TTY settings still apply.",
+                    if system {
+                        "Not available with system OpenSSH: the ssh program decides what it requests."
+                    } else {
+                        "Skips SFTP, shell integration, and SendEnv/SetEnv requests. TTY settings still apply."
+                    },
                     body2(),
                     p.text.secondary,
                 ))
                 .child(
                     FormControlLabel::new("disable-sftp", FormControl::Switch(self.ssh.disable_sftp), "").label_element(para("Disable SFTP and shell integration only", muxus_ui::widgets::typography::body1(), p.text.primary))
                     .flush()
+                    .disabled(system_on_windows)
                     .on_click(move |_, _, cx| {
                         let _ = sftp.update(cx, |this, cx| {
                             this.ssh.disable_sftp = !this.ssh.disable_sftp;
@@ -749,6 +760,7 @@ impl HostEditor {
                     p.text.secondary,
                 )),
         );
+        col = col.child(self.ssh_environment_discovery(window, cx));
 
         if config_backed {
             let tables = self
@@ -960,5 +972,53 @@ impl HostEditor {
         }
         let _ = (SMALL, FieldBody::Value(SharedString::default()));
         col.into_any_element()
+    }
+
+    /// "Containers & VMs" of `AdvancedSection.tsx`: the host's own choice to be read for
+    /// containers, clusters and VMs while a session to it is connected.
+    fn ssh_environment_discovery(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::features::host_editor::logic::draft::EnvironmentDiscoveryDraft;
+        let theme = *cx.theme();
+        let p = theme.palette;
+        let by_default = crate::features::settings::SettingsPrefs::global(cx)
+            .is_none_or(|prefs| prefs.read(cx).prefs().discover_environments);
+        let value = self.ssh.discover_environments;
+        let select = form::select(
+            self,
+            "discover-environments",
+            |body| {
+                FormField::new("discover-environments-field", body)
+                    .label("Find containers, clusters and VMs")
+            },
+            &value,
+            vec![
+                Choice::new(
+                    EnvironmentDiscoveryDraft::Default,
+                    format!("Like Settings ({})", if by_default { "on" } else { "off" }),
+                ),
+                Choice::new(EnvironmentDiscoveryDraft::On, "On"),
+                Choice::new(EnvironmentDiscoveryDraft::Off, "Off"),
+            ],
+            None,
+            window,
+            cx,
+            |this, value, cx| {
+                this.ssh.discover_environments = value;
+                this.changed(cx);
+            },
+        );
+        stack(1.)
+            .child(heading(&theme, "Containers & VMs", 600.))
+            .child(div().max_w(px(360.)).child(select))
+            .child(para(
+                "Runs docker, podman, kubectl, pvesh and virsh on this host while a session to it is connected, to list what it runs. Off never runs them here.",
+                body2(),
+                p.text.secondary,
+            ))
+            .into_any_element()
     }
 }

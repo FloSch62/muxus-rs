@@ -5,7 +5,7 @@ use muxus_core::js::js_trim;
 use muxus_core::management::{GNMI_DEFAULT_PORT, GnmiEncoding, GnmiTlsMode, NETCONF_DEFAULT_PORT};
 use muxus_core::protocol::{GnmiProfile, NetconfProfile, SavedHostSessionProfile, SshGateway};
 
-use super::desktop_draft::port_in_range;
+use super::desktop_draft::{port_in_range, saved_gateway_fallbacks};
 use super::js::{has_space, js_number, non_empty};
 use super::native_draft::{optional_patch, parse_host_target, text_patch};
 
@@ -37,6 +37,8 @@ pub struct ManagementHostDraft {
     pub port: String,
     pub username: String,
     pub ssh_gateway: Option<SshGateway>,
+    /// Gateways tried in order when `ssh_gateway` fails.
+    pub ssh_gateway_fallbacks: Vec<SshGateway>,
     pub tls: GnmiTlsMode,
     pub tls_server_name: String,
     pub ca_file: String,
@@ -56,6 +58,7 @@ pub fn blank_management_draft(prefill_target: &str, group: &str) -> ManagementHo
         port: target.port.unwrap_or_default(),
         username: target.user.unwrap_or_default(),
         ssh_gateway: None,
+        ssh_gateway_fallbacks: Vec::new(),
         tls: GnmiTlsMode::Verify,
         tls_server_name: String::new(),
         ca_file: String::new(),
@@ -76,13 +79,14 @@ pub fn management_draft_from_profile(
     saved: &SavedHostProfile,
     duplicate: bool,
 ) -> Option<ManagementHostDraft> {
-    let (kind, host, port, username, gateway, gnmi) = match &saved.profile {
+    let (kind, host, port, username, gateway, fallbacks, gnmi) = match &saved.profile {
         SavedHostSessionProfile::Gnmi(p) => (
             ManagementKind::Gnmi,
             &p.host,
             p.port,
             &p.username,
             &p.ssh_gateway,
+            &p.ssh_gateway_fallbacks,
             Some(p),
         ),
         SavedHostSessionProfile::Netconf(p) => (
@@ -91,6 +95,7 @@ pub fn management_draft_from_profile(
             p.port,
             &p.username,
             &p.ssh_gateway,
+            &p.ssh_gateway_fallbacks,
             None,
         ),
         _ => return None,
@@ -112,6 +117,7 @@ pub fn management_draft_from_profile(
         },
         username: username.clone().unwrap_or_default(),
         ssh_gateway: gateway.clone(),
+        ssh_gateway_fallbacks: fallbacks.clone().unwrap_or_default(),
         tls: gnmi.and_then(|p| p.tls).unwrap_or(GnmiTlsMode::Verify),
         tls_server_name: text(gnmi.map(|p| &p.tls_server_name)),
         ca_file: text(gnmi.map(|p| &p.ca_file)),
@@ -164,6 +170,8 @@ pub fn management_draft_to_input(
     let username = non_empty(&draft.username);
     let tls = draft.tls != GnmiTlsMode::Plaintext;
     let when_tls = |text: &str| if tls { non_empty(text) } else { None };
+    let fallbacks =
+        saved_gateway_fallbacks(draft.ssh_gateway.as_ref(), &draft.ssh_gateway_fallbacks);
     let profile = match kind {
         ManagementKind::Gnmi => SavedHostSessionProfile::Gnmi(GnmiProfile {
             profile_id: None,
@@ -177,6 +185,7 @@ pub fn management_draft_to_input(
             key_file: when_tls(&draft.key_file),
             ssh_gateway: draft.ssh_gateway.clone(),
             encoding: draft.encoding,
+            ssh_gateway_fallbacks: fallbacks,
         }),
         ManagementKind::Netconf => SavedHostSessionProfile::Netconf(NetconfProfile {
             profile_id: None,
@@ -184,6 +193,7 @@ pub fn management_draft_to_input(
             port,
             username,
             ssh_gateway: draft.ssh_gateway.clone(),
+            ssh_gateway_fallbacks: fallbacks,
         }),
     };
     SavedHostProfileInput {

@@ -10,10 +10,11 @@ use gpui_kit::{
     App, AppContext, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase,
     ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollWheelEvent,
+    MouseUpEvent, ParentElement, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollEvent,
     SharedString, StatefulInteractiveElement, Styled, Task, UTF16Selection, Window, canvas, div,
     point,
 };
+use muxus_core::input_modes::{keyboard_input_data, local_echo_text};
 use muxus_core::stream::{TerminalSize, TransportChannels, TransportEvent, TransportInput};
 use muxus_term::buffer::TextBuffer;
 use muxus_term::color::{Rgba, parse_css_color};
@@ -24,14 +25,17 @@ use muxus_term::font_catalog::terminal_font_stack;
 use muxus_term::keyboard::{KeyAction, KeyEncodeContext, key_down};
 use muxus_term::keywords::{KeywordDecoration, keyword_decorations};
 use muxus_term::links::{
-    BufferLink, LinkClick, LinkTarget, link_activation_for_platform, link_activation_matches,
-    link_at,
+    BufferLink, LinkClick, LinkTarget, alt_click_moves_cursor, link_activation_for_platform,
+    link_activation_matches, link_at,
 };
 use muxus_term::mouse::{
     MouseAction, MouseButton as ReportButton, MouseReport, MouseReporter, protocol_active,
 };
-use muxus_term::paste::{requires_paste_confirmation, terminal_paste_data};
-use muxus_term::right_click::{RightClickIntent, terminal_right_click_intent};
+use muxus_term::move_to_cell::{MoveToCell, move_to_cell_sequence};
+use muxus_term::paste::{flag_paste_characters, requires_paste_confirmation, terminal_paste_data};
+use muxus_term::right_click::{
+    RightClickIntent, right_click_selects_word, terminal_right_click_intent,
+};
 use muxus_term::search::{
     ACTIVE_MATCH_BACKGROUND, ACTIVE_MATCH_OVERVIEW_RULER, MATCH_BACKGROUND, MATCH_OVERVIEW_RULER,
     SearchOptions, SearchResult, TerminalSearch,
@@ -39,17 +43,29 @@ use muxus_term::search::{
 use muxus_term::selection::{BufferPoint, Selection, SelectionMode};
 use muxus_term::shell_integration::ERROR_MARK_COLOR;
 use muxus_term::style::{CellContext, EffectiveColors, resolve_cell};
-use muxus_term::terminal::{Emulator, EmulatorConfig, EmulatorEvent};
+use muxus_term::terminal::{
+    ACTIVE_IMAGE_STORAGE_MB, BACKGROUND_IMAGE_STORAGE_MB, Emulator, EmulatorConfig, EmulatorEvent,
+};
 use muxus_ui::zoom::{css, layout_px, px};
 
-use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{Icon, IconName};
+use gpui_kit::base::input::{InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder;
+use muxus_ui::color::alpha;
+use muxus_ui::label::label;
+use muxus_ui::theme::ActiveTheme;
+use muxus_ui::widgets::button::elevation;
+use muxus_ui::widgets::{IconButton, TextField, Tooltip};
+
+/// `MuiToggleButton`'s weight in the Muxus theme.
+const TOGGLE_WEIGHT: f32 = 550.0;
 
 use crate::keys::keyboard_event;
 use crate::paint::{
-    CellSize, FontSet, Frame, FrameCursor, FrameImage, PaintCell, RulerLane, RulerMark, Scrollbar,
-    hsla, inner_padding, paint_frame, scrollbar_width,
+    CellSize, FontSet, Frame, FrameCursor, FrameImage, FramePreedit, ImageLayer, PaintCell,
+    RulerLane, RulerMark, Scrollbar, hsla, inner_padding, paint_frame, scrollbar_width,
+};
+use crate::scrollbar::{
+    MINIMUM_SLIDER_SIZE, POINTER_DRAG_RESET_DISTANCE, ScrollbarState, line_for_position,
 };
 use crate::{
     ClearScrollback, CloseFind, Copy, Find, FindNext, FindPrevious, Paste, ScrollPageDown,
@@ -70,6 +86,18 @@ const SCROLLBAR_HIDE_AFTER: Duration = Duration::from_millis(500);
 const SCROLLBAR_FADE: Duration = Duration::from_millis(800);
 /// Type-ahead held while the transport is busy.
 const OUTPUT_BATCH: usize = 64;
+/// An Alt+click moves the cursor only when released this soon (xterm's
+/// `ALT_CLICK_MOVE_CURSOR_TIME`).
+const ALT_CLICK_MOVE_CURSOR_TIME: Duration = Duration::from_millis(500);
+
+/// A slider drag in progress: where it was grabbed and the scrollbar as it was then.
+#[derive(Clone, Copy, Debug)]
+struct ScrollbarDrag {
+    press: Point<Pixels>,
+    state: ScrollbarState,
+    /// The scroll position when the drag began (a drag strayed too far snaps back to it).
+    start: f32,
+}
 
 /// The inputs the painted rows were built from (see `TerminalView::rows_key`).
 #[derive(PartialEq)]
@@ -109,6 +137,8 @@ pub struct TerminalView {
     focus: FocusHandle,
     input: async_channel::Sender<TransportInput>,
     closed: bool,
+    /// Pastes the view starts itself go to the app ([`TerminalView::set_app_pastes`]).
+    app_pastes: bool,
     zoom: f32,
     layout: Rc<Cell<Layout>>,
     cell: CellSize,
@@ -119,6 +149,13 @@ pub struct TerminalView {
     resize_task: Option<Task<()>>,
     selection: Option<Selection>,
     selecting: bool,
+    /// When the left button went down on the grid, for Alt+click cursor moves.
+    mouse_down_at: Option<Instant>,
+    scrollbar_drag: Option<ScrollbarDrag>,
+    /// The pointer is over the scrollbar's slider.
+    slider_hovered: bool,
+    /// The tab is the one shown in the focused pane (`active` in the client).
+    active: bool,
     lines_trimmed: u64,
     search: TerminalSearch,
     search_term: String,
@@ -136,7 +173,10 @@ pub struct TerminalView {
     scrolled_at: Option<Instant>,
     left_at: Option<Instant>,
     scroll_remainder: f32,
-    images: HashMap<u64, ((u32, u32), Arc<RenderImage>)>,
+    images: HashMap<u64, CachedImage>,
+    /// Images replaced or gone since the last frame; they leave the atlas at the next one,
+    /// once no painted frame shows them.
+    retired_images: Vec<Arc<RenderImage>>,
     scale_factor: f32,
     preedit: Option<String>,
     /// Bumped with every settings change, for the rows cache.
@@ -149,6 +189,15 @@ pub struct TerminalView {
     _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
+/// An image placement as the atlas holds it.
+struct CachedImage {
+    /// The pixels it was made from: a frame of an animation hands the placement new ones.
+    pixels: Arc<Vec<u8>>,
+    /// Its size in device pixels.
+    size: (u32, u32),
+    image: Arc<RenderImage>,
+}
+
 impl EventEmitter<TerminalViewEvent> for TerminalView {}
 
 impl Focusable for TerminalView {
@@ -159,6 +208,20 @@ impl Focusable for TerminalView {
 
 fn parse_color(value: &str) -> Rgba {
     parse_css_color(value).unwrap_or_default()
+}
+
+/// RGBA `pixels` with a one-pixel border around them that repeats their edge pixels.
+fn with_edge_border(pixels: &[u8], width: usize, height: usize) -> Vec<u8> {
+    let row_bytes = width * 4;
+    let mut out = Vec::with_capacity((width + 2) * (height + 2) * 4);
+    for y in 0..height + 2 {
+        let source = y.saturating_sub(1).min(height - 1) * row_bytes;
+        let row = &pixels[source..source + row_bytes];
+        out.extend_from_slice(&row[..4]);
+        out.extend_from_slice(row);
+        out.extend_from_slice(&row[row_bytes - 4..]);
+    }
+    out
 }
 
 impl TerminalView {
@@ -180,6 +243,8 @@ impl TerminalView {
                 &settings.theme,
             );
             emulator.set_allow_osc52_write(settings.allow_osc52_write);
+            emulator.set_implicit_cr(settings.input_modes.implicit_cr);
+            emulator.set_program_status(settings.program_status);
             emulator
         };
         let focus = cx.focus_handle();
@@ -215,6 +280,12 @@ impl TerminalView {
         let subscriptions = vec![
             cx.on_focus(&focus, window, |view, _, cx| view.set_focused(true, cx)),
             cx.on_blur(&focus, window, |view, _, cx| view.set_focused(false, cx)),
+            cx.on_release(|view, cx| {
+                let cached = view.images.drain().map(|(_, cached)| cached.image);
+                for image in view.retired_images.drain(..).chain(cached) {
+                    cx.drop_image(image, None);
+                }
+            }),
         ];
         let fonts = FontSet {
             family: "JetBrains Mono".into(),
@@ -227,6 +298,7 @@ impl TerminalView {
             focus,
             input: input_tx,
             closed: false,
+            app_pastes: false,
             zoom: 0.0,
             layout: Rc::default(),
             cell: CellSize {
@@ -246,6 +318,10 @@ impl TerminalView {
             resize_task: None,
             selection: None,
             selecting: false,
+            mouse_down_at: None,
+            scrollbar_drag: None,
+            slider_hovered: false,
+            active: true,
             lines_trimmed: 0,
             search: TerminalSearch::new(),
             search_term: String::new(),
@@ -264,6 +340,7 @@ impl TerminalView {
             left_at: None,
             scroll_remainder: 0.0,
             images: HashMap::new(),
+            retired_images: Vec::new(),
             scale_factor: 1.0,
             preedit: None,
             settings_version: 0,
@@ -291,6 +368,16 @@ impl TerminalView {
         self.emulator.set_theme(&settings.theme);
         self.emulator
             .set_allow_osc52_write(settings.allow_osc52_write);
+        // Implicit CR follows the host live, like its keys.
+        self.emulator
+            .set_implicit_cr(settings.input_modes.implicit_cr);
+        self.emulator.set_program_status(settings.program_status);
+        // The scrollback size is live too (xterm trims the oldest lines when it shrinks).
+        self.emulator.set_scrollback_limit(settings.scrollback);
+        self.sync_trimmed_lines();
+        if self.search_open && !self.search_term.is_empty() {
+            self.search.refresh(&self.emulator);
+        }
         self.settings = settings;
         self.settings_version += 1;
         self.metrics_key = None;
@@ -299,6 +386,24 @@ impl TerminalView {
 
     pub fn settings(&self) -> &TerminalSettings {
         &self.settings
+    }
+
+    /// Whether the tab is the one shown in the focused pane. A terminal in the background keeps
+    /// less image data (16 MB instead of 64 MB), as the client's image addon does.
+    pub fn set_active(&mut self, active: bool) {
+        if active == self.active {
+            return;
+        }
+        self.active = active;
+        self.emulator.set_image_storage_limit(if active {
+            ACTIVE_IMAGE_STORAGE_MB
+        } else {
+            BACKGROUND_IMAGE_STORAGE_MB
+        });
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active
     }
 
     /// Show output that did not come from the transport (status notices, a restored snapshot).
@@ -318,23 +423,93 @@ impl TerminalView {
     }
 
     /// Paste text the way xterm does: line breaks become Enter, wrapped in bracketed-paste
-    /// markers when the program asked for them. A multi-line paste asks the app to confirm first
-    /// ([`TerminalViewEvent::ConfirmPaste`]) when the setting says so.
+    /// markers when the program asked for them. A multi-line paste, or one with invisible or
+    /// look-alike characters, asks the app to confirm first ([`TerminalViewEvent::ConfirmPaste`])
+    /// when the settings say so.
     pub fn paste(&mut self, text: &str, cx: &mut Context<Self>) {
         if text.is_empty() {
             return;
         }
-        if self.settings.paste_warn_multiline && requires_paste_confirmation(text) {
+        if (self.settings.paste_warn_multiline && requires_paste_confirmation(text))
+            || (self.settings.paste_warn_lookalikes && !flag_paste_characters(text).is_empty())
+        {
             cx.emit(TerminalViewEvent::ConfirmPaste(text.to_string()));
             return;
         }
         self.paste_confirmed(text, cx);
     }
 
-    /// Paste without asking (after the app's confirmation dialog).
+    /// Paste without asking (after the app's confirmation dialog), and tell the app
+    /// ([`TerminalViewEvent::Pasted`]).
     pub fn paste_confirmed(&mut self, text: &str, cx: &mut Context<Self>) {
-        let data = terminal_paste_data(text, self.emulator.bracketed_paste());
-        self.user_input(data.into_bytes(), cx);
+        if text.is_empty() {
+            return;
+        }
+        if self.closed {
+            let data = self.paste_data(text);
+            cx.emit(TerminalViewEvent::InputAfterExit(data.into_bytes()));
+            return;
+        }
+        if self.send_paste(text, cx) {
+            cx.emit(TerminalViewEvent::Pasted(text.to_string()));
+        }
+    }
+
+    /// A paste as the session receives it: bracketed when the program asked for it, otherwise
+    /// with the host's Enter key for every line break.
+    fn paste_data(&self, text: &str) -> String {
+        terminal_paste_data(
+            text,
+            self.emulator.bracketed_paste(),
+            self.settings.input_modes.enter_key,
+        )
+    }
+
+    /// Send a paste unpaced, the way xterm's own paste does, without telling the app; `false`
+    /// when the session has ended.
+    pub fn send_paste(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
+        if text.is_empty() {
+            return true;
+        }
+        let data = self.paste_data(text);
+        if !self.send_input(data.into_bytes()) {
+            return false;
+        }
+        self.after_input(cx);
+        self.echo_input(text, cx);
+        true
+    }
+
+    /// Show what was sent when the host does not echo it (local echo); nothing extra is sent.
+    pub fn echo_input(&mut self, text: &str, cx: &mut Context<Self>) {
+        if !self.settings.input_modes.local_echo {
+            return;
+        }
+        let shown = local_echo_text(text);
+        if !shown.is_empty() {
+            self.feed(shown.as_bytes(), cx);
+            cx.notify();
+        }
+    }
+
+    /// Keystrokes typed here or mirrored from another terminal, sent with this host's keys and
+    /// echoed when it echoes locally; `false` when the session has ended.
+    pub fn send_keyboard_input(&mut self, data: &[u8], cx: &mut Context<Self>) -> bool {
+        let sent = match std::str::from_utf8(data) {
+            Ok(text) => {
+                let keys = keyboard_input_data(text, &self.settings.input_modes);
+                let sent = self.send_input(keys.into_bytes());
+                if sent {
+                    self.echo_input(text, cx);
+                }
+                sent
+            }
+            Err(_) => self.send_input(data.to_vec()),
+        };
+        if sent {
+            self.after_input(cx);
+        }
+        sent
     }
 
     /// Send BREAK on the session's line (serial, telnet, SSH).
@@ -570,9 +745,20 @@ impl TerminalView {
                 EmulatorEvent::ClipboardWrite(text) => {
                     cx.write_to_clipboard(ClipboardItem::new_string(text))
                 }
+                EmulatorEvent::ProgramStatus(signal) => {
+                    cx.emit(TerminalViewEvent::ProgramStatus(signal))
+                }
             }
         }
-        // Keep the selection on its lines while the scrollback trims.
+        self.sync_trimmed_lines();
+        if self.search_open && !self.search_term.is_empty() {
+            self.search.refresh(&self.emulator);
+        }
+        self.restart_blink();
+    }
+
+    /// Keep the selection on its lines while the scrollback trims.
+    fn sync_trimmed_lines(&mut self) {
         let trimmed = self.emulator.lines_trimmed();
         if trimmed > self.lines_trimmed {
             let delta = (trimmed - self.lines_trimmed) as usize;
@@ -583,27 +769,27 @@ impl TerminalView {
             }
         }
         self.lines_trimmed = trimmed;
-        if self.search_open && !self.search_term.is_empty() {
-            self.search.refresh(&self.emulator);
-        }
-        self.restart_blink();
     }
 
-    /// Input the user made (keys, pastes): it scrolls to the bottom, clears the selection and is
-    /// mirrored by the app when multi-execution is on.
+    /// Keys the user typed: sent with the host's keys, then it scrolls to the bottom, clears the
+    /// selection and is mirrored by the app when multi-execution is on.
     fn user_input(&mut self, data: Vec<u8>, cx: &mut Context<Self>) {
         if data.is_empty() {
             return;
         }
+        if self.closed {
+            self.after_input(cx);
+            cx.emit(TerminalViewEvent::InputAfterExit(data));
+        } else if self.send_keyboard_input(&data, cx) {
+            cx.emit(TerminalViewEvent::Input(data));
+        }
+    }
+
+    /// Input reached the session: the view follows it like a terminal does.
+    fn after_input(&mut self, cx: &mut Context<Self>) {
         self.emulator.scroll_to_bottom();
         self.selection = None;
         self.restart_blink();
-        if self.closed {
-            cx.emit(TerminalViewEvent::InputAfterExit(data));
-        } else {
-            let _ = self.input.try_send(TransportInput::Data(data.clone()));
-            cx.emit(TerminalViewEvent::Input(data));
-        }
         cx.notify();
     }
 
@@ -694,6 +880,14 @@ impl TerminalView {
             pixel_width: (self.cell.width * f32::from(cols)).round() as u16,
             pixel_height: (self.cell.height * f32::from(rows)).round() as u16,
         };
+        if (size.cols, size.rows) != (self.size.cols, self.size.rows) {
+            // The lines moved under the selection (the scrollback reflows with the width);
+            // xterm clears it when the rows change.
+            self.selection = None;
+            if self.search_open && !self.search_term.is_empty() {
+                self.search.refresh(&self.emulator);
+            }
+        }
         if size != self.size {
             self.size = size;
             if !self.closed {
@@ -794,7 +988,8 @@ impl TerminalView {
     /// Opacity of the scrollbar slider: shown while hovered or scrolling, hidden 500 ms later and
     /// faded over 800 ms.
     fn scrollbar_opacity(&self) -> f32 {
-        if self.hovered {
+        // A dragged slider stays shown even when the pointer leaves the terminal.
+        if self.hovered || self.scrollbar_drag.is_some() {
             return 1.0;
         }
         let last = match (self.scrolled_at, self.left_at) {
@@ -858,7 +1053,19 @@ impl TerminalView {
         true
     }
 
+    /// Hand the pastes the view starts itself (a right click that pastes, its paste action) to
+    /// the app ([`TerminalViewEvent::PasteRequested`]), which pastes the clipboard the way its
+    /// own paste command does: previewed, then paced by the host's settings. Off, the view
+    /// pastes them itself, unpaced, as xterm does.
+    pub fn set_app_pastes(&mut self, on: bool) {
+        self.app_pastes = on;
+    }
+
     fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
+        if self.app_pastes {
+            cx.emit(TerminalViewEvent::PasteRequested);
+            return;
+        }
         match cx.read_from_clipboard() {
             Some(item) => match item.text() {
                 Some(text) => self.paste(&text, cx),
@@ -895,6 +1102,112 @@ impl TerminalView {
             bounds.origin.x + layout_px(inner_padding()),
             bounds.origin.y + layout_px(inner_padding()),
         ))
+    }
+
+    /// Viewport height, content height and scroll position in px, as xterm's viewport hands
+    /// them to its scrollable element (`Viewport._sync`).
+    fn scroll_dimensions(&self) -> (f32, f32, f32) {
+        let height = self.cell.height;
+        (
+            self.emulator.rows() as f32 * height,
+            self.emulator.length() as f32 * height,
+            self.emulator.viewport_top() as f32 * height,
+        )
+    }
+
+    /// The scrollbar's slider, when the content does not fit (and there is a scrollback).
+    fn scrollbar_state(&self) -> Option<ScrollbarState> {
+        if self.settings.scrollback == 0 {
+            return None;
+        }
+        let (visible, scroll_size, position) = self.scroll_dimensions();
+        let state = ScrollbarState::new(visible, scroll_size, position, css(MINIMUM_SLIDER_SIZE));
+        state.needed.then_some(state)
+    }
+
+    /// Where a window position falls on the scrollbar: the offset below the track's top, when
+    /// it is on the track. The track runs down the right edge of the padding box, as tall as
+    /// the rows.
+    fn scrollbar_offset(&self, position: Point<Pixels>) -> Option<f32> {
+        let bounds = self.layout.get().bounds?;
+        let right = f32::from(bounds.origin.x + bounds.size.width) - inner_padding();
+        let left = right - scrollbar_width();
+        let top = f32::from(bounds.origin.y) + inner_padding();
+        let (visible, _, _) = self.scroll_dimensions();
+        let (x, y) = (f32::from(position.x), f32::from(position.y));
+        (x >= left && x < right && y >= top && y < top + visible).then_some(y - top)
+    }
+
+    /// Scroll the viewport to a scroll position in px, rounded to a whole row.
+    fn scroll_to_position(&mut self, position: f32) {
+        let (visible, scroll_size, _) = self.scroll_dimensions();
+        let line = line_for_position(position, visible, scroll_size, self.cell.height);
+        if line != self.emulator.viewport_top() {
+            self.emulator.scroll_to_line(line);
+        }
+        self.scrolled_at = Some(Instant::now());
+    }
+
+    /// A left press on the scrollbar: on the slider it starts a drag; on the track it jumps
+    /// the slider's middle to the pointer and drags on from there (VS Code's scrollbar).
+    fn press_scrollbar(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) -> bool {
+        let (Some(offset), Some(mut state)) = (
+            self.scrollbar_offset(event.position),
+            self.scrollbar_state(),
+        ) else {
+            return false;
+        };
+        if !state.on_slider(offset) {
+            self.scroll_to_position(state.position_for_offset(offset));
+            state = self.scrollbar_state().unwrap_or(state);
+        }
+        self.scrollbar_drag = Some(ScrollbarDrag {
+            press: event.position,
+            state,
+            start: self.scroll_dimensions().2,
+        });
+        self.schedule_tick(cx);
+        cx.notify();
+        true
+    }
+
+    fn drag_scrollbar(&mut self, drag: ScrollbarDrag, position: Point<Pixels>) {
+        // Windows snaps a slider back when the pointer strays far from it sideways.
+        let strayed = f32::from(position.x - drag.press.x).abs() > css(POINTER_DRAG_RESET_DISTANCE);
+        let target = if cfg!(windows) && strayed {
+            drag.start
+        } else {
+            drag.state
+                .position_for_delta(f32::from(position.y - drag.press.y))
+        };
+        self.scroll_to_position(target);
+    }
+
+    /// Whether the pointer is over the slider (it lights up as xterm's does).
+    fn over_slider(&self, position: Point<Pixels>) -> bool {
+        match (self.scrollbar_offset(position), self.scrollbar_state()) {
+            (Some(offset), Some(state)) => state.on_slider(offset),
+            _ => false,
+        }
+    }
+
+    /// The arrow keys that take the shell's cursor to the clicked cell (Alt+click).
+    fn move_cursor_sequence(&self, position: Point<Pixels>) -> Option<String> {
+        // Only while the viewport shows the bottom (xterm's `ybase === ydisp`).
+        if self.emulator.display_offset() != 0 {
+            return None;
+        }
+        let (row, col, _, _) = self.cell_at(position, false)?;
+        let base = self.emulator.scrollback_len();
+        let cursor = self.emulator.cursor();
+        let state = MoveToCell {
+            base,
+            rows: self.emulator.rows(),
+            cursor: (cursor.col, cursor.line.saturating_sub(base)),
+            has_scrollback: !self.emulator.is_alt_screen() && self.emulator.scrollback_limit() > 0,
+            application_cursor: self.emulator.application_cursor(),
+        };
+        Some(move_to_cell_sequence(&self.emulator, state, (col, row)))
     }
 
     /// The cell under a window position: `(viewport row, column, x, y)` with pixels relative to the
@@ -1024,7 +1337,22 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus, cx);
+        // The scrollbar takes its presses before the terminal or the program sees them.
+        if event.button == MouseButton::Left && self.press_scrollbar(event, cx) {
+            return;
+        }
         if event.button == MouseButton::Right {
+            // macOS selects the word under the pointer for the context menu (xterm's
+            // `rightClickSelectsWord`), only when the menu would otherwise have no selection.
+            if right_click_selects_word(
+                self.settings.is_mac,
+                self.settings.right_click,
+                self.has_selection(),
+            ) && let Some(point) = self.buffer_point(event.position, false)
+            {
+                self.selection = Selection::begin(&self.emulator, SelectionMode::Word, point);
+                cx.notify();
+            }
             self.on_right_click(event, cx);
             if self.mouse_reporting(event.modifiers.shift) {
                 self.report_mouse(
@@ -1074,6 +1402,7 @@ impl TerminalView {
         };
         self.selection = Selection::begin(&self.emulator, mode, anchor);
         self.selecting = true;
+        self.mouse_down_at = Some(Instant::now());
         cx.notify();
     }
 
@@ -1096,6 +1425,20 @@ impl TerminalView {
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if let Some(drag) = self.scrollbar_drag {
+            if event.pressed_button == Some(MouseButton::Left) {
+                self.drag_scrollbar(drag, event.position);
+                cx.notify();
+                return;
+            }
+            // The button came up outside the window.
+            self.end_scrollbar_drag(cx);
+        }
+        let over_slider = self.over_slider(event.position);
+        if over_slider != self.slider_hovered {
+            self.slider_hovered = over_slider;
+            cx.notify();
+        }
         if let Some(button) = self.reporting_button {
             self.report_mouse(event.position, button, MouseAction::Move, &event.modifiers);
             return;
@@ -1150,7 +1493,21 @@ impl TerminalView {
         }
     }
 
+    fn end_scrollbar_drag(&mut self, cx: &mut Context<Self>) {
+        if self.scrollbar_drag.take().is_some() {
+            if !self.hovered {
+                self.left_at = Some(Instant::now());
+            }
+            self.schedule_tick(cx);
+            cx.notify();
+        }
+    }
+
     fn on_mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
+        if self.scrollbar_drag.is_some() {
+            self.end_scrollbar_drag(cx);
+            return;
+        }
         if let Some(button) = self.reporting_button.take() {
             self.report_mouse(event.position, button, MouseAction::Up, &event.modifiers);
             return;
@@ -1159,6 +1516,26 @@ impl TerminalView {
             return;
         }
         self.selecting = false;
+        let quick = self
+            .mouse_down_at
+            .take()
+            .is_some_and(|at| at.elapsed() < ALT_CLICK_MOVE_CURSOR_TIME);
+        // A quick Alt+click without a selection moves the shell's cursor there with arrow keys
+        // (xterm's `altClickMovesCursor`, off while Alt is the link gesture).
+        if quick
+            && event.modifiers.alt
+            && alt_click_moves_cursor(self.settings.link_activation, self.settings.is_mac)
+            && self.selection_text().encode_utf16().count() <= 1
+        {
+            if !self.has_selection() {
+                self.selection = None;
+            }
+            if let Some(sequence) = self.move_cursor_sequence(event.position) {
+                self.user_input(sequence.into_bytes(), cx);
+            }
+            cx.notify();
+            return;
+        }
         if !self.has_selection() {
             self.selection = None;
             // A click without a drag: open a link under the configured gesture.
@@ -1189,7 +1566,7 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn on_scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
+    fn on_scroll(&mut self, event: &ScrollEvent, cx: &mut Context<Self>) {
         let lines = match event.delta {
             ScrollDelta::Lines(delta) => delta.y,
             ScrollDelta::Pixels(delta) => f32::from(delta.y) / self.cell.height,
@@ -1367,20 +1744,33 @@ impl TerminalView {
 
     // ---- frame ---------------------------------------------------------------------------
 
-    /// The image as a GPUI sprite at its painted size in device pixels: scaled with a bilinear
-    /// filter like the canvas the image addon draws on (GPUI samples sprites without filtering).
+    /// The image as a GPUI sprite for its painted size `target` in device pixels, and whether it
+    /// has a border to paint outside that size. Painted larger than its pixels, it stays at its
+    /// own size and the GPU stretches it: sprites are sampled bilinearly, as the canvas the
+    /// image addon draws on, and a one-pixel border repeating its edge keeps the atlas
+    /// neighbours out of its edge. Painted smaller, it is scaled down here, with a filter that
+    /// averages the pixels it drops. The sprite is made again when the pixels change (a frame
+    /// of an animation) or the size does.
     fn render_image(
         &mut self,
         id: u64,
-        pixels: &[u8],
+        pixels: &Arc<Vec<u8>>,
         width: usize,
         height: usize,
         target: (u32, u32),
-    ) -> Option<Arc<RenderImage>> {
-        if let Some((size, image)) = self.images.get(&id)
-            && *size == target
+    ) -> Option<(Arc<RenderImage>, bool)> {
+        let own = (width as u32, height as u32);
+        let stretched = target.0 >= own.0 && target.1 >= own.1 && target != own;
+        let size = if stretched {
+            (own.0 + 2, own.1 + 2)
+        } else {
+            target
+        };
+        if let Some(cached) = self.images.get(&id)
+            && cached.size == size
+            && Arc::ptr_eq(&cached.pixels, pixels)
         {
-            return Some(image.clone());
+            return Some((cached.image.clone(), stretched));
         }
         if width == 0
             || height == 0
@@ -1390,103 +1780,133 @@ impl TerminalView {
         {
             return None;
         }
-        let source = image::RgbaImage::from_raw(
-            width as u32,
-            height as u32,
-            pixels[..width * height * 4].to_vec(),
-        )?;
-        let mut scaled = if (width as u32, height as u32) == target {
-            source
+        let mut sprite = if stretched {
+            image::RgbaImage::from_raw(size.0, size.1, with_edge_border(pixels, width, height))?
         } else {
-            image::imageops::resize(
-                &source,
-                target.0,
-                target.1,
-                image::imageops::FilterType::Triangle,
-            )
+            let source =
+                image::RgbaImage::from_raw(own.0, own.1, pixels[..width * height * 4].to_vec())?;
+            if own == target {
+                source
+            } else {
+                image::imageops::resize(
+                    &source,
+                    target.0,
+                    target.1,
+                    image::imageops::FilterType::Triangle,
+                )
+            }
         };
         // GPUI's sprites are BGRA.
-        for pixel in scaled.pixels_mut() {
+        for pixel in sprite.pixels_mut() {
             pixel.0.swap(0, 2);
         }
         let image = Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(
-            scaled
+            sprite
         )]));
-        self.images.insert(id, (target, image.clone()));
-        Some(image)
+        let cached = CachedImage {
+            pixels: pixels.clone(),
+            size,
+            image: image.clone(),
+        };
+        if let Some(old) = self.images.insert(id, cached) {
+            self.retired_images.push(old.image);
+        }
+        Some((image, stretched))
     }
 
-    /// The "Find in terminal" box: a Paper at the top right with the query field, the match count,
-    /// the case/word/regex toggles and previous/next/close buttons.
+    /// The "Find in terminal" box: an elevated Paper at the top right with the query field (search
+    /// icon, "3/12" or "No matches"), the case/word/regex toggles and previous/next/close buttons.
     fn render_search_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let dark = self.settings.app_dark;
-        let chrome = SearchChrome::new(dark, cx.try_global::<muxus_ui::theme::Theme>());
+        let theme = *cx.theme();
+        let p = theme.palette;
         let (index, count) = self.search.result_index();
-        let label = if self.search_term.is_empty() {
-            None
-        } else if count > 0 {
-            Some(format!("{}/{}", index + 1, count))
-        } else {
-            Some("No matches".to_string())
-        };
-        let input = self.search_input.clone();
+        let count_label = (!self.search_term.is_empty()).then(|| {
+            if count > 0 {
+                format!("{}/{}", index + 1, count)
+            } else {
+                "No matches".to_string()
+            }
+        });
         let options = self.search_options;
+        let has_query = !self.search_term.is_empty();
+        // `<ToggleButton size="small" sx={{ px: 0.75, py: 0.25, fontSize: 12, border: 0 }}>`
+        // with the theme's 550 weight, in a tooltip.
         let toggle = |id: &'static str,
                       text: &'static str,
+                      tooltip: &'static str,
                       selected: bool,
                       cx: &mut Context<Self>,
                       apply: fn(&mut SearchOptions)| {
+            let selected_bg = alpha(p.text.primary, p.action.selected_opacity);
+            let hover = alpha(
+                p.text.primary,
+                p.action.hover_opacity
+                    + if selected {
+                        p.action.selected_opacity
+                    } else {
+                        0.0
+                    },
+            );
             div()
                 .id(id)
+                .flex_none()
                 .px(px(6.0))
                 .py(px(2.0))
-                .rounded(px(8.0))
-                .text_size(px(12.0))
-                .font_weight(gpui_kit::FontWeight::MEDIUM)
-                .text_color(if selected {
-                    chrome.text
-                } else {
-                    chrome.text_secondary
-                })
-                .when(selected, |el| el.bg(chrome.selected))
+                .rounded(px(theme.radius))
                 .cursor(CursorStyle::PointingHand)
-                .child(text)
+                .when(selected, |el| el.bg(selected_bg))
+                .hover(move |el| el.bg(hover))
+                .tooltip(Tooltip::text(tooltip))
+                .child(
+                    label(text)
+                        .size(12.0)
+                        .weight(TOGGLE_WEIGHT)
+                        .line_height(12.0 * 1.75)
+                        .color(if selected {
+                            p.text.primary
+                        } else {
+                            p.action.active
+                        })
+                        .no_truncate(),
+                )
                 .on_click(cx.listener(move |view, _: &gpui_kit::ClickEvent, _, cx| {
                     view.toggle_search_option(apply, cx)
                 }))
         };
-        let icon_button =
-            |id: &'static str,
-             icon: IconName,
-             enabled: bool,
-             cx: &mut Context<Self>,
-             action: fn(&mut Self, &mut Window, &mut Context<Self>)| {
-                div()
-                    .id(id)
-                    .size(px(30.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .when(enabled, |el| {
-                        el.cursor(CursorStyle::PointingHand)
-                            .hover(|el| el.bg(chrome.hover))
-                    })
-                    .child(Icon::new(icon).size(px(20.0)).text_color(if enabled {
-                        chrome.icon
-                    } else {
-                        chrome.disabled
-                    }))
-                    .on_click(
-                        cx.listener(move |view, _: &gpui_kit::ClickEvent, window, cx| {
-                            if enabled {
-                                action(view, window, cx)
-                            }
-                        }),
-                    )
-            };
-        let has_query = !self.search_term.is_empty();
+        let weak = cx.entity().downgrade();
+        let button = |id: &'static str,
+                      icon: &'static str,
+                      tooltip: Option<&'static str>,
+                      enabled: bool,
+                      action: fn(&mut Self, &mut Window, &mut Context<Self>)| {
+            let weak = weak.clone();
+            let mut button = IconButton::new(id, icon)
+                .disabled(!enabled)
+                .skip_tab()
+                .on_click(move |_, window, cx| {
+                    let _ = weak.update(cx, |view, cx| action(view, window, cx));
+                });
+            if let Some(tooltip) = tooltip {
+                button = button.tooltip(tooltip);
+            }
+            button
+        };
+        let caption = theme.typography.caption;
+        let mut field = TextField::new("terminal-search-field", &self.search_input_state())
+            .placeholder("Find in terminal")
+            .start(muxus_ui::icon::icon("Search", 17.0, p.action.active))
+            .width(240.0);
+        if let Some(count_label) = count_label {
+            field = field.end(
+                label(count_label)
+                    .size(caption.size)
+                    .line_height(caption.line_height)
+                    .color(p.text.secondary)
+                    .no_truncate(),
+            );
+        }
         div()
+            .id("terminal-search")
             .absolute()
             .top(px(11.0))
             .right(px(13.0))
@@ -1494,85 +1914,92 @@ impl TerminalView {
             .items_center()
             .gap(px(2.0))
             .p(px(4.0))
-            .bg(chrome.paper)
+            .bg(p.background_paper)
             .border_1()
-            .border_color(chrome.divider)
-            .rounded(px(10.0))
-            .shadow_lg()
-            .font_family("Inter")
+            .border_color(p.divider)
+            .rounded(px(theme.radius))
+            .shadow(elevation(8, &theme))
+            .font_family(muxus_ui::theme::fonts::UI)
+            .text_color(p.text.primary)
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
                     cx.stop_propagation();
                     view.close_search(window, cx);
                 }
             }))
-            .child(
-                div()
-                    .w(px(240.0))
-                    .h(px(37.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .pl(px(12.0))
-                    .pr(px(12.0))
-                    .rounded(px(8.0))
-                    .border_2()
-                    .border_color(chrome.primary)
-                    .text_size(px(14.0))
-                    .text_color(chrome.text)
-                    .child(
-                        Icon::new(IconName::Search)
-                            .size(px(17.0))
-                            .text_color(chrome.icon),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .children(input.map(|input| Input::new(&input).appearance(false))),
-                    )
-                    .children(label.map(|label| {
-                        div()
-                            .flex_none()
-                            .text_size(px(12.0))
-                            .text_color(chrome.text_secondary)
-                            .child(label)
-                    })),
-            )
+            .child(field)
             .child(toggle(
                 "search-case",
                 "Aa",
+                "Match case",
                 options.case_sensitive,
                 cx,
                 |o| o.case_sensitive = !o.case_sensitive,
             ))
-            .child(toggle("search-word", "W", options.whole_word, cx, |o| {
-                o.whole_word = !o.whole_word
-            }))
-            .child(toggle("search-regex", ".*", options.regex, cx, |o| {
-                o.regex = !o.regex
-            }))
-            .child(icon_button(
-                "search-previous",
-                IconName::ChevronUp,
-                has_query,
+            .child(toggle(
+                "search-word",
+                "W",
+                "Whole word",
+                options.whole_word,
                 cx,
+                |o| o.whole_word = !o.whole_word,
+            ))
+            .child(toggle(
+                "search-regex",
+                ".*",
+                "Regular expression",
+                options.regex,
+                cx,
+                |o| o.regex = !o.regex,
+            ))
+            .child(button(
+                "search-previous",
+                "KeyboardArrowUp",
+                Some("Previous match (Shift+Enter)"),
+                has_query,
                 |view, _, cx| view.find_previous(cx),
             ))
-            .child(icon_button(
+            .child(button(
                 "search-next",
-                IconName::ChevronDown,
+                "KeyboardArrowDown",
+                Some("Next match (Enter)"),
                 has_query,
-                cx,
                 |view, _, cx| view.find_next(cx),
             ))
-            .child(icon_button(
+            .child(button(
                 "search-close",
-                IconName::Close,
+                "Close",
+                None,
                 true,
-                cx,
                 |view, window, cx| view.close_search(window, cx),
             ))
+    }
+
+    /// The composition at the cursor, while the cursor's line is in view (xterm's
+    /// `updateCompositionElements`).
+    fn frame_preedit(&self) -> Option<FramePreedit> {
+        let text = self.preedit.clone()?;
+        let cursor = self.emulator.cursor();
+        let top = self.emulator.viewport_top();
+        let rows = self.emulator.rows();
+        if cursor.line < top || cursor.line >= top + rows {
+            return None;
+        }
+        let cols = self.emulator.cols();
+        let col = cursor.col.min(cols.saturating_sub(1));
+        Some(FramePreedit {
+            text,
+            row: cursor.line - top,
+            col,
+            cols_left: cols - col,
+        })
+    }
+
+    /// The search field's input (created when search first opens).
+    fn search_input_state(&self) -> Entity<InputState> {
+        self.search_input
+            .clone()
+            .expect("the search input exists while search is open")
     }
 
     /// What the painted rows are built from. The cursor is drawn on its own,
@@ -1792,38 +2219,63 @@ impl TerminalView {
                 (width * self.scale_factor).round() as u32,
                 (height * self.scale_factor).round() as u32,
             );
-            if let Some(image) = self.render_image(
+            if let Some((image, bordered)) = self.render_image(
                 placement.id,
                 &placement.pixels,
                 placement.width,
                 placement.height,
                 target,
             ) {
+                // The border is one of the image's pixels wide, as stretched.
+                let border = if bordered {
+                    (
+                        width / placement.width as f32,
+                        height / placement.height as f32,
+                    )
+                } else {
+                    (0.0, 0.0)
+                };
                 images.push(FrameImage {
                     row,
                     col: placement.col,
                     image,
                     width,
                     height,
-                    below_text: placement.z_index < 0,
+                    border,
+                    layer: ImageLayer::of(placement.z_index),
                 });
             }
         }
-        self.images.retain(|id, _| live.contains(id));
+        let retired = &mut self.retired_images;
+        self.images.retain(|id, cached| {
+            let keep = live.contains(id);
+            if !keep {
+                retired.push(cached.image.clone());
+            }
+            keep
+        });
 
         let length = self.emulator.length();
-        let scrollback = self.emulator.scrollback_len();
         let opacity = self.scrollbar_opacity();
-        let scrollbar =
-            (scrollback > 0 && opacity > 0.0 && self.settings.scrollback > 0).then(|| {
-                let slider = colors
-                    .foreground
-                    .with_alpha((0.2 * 255.0 * opacity).round() as u8);
-                Scrollbar {
-                    top: top as f32 / length as f32,
-                    height: rows as f32 / length as f32,
-                    color: hsla(slider),
-                }
+        // xterm's slider colors: the foreground at 20%, 40% under the pointer, 50% while dragged.
+        let slider_alpha = if self.scrollbar_drag.is_some() {
+            0.5
+        } else if self.slider_hovered {
+            0.4
+        } else {
+            0.2
+        };
+        let scrollbar = self
+            .scrollbar_state()
+            .filter(|_| opacity > 0.0)
+            .map(|state| Scrollbar {
+                top: state.slider_position,
+                height: state.slider_size,
+                color: hsla(
+                    colors
+                        .foreground
+                        .with_alpha((slider_alpha * 255.0 * opacity).round() as u8),
+                ),
             });
 
         let mut ruler = Vec::new();
@@ -1864,59 +2316,12 @@ impl TerminalView {
             rows: frame_rows,
             cell: self.cell,
             fonts: self.fonts.clone(),
-            background: hsla(colors.background),
             cursor,
             images,
             scrollbar,
             ruler,
             buffer_lines: length,
-            preedit: self.preedit.clone(),
-        }
-    }
-}
-
-/// Colors of the search box, from the Muxus palette (`client/src/theme.ts`).
-#[derive(Clone, Copy)]
-struct SearchChrome {
-    paper: gpui_kit::Hsla,
-    divider: gpui_kit::Hsla,
-    primary: gpui_kit::Hsla,
-    text: gpui_kit::Hsla,
-    text_secondary: gpui_kit::Hsla,
-    icon: gpui_kit::Hsla,
-    disabled: gpui_kit::Hsla,
-    selected: gpui_kit::Hsla,
-    hover: gpui_kit::Hsla,
-}
-
-impl SearchChrome {
-    /// The app theme's paper, ink and overlays (MUI's `Paper` and icon buttons).
-    fn new(dark: bool, theme: Option<&muxus_ui::theme::Theme>) -> Self {
-        let fallback;
-        let theme = match theme.filter(|theme| theme.mode.is_dark() == dark) {
-            Some(theme) => theme,
-            None => {
-                fallback = muxus_ui::theme::Theme::new(if dark {
-                    muxus_ui::theme::Mode::Dark
-                } else {
-                    muxus_ui::theme::Mode::Light
-                });
-                &fallback
-            }
-        };
-        let p = &theme.palette;
-        let ink = if dark { p.common_white } else { p.common_black };
-        let fade = |amount: f32| gpui_kit::Hsla { a: amount, ..ink };
-        Self {
-            paper: p.background_paper,
-            divider: p.divider,
-            primary: p.primary.main,
-            text: p.text.primary,
-            text_secondary: p.text.secondary,
-            icon: if dark { fade(0.56) } else { p.action.active },
-            disabled: fade(0.26),
-            selected: p.action.selected,
-            hover: p.action.hover,
+            preedit: self.frame_preedit(),
         }
     }
 }
@@ -1936,6 +2341,10 @@ impl Render for TerminalView {
             self.focused = focused;
             self.restart_blink();
             self.schedule_tick(cx);
+        }
+        // Images the last frame replaced: no painted frame shows them any more.
+        for image in self.retired_images.drain(..) {
+            cx.drop_image(image, Some(window));
         }
         let frame = self.build_frame();
         let colors = self.emulator.colors();
@@ -2029,7 +2438,8 @@ impl Render for TerminalView {
         )
         .size_full();
 
-        let search_bar = self.search_open.then(|| self.render_search_bar(cx));
+        let search_bar =
+            (self.search_open && self.search_input.is_some()).then(|| self.render_search_bar(cx));
         div()
             .relative()
             .size_full()
@@ -2067,9 +2477,9 @@ impl Render for TerminalView {
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
                     .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
                     .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
-                    .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, _, cx| {
-                        view.on_scroll(event, cx)
-                    }))
+                    .on_scroll(
+                        cx.listener(|view, event: &ScrollEvent, _, cx| view.on_scroll(event, cx)),
+                    )
                     .on_hover(cx.listener(|view, hovered: &bool, _, cx| {
                         view.hovered = *hovered;
                         if !*hovered {
@@ -2084,15 +2494,21 @@ impl Render for TerminalView {
     }
 }
 
+/// The IME sees what xterm's hidden textarea holds while composing: the composition, with the
+/// caret at its end. Committed text goes to the session and leaves nothing behind.
 impl EntityInputHandler for TerminalView {
     fn text_for_range(
         &mut self,
-        _: std::ops::Range<usize>,
-        _: &mut Option<std::ops::Range<usize>>,
+        range: std::ops::Range<usize>,
+        adjusted: &mut Option<std::ops::Range<usize>>,
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<String> {
-        None
+        let units: Vec<u16> = self.preedit.as_ref()?.encode_utf16().collect();
+        let start = range.start.min(units.len());
+        let end = range.end.clamp(start, units.len());
+        *adjusted = Some(start..end);
+        Some(String::from_utf16_lossy(&units[start..end]))
     }
 
     fn selected_text_range(
@@ -2101,8 +2517,12 @@ impl EntityInputHandler for TerminalView {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
+        let end = self
+            .preedit
+            .as_ref()
+            .map_or(0, |text| text.encode_utf16().count());
         Some(UTF16Selection {
-            range: 0..0,
+            range: end..end,
             reversed: false,
         })
     }
@@ -2184,4 +2604,429 @@ pub fn new_terminal_view(
     cx: &mut App,
 ) -> Entity<TerminalView> {
     cx.new(|cx| TerminalView::new(channels, settings, window, cx))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use gpui::{Modifiers, TestAppContext, VisualTestContext};
+    use muxus_core::stream::TransportEnds;
+    use muxus_term::links::LinkActivation;
+    use muxus_term::right_click::RightClickAction;
+
+    use super::*;
+
+    /// A terminal in a headless window, laid out at a known place with 10×20px cells.
+    fn terminal(
+        cx: &mut TestAppContext,
+        settings: TerminalSettings,
+        cols: u16,
+        rows: u16,
+    ) -> (Entity<TerminalView>, TransportEnds, &mut VisualTestContext) {
+        cx.update(|cx| muxus_ui::init(muxus_ui::theme::Mode::Light, cx));
+        let (channels, ends) = TransportChannels::pair(256);
+        let (view, cx) =
+            cx.add_window_view(|window, cx| TerminalView::new(channels, settings, window, cx));
+        cx.run_until_parked();
+        place(&view, cx, cols, rows);
+        (view, ends, cx)
+    }
+
+    /// 10×20px cells (whatever the test fonts measure) on a grid of `cols` × `rows`. The grid
+    /// stays where the window drew it.
+    fn place(view: &Entity<TerminalView>, cx: &mut VisualTestContext, cols: u16, rows: u16) {
+        view.update(cx, |view, _| {
+            view.cell = CellSize {
+                width: 10.0,
+                height: 20.0,
+                baseline_shift: 0.0,
+            };
+            view.emulator.resize(cols, rows);
+        });
+    }
+
+    /// The window position of the middle of a cell.
+    fn cell(
+        view: &Entity<TerminalView>,
+        cx: &mut VisualTestContext,
+        col: usize,
+        row: usize,
+    ) -> Point<Pixels> {
+        let origin = view.read_with(cx, |view, _| view.grid_origin().expect("laid out"));
+        origin
+            + point(
+                layout_px(col as f32 * 10.0 + 5.0),
+                layout_px(row as f32 * 20.0 + 10.0),
+            )
+    }
+
+    /// The window position `y` px down the scrollbar's track.
+    fn track(view: &Entity<TerminalView>, cx: &mut VisualTestContext, y: f32) -> Point<Pixels> {
+        view.read_with(cx, |view, _| {
+            let bounds = view.layout.get().bounds.expect("laid out");
+            point(
+                bounds.origin.x + bounds.size.width
+                    - layout_px(inner_padding() + scrollbar_width() / 2.0),
+                bounds.origin.y + layout_px(inner_padding() + y),
+            )
+        })
+    }
+
+    fn down(position: Point<Pixels>, button: MouseButton, modifiers: Modifiers) -> MouseDownEvent {
+        MouseDownEvent {
+            button,
+            position,
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        }
+    }
+
+    fn up(position: Point<Pixels>, button: MouseButton, modifiers: Modifiers) -> MouseUpEvent {
+        MouseUpEvent {
+            button,
+            position,
+            modifiers,
+            click_count: 1,
+        }
+    }
+
+    fn moved(position: Point<Pixels>, pressed: Option<MouseButton>) -> MouseMoveEvent {
+        MouseMoveEvent {
+            position,
+            pressed_button: pressed,
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    fn press(view: &Entity<TerminalView>, cx: &mut VisualTestContext, event: MouseDownEvent) {
+        cx.update(|window, cx| view.update(cx, |view, cx| view.on_mouse_down(&event, window, cx)));
+    }
+
+    fn click(
+        view: &Entity<TerminalView>,
+        cx: &mut VisualTestContext,
+        position: Point<Pixels>,
+        modifiers: Modifiers,
+    ) {
+        press(view, cx, down(position, MouseButton::Left, modifiers));
+        view.update(cx, |view, cx| {
+            view.on_mouse_up(&up(position, MouseButton::Left, modifiers), cx)
+        });
+    }
+
+    fn write(view: &Entity<TerminalView>, cx: &mut VisualTestContext, text: &str) {
+        view.update(cx, |view, cx| view.write_output(text.as_bytes(), cx));
+    }
+
+    /// What the view sent to the session as data since the last call.
+    fn sent(ends: &TransportEnds, cx: &mut VisualTestContext) -> String {
+        cx.run_until_parked();
+        let mut data = Vec::new();
+        while let Ok(input) = ends.input.try_recv() {
+            if let TransportInput::Data(bytes) = input {
+                data.extend(bytes);
+            }
+        }
+        String::from_utf8(data).unwrap()
+    }
+
+    fn alt() -> Modifiers {
+        Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        }
+    }
+
+    #[gpui::test]
+    fn an_alt_click_moves_the_shell_cursor_with_arrow_keys(cx: &mut TestAppContext) {
+        let settings = TerminalSettings {
+            link_activation: LinkActivation::Ctrl,
+            is_mac: false,
+            ..TerminalSettings::default()
+        };
+        let (view, ends, cx) = terminal(cx, settings, 40, 5);
+        write(&view, cx, "$ echo hi");
+        place(&view, cx, 40, 5);
+        sent(&ends, cx);
+        let at = cell(&view, cx, 2, 0);
+        click(&view, cx, at, alt());
+        assert_eq!(sent(&ends, cx), "\x1b[D".repeat(7));
+        // A plain click sends nothing.
+        let at = cell(&view, cx, 5, 0);
+        click(&view, cx, at, Modifiers::default());
+        assert_eq!(sent(&ends, cx), "");
+        // Alt is the link gesture: Alt+click leaves the cursor alone.
+        view.update(cx, |view, cx| {
+            let settings = TerminalSettings {
+                link_activation: LinkActivation::Alt,
+                ..view.settings().clone()
+            };
+            view.set_settings(settings, cx);
+        });
+        place(&view, cx, 40, 5);
+        let at = cell(&view, cx, 2, 0);
+        click(&view, cx, at, alt());
+        assert_eq!(sent(&ends, cx), "");
+    }
+
+    #[gpui::test]
+    fn a_right_click_on_macos_selects_the_word_for_the_menu(cx: &mut TestAppContext) {
+        let settings = TerminalSettings {
+            right_click: RightClickAction::Menu,
+            is_mac: true,
+            ..TerminalSettings::default()
+        };
+        let (view, _ends, cx) = terminal(cx, settings, 40, 5);
+        let menus = Rc::new(RefCell::new(Vec::<String>::new()));
+        let seen = menus.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&view, move |_, event: &TerminalViewEvent, _| {
+                if let TerminalViewEvent::ContextMenu { selection, .. } = event {
+                    seen.borrow_mut().push(selection.clone());
+                }
+            })
+        });
+        write(&view, cx, "hello world");
+        place(&view, cx, 40, 5);
+        let right_click = |view: &Entity<TerminalView>, cx: &mut VisualTestContext, col| {
+            let at = cell(view, cx, col, 0);
+            press(view, cx, down(at, MouseButton::Right, Modifiers::default()));
+            cx.run_until_parked();
+        };
+        right_click(&view, cx, 8);
+        assert_eq!(menus.borrow().as_slice(), ["world"]);
+        // A selection that exists is kept for the menu.
+        right_click(&view, cx, 1);
+        assert_eq!(menus.borrow().last().unwrap(), "world");
+        // Elsewhere than macOS the menu gets only what was already selected.
+        view.update(cx, |view, cx| {
+            view.clear_selection(cx);
+            let settings = TerminalSettings {
+                is_mac: false,
+                ..view.settings().clone()
+            };
+            view.set_settings(settings, cx);
+        });
+        place(&view, cx, 40, 5);
+        right_click(&view, cx, 1);
+        assert_eq!(menus.borrow().last().unwrap(), "");
+    }
+
+    #[gpui::test]
+    fn a_right_click_paste_goes_to_the_app_when_it_paces_pastes(cx: &mut TestAppContext) {
+        let settings = TerminalSettings {
+            right_click: RightClickAction::Paste,
+            ..TerminalSettings::default()
+        };
+        let (view, ends, cx) = terminal(cx, settings, 40, 5);
+        let requests = Rc::new(Cell::new(0));
+        let seen = requests.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&view, move |_, event: &TerminalViewEvent, _| {
+                if matches!(event, TerminalViewEvent::PasteRequested) {
+                    seen.set(seen.get() + 1);
+                }
+            })
+        });
+        cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("ls".into())));
+        let right_click = |view: &Entity<TerminalView>, cx: &mut VisualTestContext| {
+            let at = cell(view, cx, 1, 0);
+            press(view, cx, down(at, MouseButton::Right, Modifiers::default()));
+            cx.run_until_parked();
+        };
+        // On its own the view pastes, unpaced, as xterm does.
+        right_click(&view, cx);
+        assert_eq!(sent(&ends, cx), "ls");
+        assert_eq!(requests.get(), 0);
+        // In the app the paste goes through the app's paste command instead.
+        view.update(cx, |view, _| view.set_app_pastes(true));
+        right_click(&view, cx);
+        assert_eq!(sent(&ends, cx), "");
+        assert_eq!(requests.get(), 1);
+    }
+
+    #[gpui::test]
+    fn the_scrollbar_drags_and_jumps_to_a_press_on_its_track(cx: &mut TestAppContext) {
+        let (view, _ends, cx) = terminal(cx, TerminalSettings::default(), 40, 10);
+        let lines: String = (0..100).map(|i| format!("line {i}\r\n")).collect();
+        write(&view, cx, &lines);
+        place(&view, cx, 40, 10);
+        let top = |view: &Entity<TerminalView>, cx: &mut VisualTestContext| {
+            view.read_with(cx, |view, _| view.emulator.viewport_top())
+        };
+        let bottom = top(&view, cx);
+        assert_eq!(bottom, 91);
+        // 200px of track over 101 lines: the 20px minimum slider, at the bottom.
+        let state = view.read_with(cx, |view, _| view.scrollbar_state().unwrap());
+        assert_eq!(state.slider_size, 20.0);
+        assert_eq!(state.slider_position, 180.0);
+        // A press on the track centres the slider on the pointer (and does not select).
+        let at = track(&view, cx, 60.0);
+        press(&view, cx, down(at, MouseButton::Left, Modifiers::default()));
+        let jumped = top(&view, cx);
+        let expected = (((60.0 - 10.0) / state.slider_ratio).round() / 20.0).round() as usize;
+        assert_eq!(jumped, expected);
+        // The press goes on as a drag.
+        let at = track(&view, cx, 100.0);
+        view.update(cx, |view, cx| {
+            view.on_mouse_move(&moved(at, Some(MouseButton::Left)), cx);
+        });
+        let dragged = top(&view, cx);
+        assert!(dragged > jumped, "{dragged} > {jumped}");
+        assert!(view.read_with(cx, |view, _| view.selection.is_none()));
+        // Past the end it stops at the bottom; the release ends the drag.
+        let at = track(&view, cx, 1000.0);
+        view.update(cx, |view, cx| {
+            view.on_mouse_move(&moved(at, Some(MouseButton::Left)), cx);
+            view.on_mouse_up(&up(at, MouseButton::Left, Modifiers::default()), cx);
+        });
+        assert_eq!(top(&view, cx), bottom);
+        assert!(view.read_with(cx, |view, _| view.scrollbar_drag.is_none()));
+        // A press on the slider itself does not jump.
+        let slider_middle = view.read_with(cx, |view, _| {
+            let state = view.scrollbar_state().unwrap();
+            state.slider_position + state.slider_size / 2.0
+        });
+        let at = track(&view, cx, slider_middle);
+        press(&view, cx, down(at, MouseButton::Left, Modifiers::default()));
+        assert_eq!(top(&view, cx), bottom);
+    }
+
+    #[gpui::test]
+    fn an_ime_composition_shows_at_the_cursor_and_is_sent_when_committed(cx: &mut TestAppContext) {
+        let (view, ends, cx) = terminal(cx, TerminalSettings::default(), 40, 5);
+        write(&view, cx, "$ ");
+        place(&view, cx, 40, 5);
+        sent(&ends, cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.replace_and_mark_text_in_range(None, "にほ", None, window, cx);
+                assert_eq!(view.marked_text_range(window, cx), Some(0..2));
+                let mut adjusted = None;
+                assert_eq!(
+                    view.text_for_range(1..9, &mut adjusted, window, cx)
+                        .as_deref(),
+                    Some("ほ")
+                );
+                assert_eq!(adjusted, Some(1..2));
+                assert_eq!(
+                    view.selected_text_range(false, window, cx).map(|s| s.range),
+                    Some(2..2)
+                );
+                let preedit = view.frame_preedit().expect("shown");
+                assert_eq!(
+                    (
+                        preedit.text.as_str(),
+                        preedit.row,
+                        preedit.col,
+                        preedit.cols_left
+                    ),
+                    ("にほ", 0, 2, 38)
+                );
+            })
+        });
+        // Nothing reaches the session while composing.
+        assert_eq!(sent(&ends, cx), "");
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.replace_and_mark_text_in_range(None, "にほん", None, window, cx);
+                view.replace_text_in_range(None, "日本", window, cx);
+                assert_eq!(view.marked_text_range(window, cx), None);
+                assert!(view.frame_preedit().is_none());
+            })
+        });
+        assert_eq!(sent(&ends, cx), "日本");
+    }
+
+    #[gpui::test]
+    fn the_scrollback_size_and_image_storage_follow_the_settings(cx: &mut TestAppContext) {
+        let (view, _ends, cx) = terminal(cx, TerminalSettings::default(), 40, 10);
+        let lines: String = (0..100).map(|i| format!("line {i}\r\n")).collect();
+        write(&view, cx, &lines);
+        view.update(cx, |view, cx| {
+            let settings = TerminalSettings {
+                scrollback: 20,
+                ..view.settings().clone()
+            };
+            view.set_settings(settings, cx);
+        });
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.emulator.scrollback_len(), 20);
+            assert_eq!(view.emulator.scrollback_limit(), 20);
+        });
+        view.update(cx, |view, _| view.set_active(false));
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.emulator.image_storage_limit(),
+                BACKGROUND_IMAGE_STORAGE_MB
+            );
+        });
+        view.update(cx, |view, _| view.set_active(true));
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.emulator.image_storage_limit(), ACTIVE_IMAGE_STORAGE_MB);
+        });
+    }
+
+    /// A frame of an animated image (kitty's `a=f`) makes a new sprite for the placement and
+    /// retires the one it replaced, to leave the atlas; unchanged pixels keep their sprite. A
+    /// sprite the GPU stretches carries a border one image pixel wide.
+    #[gpui::test]
+    fn a_new_frame_of_an_image_replaces_its_sprite_and_retires_the_old_one(
+        cx: &mut TestAppContext,
+    ) {
+        const ST: &str = "\x1b\\";
+        // 2×2 RGB pixels of 1s and of 2s.
+        const ONES: &str = "AQEBAQEBAQEBAQEB";
+        const TWOS: &str = "AgICAgICAgICAgIC";
+        let (view, _ends, cx) = terminal(cx, TerminalSettings::default(), 40, 10);
+        // Stretched over 4×2 cells (40×40 px).
+        write(
+            &view,
+            cx,
+            &format!("\x1b_Ga=T,i=3,f=24,s=2,v=2,q=2,c=4,r=2,C=1;{ONES}{ST}"),
+        );
+        let sprite = |view: &Entity<TerminalView>, cx: &mut VisualTestContext| {
+            view.update(cx, |view, _| {
+                let frame = view.build_frame();
+                assert_eq!(frame.images.len(), 1);
+                (frame.images[0].image.clone(), frame.images[0].border)
+            })
+        };
+        let (first, border) = sprite(&view, cx);
+        assert_eq!(border, (20.0, 20.0));
+        assert_eq!(
+            first.size(0),
+            gpui::size(gpui::DevicePixels(4), gpui::DevicePixels(4)),
+            "the image's own 2×2 pixels and their border"
+        );
+        let (again, _) = sprite(&view, cx);
+        assert!(Arc::ptr_eq(&first, &again));
+        view.read_with(cx, |view, _| assert!(view.retired_images.is_empty()));
+
+        write(
+            &view,
+            cx,
+            &format!("\x1b_Ga=f,r=1,i=3,f=24,s=2,v=2,q=2;{TWOS}{ST}\x1b_Ga=a,c=1,i=3,q=2;{ST}"),
+        );
+        let (second, _) = sprite(&view, cx);
+        assert!(!Arc::ptr_eq(&first, &second));
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.images.len(), 1);
+            assert_eq!(view.retired_images.len(), 1);
+            assert!(Arc::ptr_eq(&view.retired_images[0], &first));
+        });
+    }
+
+    #[test]
+    fn the_edge_border_repeats_the_edge_pixels() {
+        // 2×1: pixels a and b become a 4×3 sprite of rows "a a b b".
+        let (a, b) = ([1, 2, 3, 4], [5, 6, 7, 8]);
+        let row = [a, a, b, b].concat();
+        assert_eq!(
+            with_edge_border(&[a, b].concat(), 2, 1),
+            [row.clone(), row.clone(), row].concat()
+        );
+    }
 }

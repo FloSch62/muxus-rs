@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use russh::keys::{PrivateKey, PublicKey};
-use russh::server::{Auth, Handler, Msg, Session};
+use russh::server::{Auth, Handler, Msg, PublicKeyOffer, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId, MethodKind, MethodSet, Preferred, Pty};
 
 /// One keyboard-interactive round: prompts and the answers that pass it.
@@ -43,7 +43,24 @@ pub struct ServerSpec {
     pub exec_output: Option<String>,
     /// Serve the `sftp` subsystem from this directory.
     pub sftp_root: Option<std::path::PathBuf>,
+    /// Let anyone in without credentials (the `none` method), as a test sshd for the `ssh`
+    /// program does.
+    pub accept_none: bool,
+    /// Answer `direct-tcpip` requests with a refusal (a jump host that cannot reach the target).
+    pub refuse_direct_tcpip: bool,
+    /// Run exec requests through this: it gets the command and everything the client sent
+    /// before EOF, and answers with output and exit status, or `None` for 127.
+    pub exec_handler: Option<ExecHandler>,
+    /// Run exec requests with the local `/bin/sh -c`, as sshd does: stdin, stdout and stderr
+    /// stream over the channel, each exec runs in a process group of its own, and the exit
+    /// status follows the last output. Unix only.
+    pub exec_shell: bool,
+    /// Extra environment for [`ServerSpec::exec_shell`] commands (`TMPDIR`, say).
+    pub exec_env: Vec<(String, String)>,
 }
+
+/// An exec request's command and input to its output and exit status.
+pub type ExecHandler = Arc<dyn Fn(&str, &[u8]) -> Option<(String, u32)> + Send + Sync>;
 
 impl Default for ServerSpec {
     fn default() -> Self {
@@ -78,6 +95,11 @@ impl ServerSpec {
             disconnect_on_exec: false,
             exec_output: None,
             sftp_root: None,
+            accept_none: false,
+            refuse_direct_tcpip: false,
+            exec_handler: None,
+            exec_shell: false,
+            exec_env: Vec::new(),
         }
     }
 
@@ -191,6 +213,7 @@ pub async fn start(spec: ServerSpec) -> TestServer {
                 channels: HashMap::new(),
                 ptys: HashMap::new(),
                 x11: HashMap::new(),
+                pending_exec: HashMap::new(),
             };
             let config = config.clone();
             let log_for_session = server_log.clone();
@@ -224,6 +247,8 @@ struct ServerHandler {
     ptys: HashMap<ChannelId, bool>,
     /// The fake X11 cookie (hex) a session channel asked to forward with.
     x11: HashMap<ChannelId, String>,
+    /// Exec requests waiting for their input's EOF: the command and the input so far.
+    pending_exec: HashMap<ChannelId, (String, Vec<u8>)>,
 }
 
 impl ServerHandler {
@@ -275,6 +300,10 @@ impl Handler for ServerHandler {
     type Error = russh::Error;
 
     async fn auth_none(&mut self, _user: &str) -> Result<Auth, Self::Error> {
+        if self.spec.accept_none {
+            self.event("auth none:accepted".into());
+            return Ok(Auth::Accept);
+        }
         Ok(self.reject())
     }
 
@@ -294,8 +323,9 @@ impl Handler for ServerHandler {
     async fn auth_publickey_offered(
         &mut self,
         _user: &str,
-        key: &PublicKey,
+        offer: PublicKeyOffer<'_>,
     ) -> Result<Auth, Self::Error> {
+        let key = offer.public_key;
         let known = self
             .spec
             .authorized_keys
@@ -304,7 +334,12 @@ impl Handler for ServerHandler {
         Ok(if known { Auth::Accept } else { self.reject() })
     }
 
-    async fn auth_publickey(&mut self, _user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
+    async fn auth_publickey(
+        &mut self,
+        _user: &str,
+        verified: VerifiedPublicKey<'_>,
+    ) -> Result<Auth, Self::Error> {
+        let key = verified.public_key;
         let known = self
             .spec
             .authorized_keys
@@ -489,6 +524,10 @@ impl Handler for ServerHandler {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if let Some((_, input)) = self.pending_exec.get_mut(&channel) {
+            input.extend_from_slice(data);
+            return Ok(());
+        }
         // An echoing shell: what the client types comes back. Only session channels echo;
         // forwarded channels carry their own streams.
         if !self.ptys.contains_key(&channel) && !self.channels.contains_key(&channel) {
@@ -563,6 +602,26 @@ impl Handler for ServerHandler {
         Ok(())
     }
 
+    async fn channel_eof(
+        &mut self,
+        channel: ChannelId,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let Some((command, input)) = self.pending_exec.remove(&channel) else {
+            return Ok(());
+        };
+        let handler = self.spec.exec_handler.clone().expect("exec handler");
+        let (output, status) = handler(&command, &input).unwrap_or((String::new(), 127));
+        session.data(channel, output.into_bytes())?;
+        session.exit_status_request(channel, status)?;
+        session.eof(channel)?;
+        session.close(channel)?;
+        if self.channels.remove(&channel).is_some() {
+            self.sessions = self.sessions.saturating_sub(1);
+        }
+        Ok(())
+    }
+
     async fn exec_request(
         &mut self,
         channel: ChannelId,
@@ -574,6 +633,22 @@ impl Handler for ServerHandler {
         self.log.lock().unwrap().execs.push(command.clone());
         if self.spec.disconnect_on_exec {
             session.disconnect(russh::Disconnect::ProtocolError, "exec not supported", "en")?;
+            return Ok(());
+        }
+        if self.spec.exec_handler.is_some() {
+            session.channel_success(channel)?;
+            self.pending_exec.insert(channel, (command, Vec::new()));
+            return Ok(());
+        }
+        if self.spec.exec_shell {
+            let Some(ch) = self.channels.remove(&channel) else {
+                session.channel_failure(channel)?;
+                return Ok(());
+            };
+            // The channel is the command's now; it no longer counts against MaxSessions.
+            self.sessions = self.sessions.saturating_sub(1);
+            session.channel_success(channel)?;
+            tokio::spawn(run_shell_exec(ch, command, self.spec.exec_env.clone()));
             return Ok(());
         }
         session.channel_success(channel)?;
@@ -623,6 +698,12 @@ impl Handler for ServerHandler {
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
         self.event(format!("direct-tcpip {host_to_connect}:{port_to_connect}"));
+        if self.spec.refuse_direct_tcpip {
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
+        }
         let target = format!("{host_to_connect}:{port_to_connect}");
         match tokio::net::TcpStream::connect(&target).await {
             Ok(mut tcp) => {
@@ -677,6 +758,90 @@ impl Handler for ServerHandler {
             }
         });
         Ok(true)
+    }
+}
+
+/// One exec request run by the local shell (see [`ServerSpec::exec_shell`]).
+async fn run_shell_exec(channel: Channel<Msg>, command: String, env: Vec<(String, String)>) {
+    #[cfg(unix)]
+    {
+        use tokio::io::AsyncWriteExt;
+
+        let mut shell = tokio::process::Command::new("/bin/sh");
+        shell
+            .arg("-c")
+            .arg(&command)
+            .envs(env)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            // Like sshd: each exec session in a session (and process group) of its own.
+            .process_group(0);
+        let Ok(mut child) = shell.spawn() else {
+            let _ = channel.exit_status(127).await;
+            let _ = channel.eof().await;
+            let _ = channel.close().await;
+            return;
+        };
+        let (mut read, write) = channel.split();
+        let mut stdin = child.stdin.take();
+        let mut stdout = child.stdout.take().expect("piped stdout");
+        let mut stderr = child.stderr.take().expect("piped stderr");
+        let mut out = write.make_writer();
+        let mut err = write.make_writer_ext(Some(1));
+        let output = async {
+            let copy_out = async {
+                let _ = tokio::io::copy(&mut stdout, &mut out).await;
+                let _ = out.flush().await;
+            };
+            let copy_err = async {
+                let _ = tokio::io::copy(&mut stderr, &mut err).await;
+                let _ = err.flush().await;
+            };
+            tokio::join!(copy_out, copy_err);
+        };
+        let input = async {
+            while let Some(message) = read.wait().await {
+                match message {
+                    russh::ChannelMsg::Data { data } => {
+                        if let Some(pipe) = stdin.as_mut()
+                            && pipe.write_all(&data).await.is_err()
+                        {
+                            stdin = None;
+                        }
+                    }
+                    russh::ChannelMsg::Eof => stdin = None,
+                    russh::ChannelMsg::Close => break,
+                    _ => {}
+                }
+            }
+        };
+        tokio::select! {
+            // 'close' after the output, not 'exit': like sshd, send everything the command
+            // wrote before the exit status and the end of the channel.
+            _ = output => {
+                let code = child
+                    .wait()
+                    .await
+                    .ok()
+                    .and_then(|status| status.code())
+                    .unwrap_or(1);
+                let _ = write.exit_status(code as u32).await;
+                let _ = write.eof().await;
+                let _ = write.close().await;
+            }
+            // The client closed the channel: the command goes with it.
+            _ = input => {
+                let _ = child.start_kill();
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (command, env);
+        let _ = channel.exit_status(127).await;
+        let _ = channel.eof().await;
+        let _ = channel.close().await;
     }
 }
 

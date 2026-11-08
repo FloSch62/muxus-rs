@@ -18,6 +18,7 @@ use crate::color::alpha;
 use crate::icon::{SMALL, icon};
 use crate::label::label;
 use crate::theme::{ActiveTheme, Theme, fonts};
+use crate::widgets::menu_keyboard::{MENU_KEY_CONTEXT, MenuFocus, MenuScope, register_item};
 
 /// The menu surface: paper background, border, corners and shadow, with the
 /// 8px vertical padding of `MenuList`.
@@ -116,7 +117,7 @@ impl Popup {
 }
 
 impl RenderOnce for Popup {
-    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let size = window.viewport_size();
         // A window that draws its own frame keeps the frame's shadow margin as
         // its client inset even maximized or fullscreen, where no shadow is
@@ -173,7 +174,15 @@ impl RenderOnce for Popup {
             .with_priority(MENU_LAYER)
             .into_any_element();
         }
-        let (left, right) = (self.on_dismiss.clone(), self.on_dismiss);
+        let (left, right) = (self.on_dismiss.clone(), self.on_dismiss.clone());
+        // The keyboard: the focus moves into the menu and the arrows walk it
+        // (`MenuList`, see `menu_keyboard`).
+        let keyboard = window.use_keyed_state("muxus-menu-keyboard", cx, MenuFocus::new);
+        let (container, registry) = {
+            let state = keyboard.read(cx);
+            (state.container.clone(), state.registry.clone())
+        };
+        let dismiss = self.on_dismiss;
         deferred(
             anchored().position(point(px(0.), px(0.))).child(
                 div()
@@ -189,13 +198,23 @@ impl RenderOnce for Popup {
                             surface.child(
                                 div()
                                     .id("menu-content")
+                                    .key_context(MENU_KEY_CONTEXT)
+                                    .track_focus(&container)
+                                    .on_key_down(move |event, window, cx| {
+                                        let used = keyboard.update(cx, |state, cx| {
+                                            state.key_down(event, &*dismiss, window, cx)
+                                        });
+                                        if used {
+                                            cx.stop_propagation();
+                                        }
+                                    })
                                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                         cx.stop_propagation()
                                     })
                                     .on_mouse_down(MouseButton::Right, |_, _, cx| {
                                         cx.stop_propagation()
                                     })
-                                    .child(self.content),
+                                    .child(MenuScope::new(registry, self.content)),
                             ),
                         ),
                     ),
@@ -367,7 +386,15 @@ impl MenuItem {
 }
 
 impl RenderOnce for MenuItem {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // An item of an open menu takes the keyboard focus the arrows move.
+        let keyboard = (!self.disabled && self.on_click.is_some())
+            .then(|| register_item(&self.id, &self.label, self.selected, cx))
+            .flatten();
+        let focus_ring = self.focus_ring
+            || keyboard
+                .as_ref()
+                .is_some_and(|focus| crate::widgets::focus::focus_visible(focus, window));
         let theme = cx.theme();
         let p = &theme.palette;
         let typo = if self.dense {
@@ -424,12 +451,21 @@ impl RenderOnce for MenuItem {
                 natural
             }))
         };
-        if self.selected {
+        if self.selected && self.highlighted {
+            // An autocomplete's picked option under the highlight: selected + hover.
+            item = item.bg(hover);
+        } else if self.selected && focus_ring {
+            // `.Mui-selected.Mui-focusVisible`: selected + focus (MUI's 0.12).
+            item = item.bg(alpha(p.primary.main, p.action.selected_opacity + 0.12));
+        } else if self.selected {
             item = item.bg(selected_bg);
-        } else if self.focus_ring {
+        } else if focus_ring {
             item = item.bg(p.action.focus);
         } else if self.highlighted {
             item = item.bg(p.action.hover);
+        }
+        if let Some(focus) = &keyboard {
+            item = item.track_focus(focus);
         }
         if self.disabled {
             item = item.opacity(0.38);

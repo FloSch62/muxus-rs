@@ -1,5 +1,5 @@
 {
- "userVersion": 29,
+ "userVersion": 37,
  "migrations": [
   {
    "version": 1,
@@ -116,6 +116,38 @@
   {
    "version": 29,
    "name": "management-hosts"
+  },
+  {
+   "version": 30,
+   "name": "host-paste-prompt-wait"
+  },
+  {
+   "version": 31,
+   "name": "host-anti-idle"
+  },
+  {
+   "version": 32,
+   "name": "host-terminal-input-modes"
+  },
+  {
+   "version": 33,
+   "name": "host-environment-discovery"
+  },
+  {
+   "version": 34,
+   "name": "host-jump-fallbacks"
+  },
+  {
+   "version": 35,
+   "name": "scripts"
+  },
+  {
+   "version": 36,
+   "name": "web-hosts"
+  },
+  {
+   "version": 37,
+   "name": "host-system-openssh"
   }
  ],
  "objects": [
@@ -325,9 +357,39 @@
   },
   {
    "type": "table",
+   "name": "management_requests",
+   "tbl_name": "management_requests",
+   "sql": "CREATE TABLE management_requests (\n      id TEXT PRIMARY KEY,\n      protocol TEXT NOT NULL CHECK(protocol IN ('gnmi', 'netconf')),\n      -- NULL: offered for every host of the protocol.\n      profile_id TEXT,\n      name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 200),\n      request_json TEXT NOT NULL CHECK(json_valid(request_json)),\n      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n    ) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_management_requests_1",
+   "tbl_name": "management_requests",
+   "sql": null
+  },
+  {
+   "type": "index",
+   "name": "management_requests_scope",
+   "tbl_name": "management_requests",
+   "sql": "CREATE INDEX management_requests_scope ON management_requests(protocol, profile_id)"
+  },
+  {
+   "type": "table",
+   "name": "scripts",
+   "tbl_name": "scripts",
+   "sql": "CREATE TABLE scripts (\n        id TEXT PRIMARY KEY,\n        name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 200),\n        body TEXT NOT NULL CHECK(length(body) <= 1048576),\n        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n      ) STRICT"
+  },
+  {
+   "type": "index",
+   "name": "sqlite_autoindex_scripts_1",
+   "tbl_name": "scripts",
+   "sql": null
+  },
+  {
+   "type": "table",
    "name": "connection_profiles",
    "tbl_name": "connection_profiles",
-   "sql": "CREATE TABLE \"connection_profiles\" (\n        id TEXT PRIMARY KEY,\n        kind TEXT NOT NULL CHECK(kind IN ('openssh', 'ssh', 'local', 'serial', 'telnet', 'rdp', 'vnc', 'gnmi', 'netconf')),\n        name TEXT NOT NULL,\n        ssh_alias TEXT UNIQUE,\n        native_config_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(native_config_json)),\n        credential_ref_id TEXT REFERENCES credential_refs(id) ON DELETE SET NULL,\n        group_id TEXT REFERENCES connection_groups(id) ON DELETE SET NULL,\n        color TEXT,\n        icon TEXT,\n        last_connected_at TEXT,\n        connect_count INTEGER NOT NULL DEFAULT 0 CHECK(connect_count >= 0),\n        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, sort_order INTEGER, keyword_highlights_json TEXT\n        CHECK(keyword_highlights_json IS NULL OR json_valid(keyword_highlights_json)), disable_sftp INTEGER NOT NULL DEFAULT 0\n        CHECK(disable_sftp IN (0, 1)), console_compatibility INTEGER NOT NULL DEFAULT 0\n        CHECK(console_compatibility IN (0, 1)), terminal_scheme TEXT, terminal_font_color TEXT, terminal_background_color TEXT, command_button_group TEXT, login_sequence_json TEXT\n        CHECK(login_sequence_json IS NULL OR json_valid(login_sequence_json)), paste_line_delay_ms INTEGER\n        CHECK(paste_line_delay_ms IS NULL OR paste_line_delay_ms >= 0), paste_char_delay_ms INTEGER\n        CHECK(paste_char_delay_ms IS NULL OR paste_char_delay_ms >= 0),\n        CHECK(\n          (kind = 'openssh' AND ssh_alias IS NOT NULL AND native_config_json = '{}')\n          OR (kind <> 'openssh' AND ssh_alias IS NULL)\n        )\n      ) STRICT"
+   "sql": "CREATE TABLE \"connection_profiles\" (\n        id TEXT PRIMARY KEY,\n        kind TEXT NOT NULL CHECK(kind IN ('openssh', 'ssh', 'local', 'serial', 'telnet', 'rdp', 'vnc', 'gnmi', 'netconf', 'web')),\n        name TEXT NOT NULL,\n        ssh_alias TEXT UNIQUE,\n        native_config_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(native_config_json)),\n        credential_ref_id TEXT REFERENCES credential_refs(id) ON DELETE SET NULL,\n        group_id TEXT REFERENCES connection_groups(id) ON DELETE SET NULL,\n        color TEXT,\n        icon TEXT,\n        last_connected_at TEXT,\n        connect_count INTEGER NOT NULL DEFAULT 0 CHECK(connect_count >= 0),\n        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, sort_order INTEGER, keyword_highlights_json TEXT\n        CHECK(keyword_highlights_json IS NULL OR json_valid(keyword_highlights_json)), disable_sftp INTEGER NOT NULL DEFAULT 0\n        CHECK(disable_sftp IN (0, 1)), console_compatibility INTEGER NOT NULL DEFAULT 0\n        CHECK(console_compatibility IN (0, 1)), terminal_scheme TEXT, terminal_font_color TEXT, terminal_background_color TEXT, command_button_group TEXT, login_sequence_json TEXT\n        CHECK(login_sequence_json IS NULL OR json_valid(login_sequence_json)), paste_line_delay_ms INTEGER\n        CHECK(paste_line_delay_ms IS NULL OR paste_line_delay_ms >= 0), paste_char_delay_ms INTEGER\n        CHECK(paste_char_delay_ms IS NULL OR paste_char_delay_ms >= 0), paste_prompt_wait_json TEXT\n        CHECK(paste_prompt_wait_json IS NULL OR json_valid(paste_prompt_wait_json)), anti_idle_json TEXT\n        CHECK(anti_idle_json IS NULL OR json_valid(anti_idle_json)), backspace_key TEXT, enter_key TEXT, implicit_cr INTEGER NOT NULL DEFAULT 0\n        CHECK(implicit_cr IN (0, 1)), local_echo INTEGER NOT NULL DEFAULT 0\n        CHECK(local_echo IN (0, 1)), discover_environments INTEGER\n        CHECK(discover_environments IS NULL OR discover_environments IN (0, 1)), proxy_jump_fallbacks_json TEXT\n        CHECK(proxy_jump_fallbacks_json IS NULL OR json_valid(proxy_jump_fallbacks_json)), system_openssh INTEGER NOT NULL DEFAULT 0\n        CHECK(system_openssh IN (0, 1)),\n        CHECK(\n          (kind = 'openssh' AND ssh_alias IS NOT NULL AND native_config_json = '{}')\n          OR (kind <> 'openssh' AND ssh_alias IS NULL)\n        )\n      ) STRICT"
   },
   {
    "type": "index",
@@ -352,24 +414,6 @@
    "name": "connection_profiles_group",
    "tbl_name": "connection_profiles",
    "sql": "CREATE INDEX connection_profiles_group\n        ON connection_profiles(group_id, name COLLATE NOCASE)"
-  },
-  {
-   "type": "table",
-   "name": "management_requests",
-   "tbl_name": "management_requests",
-   "sql": "CREATE TABLE management_requests (\n      id TEXT PRIMARY KEY,\n      protocol TEXT NOT NULL CHECK(protocol IN ('gnmi', 'netconf')),\n      -- NULL: offered for every host of the protocol.\n      profile_id TEXT,\n      name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 200),\n      request_json TEXT NOT NULL CHECK(json_valid(request_json)),\n      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n    ) STRICT"
-  },
-  {
-   "type": "index",
-   "name": "sqlite_autoindex_management_requests_1",
-   "tbl_name": "management_requests",
-   "sql": null
-  },
-  {
-   "type": "index",
-   "name": "management_requests_scope",
-   "tbl_name": "management_requests",
-   "sql": "CREATE INDEX management_requests_scope ON management_requests(protocol, profile_id)"
   }
  ]
 }

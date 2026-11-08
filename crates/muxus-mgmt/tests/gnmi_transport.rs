@@ -165,6 +165,7 @@ fn profile(port: u16) -> GnmiProfile {
         cert_file: None,
         key_file: None,
         ssh_gateway: None,
+        ssh_gateway_fallbacks: None,
         encoding: None,
     }
 }

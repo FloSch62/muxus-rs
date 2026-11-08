@@ -9,6 +9,11 @@ use crate::color::{Rgba, parse_css_color, xterm_256_color};
 /// WCAG AA contrast floor enforced for every rendered text cell.
 pub const TERMINAL_MINIMUM_CONTRAST_RATIO: f64 = 4.5;
 
+/// The IME composition view (`.xterm .composition-view` in xterm.css): white text on black,
+/// whatever the scheme.
+pub const COMPOSITION_VIEW_BACKGROUND: Rgba = Rgba::rgb(0, 0, 0);
+pub const COMPOSITION_VIEW_FOREGROUND: Rgba = Rgba::rgb(255, 255, 255);
+
 /// Transparent overview-ruler border every scheme carries: marks float over the terminal with no
 /// visible ruler chrome.
 pub const OVERVIEW_RULER_BORDER_NONE: &str = "#00000000";

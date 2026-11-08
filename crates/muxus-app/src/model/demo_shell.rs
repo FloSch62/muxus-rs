@@ -275,6 +275,7 @@ pub fn demo_shell(root: &Path, prompt: &str) -> (LocalProfile, LocalEnvironment)
         ]),
         cwd: Some(root.display().to_string()),
         startup_command: None,
+        environment: None,
     };
     let vars: HashMap<String, String> = [
         ("PATH", "/usr/local/bin:/usr/bin:/bin"),

@@ -68,7 +68,7 @@ impl SectionTab {
 }
 
 /// The connection types the "Add host" tabs offer, in order.
-pub const CONNECTION_KINDS: [(SavedHostKind, &str, &str); 7] = [
+pub const CONNECTION_KINDS: [(SavedHostKind, &str, &str); 8] = [
     (SavedHostKind::Ssh, "SSH", "DnsOutlined"),
     (SavedHostKind::Telnet, "Telnet", "LanguageOutlined"),
     (SavedHostKind::Serial, "Serial", "UsbOutlined"),
@@ -76,6 +76,7 @@ pub const CONNECTION_KINDS: [(SavedHostKind, &str, &str); 7] = [
     (SavedHostKind::Vnc, "VNC", "ScreenShareOutlined"),
     (SavedHostKind::Gnmi, "gNMI", "SensorsOutlined"),
     (SavedHostKind::Netconf, "NETCONF", "AccountTreeOutlined"),
+    (SavedHostKind::Web, "Web", "PublicOutlined"),
 ];
 
 /// Everything the shell shows besides the section content.

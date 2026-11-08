@@ -125,6 +125,51 @@ pub mod number {
     }
 }
 
+/// `Number(text)` for form text: surrounding whitespace ignored, empty is 0,
+/// `0x`/`0o`/`0b` prefixes, decimals with exponents, `Infinity`; anything
+/// else is `NaN`.
+pub fn number_from_text(text: &str) -> f64 {
+    let text = js_trim(text);
+    if text.is_empty() {
+        return 0.;
+    }
+    let radix = |digits: &str, radix: u32| {
+        if digits.is_empty() {
+            return f64::NAN;
+        }
+        digits
+            .chars()
+            .try_fold(0f64, |acc, c| {
+                c.to_digit(radix)
+                    .map(|d| acc * f64::from(radix) + f64::from(d))
+            })
+            .unwrap_or(f64::NAN)
+    };
+    let lower = text.to_ascii_lowercase();
+    if let Some(digits) = lower.strip_prefix("0x") {
+        return radix(digits, 16);
+    }
+    if let Some(digits) = lower.strip_prefix("0o") {
+        return radix(digits, 8);
+    }
+    if let Some(digits) = lower.strip_prefix("0b") {
+        return radix(digits, 2);
+    }
+    match text {
+        "Infinity" | "+Infinity" => return f64::INFINITY,
+        "-Infinity" => return f64::NEG_INFINITY,
+        _ => {}
+    }
+    // Rust also accepts "inf", "nan" and friends; JavaScript does not.
+    let valid = text
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-'));
+    if !valid {
+        return f64::NAN;
+    }
+    text.parse::<f64>().unwrap_or(f64::NAN)
+}
+
 /// A JSON number written the way JavaScript writes it (`1`, not `1.0`).
 pub fn js_number(value: f64) -> serde_json::Value {
     if value.is_finite() && value.fract() == 0.0 && value.abs() <= number::MAX_SAFE_INTEGER {

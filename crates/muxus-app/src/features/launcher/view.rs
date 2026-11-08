@@ -71,6 +71,8 @@ pub struct LauncherContext {
     pub wsl_shell_profiles: Vec<LocalShellProfileConfig>,
     /// The window's workspace runtime.
     pub workspaces: Option<Entity<Workspaces>>,
+    /// Containers, lab nodes, VMs and contexts on the hosts the window read.
+    pub environments: Vec<crate::features::environments::launcher::EnvironmentLaunchItem>,
 }
 
 /// What the launcher asks the window to do. Every event but
@@ -97,6 +99,8 @@ pub enum LauncherEvent {
     RunKeyCommand(String),
     /// Start a saved tunnel (dialing it may ask for credentials).
     StartTunnel(TunnelRecord),
+    /// Open what was found on a host, or show the host in the containers and VMs panel.
+    OpenEnvironment(Box<crate::features::environments::launcher::EnvironmentLaunch>),
 }
 
 pub struct QuickLauncher {
@@ -371,6 +375,22 @@ impl QuickLauncher {
             &self.history_query,
             &self.query,
         );
+        // A name that matches a container, node or VM is opened, not treated as an SSH target.
+        let normalized = self.query.trim().to_lowercase();
+        if self
+            .context
+            .environments
+            .iter()
+            .any(|item| item.label.to_lowercase() == normalized)
+        {
+            self.query_results
+                .retain(|result| !matches!(result.payload, LauncherPayload::QuickConnect { .. }));
+        }
+        self.query_results.extend(
+            crate::features::launcher::catalog::build_environment_results(
+                &self.context.environments,
+            ),
+        );
         self.rank(cx);
     }
 
@@ -586,6 +606,10 @@ impl QuickLauncher {
                 self.close(cx);
                 cx.emit(LauncherEvent::OpenLocalShell(profile));
             }
+            LauncherPayload::Environment(item) => {
+                self.close(cx);
+                cx.emit(LauncherEvent::OpenEnvironment(Box::new(item.launch)));
+            }
             LauncherPayload::Action(action) => {
                 self.close(cx);
                 cx.emit(LauncherEvent::Action(action));
@@ -773,6 +797,7 @@ fn result_icon(result: &LauncherResult, theme: &Theme) -> (&'static str, Ink) {
         },
         LauncherPayload::History { .. } => ("HistoryOutlined", Ink::Default),
         LauncherPayload::LocalShell { .. } => ("TerminalOutlined", Ink::Color(p.primary.main)),
+        LauncherPayload::Environment(_) => ("ViewInArOutlined", Ink::Default),
         LauncherPayload::Keymap { .. } => ("KeyboardOutlined", Ink::Default),
         LauncherPayload::Action(action) => (
             match action {
@@ -780,7 +805,9 @@ fn result_icon(result: &LauncherResult, theme: &Theme) -> (&'static str, Ink) {
                 LauncherAction::Workspaces => "WorkspacesOutlined",
                 LauncherAction::History => "HistoryOutlined",
                 LauncherAction::Commands => "BoltOutlined",
+                LauncherAction::Scripts => "TerminalOutlined",
                 LauncherAction::Tunnels => "SwapHorizOutlined",
+                LauncherAction::Environments => "ViewInArOutlined",
                 LauncherAction::Sftp => "FolderOutlined",
                 LauncherAction::NewHost => "DnsOutlined",
                 LauncherAction::NewLocal | LauncherAction::FindTerminal => "TerminalOutlined",
@@ -861,7 +888,17 @@ fn result_row(
                 this.execute(index, window, cx)
             },
         ))
-        .child(list_item_icon(38., icon(name, SMALL, ink)))
+        .child(match &result.payload {
+            LauncherPayload::Environment(item) => list_item_icon(
+                38.,
+                crate::features::environments::logos::environment_logo_image(
+                    item.kind,
+                    theme.mode == muxus_ui::theme::Mode::Dark,
+                    20.,
+                ),
+            ),
+            _ => list_item_icon(38., icon(name, SMALL, ink)),
+        })
         .child(list_item_text(
             text_weight(result.item.label.clone(), t.body2, 600., p.text.primary),
             Some(text(result.secondary().to_owned(), t.body2, p.text.secondary).into_any_element()),

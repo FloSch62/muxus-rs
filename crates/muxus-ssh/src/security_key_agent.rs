@@ -953,12 +953,12 @@ fn private_directory_root(runtime: Option<&Path>, temp: &Path) -> PathBuf {
 /// `mkdtemp(<root>/muxus-sk-XXXXXX)`, open to the user alone.
 #[cfg(unix)]
 fn create_private_directory(root: &Path) -> std::io::Result<PathBuf> {
-    use rand::Rng;
+    use rand::RngExt;
     use std::os::unix::fs::DirBuilderExt;
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     loop {
         let suffix: String = (0..6)
-            .map(|_| char::from(rng.sample(rand::distributions::Alphanumeric)))
+            .map(|_| char::from(rng.sample(rand::distr::Alphanumeric)))
             .collect();
         let path = root.join(format!("muxus-sk-{suffix}"));
         match std::fs::DirBuilder::new().mode(0o700).create(&path) {
