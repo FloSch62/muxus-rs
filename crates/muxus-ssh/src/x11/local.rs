@@ -715,9 +715,13 @@ impl X11Transport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::x11::proxy::{X11SetupParse, parse_x11_setup};
-    use crate::x11::test_support::{FakeChildren, setup_request, write_xauthority};
+    use crate::x11::test_support::FakeChildren;
+    #[cfg(unix)]
+    use crate::x11::test_support::{setup_request, write_xauthority};
     use std::path::Path;
+    #[cfg(unix)]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn env(vars: &[(&str, &str)]) -> EnvLookup {
@@ -747,6 +751,7 @@ mod tests {
     }
 
     /// A short socket directory: Unix socket paths are limited to about 100 bytes.
+    #[cfg(unix)]
     fn socket_dir() -> tempfile::TempDir {
         tempfile::Builder::new().prefix("mx11").tempdir().unwrap()
     }

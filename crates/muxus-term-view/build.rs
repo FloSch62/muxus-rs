@@ -37,6 +37,8 @@ fn main() {
         let _ = std::fs::remove_file(&link);
         #[cfg(unix)]
         std::os::unix::fs::symlink(&versioned, &link).expect("symlink system library");
+        #[cfg(not(unix))]
+        let _ = versioned;
         println!("cargo:rustc-link-search=native={}", out.display());
     }
 }

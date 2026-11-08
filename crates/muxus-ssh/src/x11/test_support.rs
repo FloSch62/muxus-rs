@@ -3,10 +3,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+#[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::proxy::rewrite_x11_setup;
-use super::xauthority::{FAMILY_WILD, MIT_MAGIC_COOKIE, X11Auth, XauthEntry, serialize_xauthority};
+use super::xauthority::X11Auth;
+#[cfg(unix)]
+use super::xauthority::{FAMILY_WILD, MIT_MAGIC_COOKIE, XauthEntry, serialize_xauthority};
 
 /// An X11 connection setup request as a client would send it.
 pub fn setup_request(little_endian: bool, name: &str, data: &[u8]) -> Vec<u8> {
@@ -51,6 +54,7 @@ pub fn ipv6(address: &str) -> Vec<u8> {
 }
 
 /// An Xauthority file with one FamilyWild MIT-MAGIC-COOKIE-1 record for `number`.
+#[cfg(unix)]
 pub fn write_xauthority(path: &Path, number: &str, cookie: &[u8]) {
     let bytes = serialize_xauthority(&[XauthEntry {
         family: FAMILY_WILD,

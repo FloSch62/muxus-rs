@@ -404,6 +404,7 @@ mod tests {
         let socket = connect_x11_endpoint(&tcp("127.0.0.1", port), DEFAULT_CONNECT_TIMEOUT)
             .await
             .unwrap();
+        #[cfg_attr(not(unix), allow(irrefutable_let_patterns))]
         let X11Socket::Tcp(stream) = &socket else {
             panic!("expected TCP");
         };

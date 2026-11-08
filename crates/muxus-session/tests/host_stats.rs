@@ -15,7 +15,7 @@ use muxus_session::stats::view::{
 };
 use muxus_session::stats::{
     HOST_STATS_SCRIPT, HostStatsReading, RemoteCommand, SharedReadings, host_stats_response,
-    parse_host_stats, read_local_host_stats, read_remote_host_stats,
+    parse_host_stats, read_remote_host_stats,
 };
 use serde_json::json;
 use tokio::io::AsyncRead;
@@ -386,7 +386,7 @@ async fn gives_up_on_a_host_that_never_finishes() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn runs_the_real_script_on_this_linux_machine_and_gets_every_source() {
-    let sample = read_local_host_stats().await;
+    let sample = muxus_session::stats::read_local_host_stats().await;
     assert!(sample.hostname.is_some_and(|name| !name.is_empty()));
     assert!(
         sample

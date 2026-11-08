@@ -582,6 +582,7 @@ fn create_temporary_root() -> std::io::Result<PathBuf> {
             "muxus-session-history-{}",
             ids::random_base64url(6).replace('-', "_")
         ));
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {

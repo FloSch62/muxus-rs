@@ -194,6 +194,8 @@ fn atomic_local_text_save(file: &Path, bytes: &[u8], mode: Option<u32>) -> io::R
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(mode);
         }
+        #[cfg(not(unix))]
+        let _ = mode;
         let mut handle = options.open(&temporary)?;
         handle.write_all(bytes)?;
         // open() applies the process umask even when a mode is supplied. Restore the original

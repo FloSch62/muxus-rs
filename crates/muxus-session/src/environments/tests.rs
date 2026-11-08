@@ -13,15 +13,17 @@ use muxus_core::environments::{
 use serde_json::json;
 
 use super::discovery::{action_argv, discover_environments};
+use super::kubus_url;
 use super::parse::{
     NodeAddress, containerlab_labs, parse_docker_ports, parse_docker_ps, parse_inspect_addresses,
     parse_kube_pods, parse_podman_ps, parse_pve_resources, parse_qemu_agent_addresses,
     parse_virsh_addresses, parse_virsh_display, parse_virsh_list,
 };
+#[cfg(unix)]
+use super::probe;
 use super::probe::{
     Probe, ProbeResult, ProbeResults, ProbeRunner, parse_probe_output, probe_failure, probe_script,
 };
-use super::{kubus_url, probe};
 
 fn block_on<T>(future: impl Future<Output = T>) -> T {
     tokio::runtime::Builder::new_current_thread()

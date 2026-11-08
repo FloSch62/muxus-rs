@@ -129,6 +129,7 @@ fn random_suffix(length: usize) -> String {
 fn private_dir(root: &Path) -> std::io::Result<PathBuf> {
     for _ in 0..16 {
         let dir = root.join(format!("muxus-ssh-{}", random_suffix(6)));
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {

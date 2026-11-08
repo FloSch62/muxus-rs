@@ -213,6 +213,7 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 }
 
 /// Read one payload line and answer it.
+#[cfg(unix)]
 fn serve_connection<S: Read + Write>(stream: S, sender: &DesktopEventSender) {
     let mut reader = BufReader::new(stream.take(MAX_PAYLOAD_BYTES));
     let mut line = String::new();

@@ -810,6 +810,7 @@ pub(crate) fn write_config_file(file_path: &Path, lines: &[String]) -> Result<()
     if let Some(dir) = write_target.parent() {
         create_private_dir(dir)?;
     }
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut mode = 0o600;
     let backup = PathBuf::from(format!("{}.muxus.bak", path_string(file_path)));
     if let Ok(meta) = std::fs::metadata(&write_target) {
