@@ -30,6 +30,8 @@ enum Step {
     Run(&'static str, u64),
     /// Type the command once the prompt shows, then wait for the next prompt.
     RunToPrompt(&'static str),
+    /// Wait for the active terminal's prompt.
+    Prompt,
     Split(PaneDirection),
     Wait(u64),
     /// A line in the performance log.
@@ -109,7 +111,13 @@ pub fn open_scene(shell: &mut AppShell, scene: &str, cx: &mut Context<AppShell>)
         }
         "localsplit" => {
             shell.open_local(None, cx);
-            vec![Step::Wait(600), Step::Split(PaneDirection::Right)]
+            // The split copies the shell: it waits for the first one to start, which a
+            // slow start (a debug build on a CI Mac) took longer than the pause alone.
+            vec![
+                Step::Prompt,
+                Step::Wait(600),
+                Step::Split(PaneDirection::Right),
+            ]
         }
         other => {
             if let Some(count) = other
@@ -170,15 +178,7 @@ async fn run_steps(this: WeakEntity<AppShell>, steps: Vec<Step>, cx: &mut AsyncA
     for step in steps {
         match step {
             Step::Run(command, settle) => {
-                for _ in 0..200 {
-                    let ready = this
-                        .update(cx, |shell, cx| prompt_ready(shell, cx))
-                        .unwrap_or(true);
-                    if ready {
-                        break;
-                    }
-                    pause(50).await;
-                }
+                await_prompt(&this, cx).await;
                 pause(300).await;
                 let _ = this.update(cx, |shell, cx| type_into_active(shell, command, cx));
                 pause(settle).await;
@@ -235,8 +235,23 @@ async fn run_steps(this: WeakEntity<AppShell>, steps: Vec<Step>, cx: &mut AsyncA
                     shell.tabs_changed(cx);
                 });
             }
+            Step::Prompt => await_prompt(&this, cx).await,
             Step::Wait(ms) => pause(ms).await,
         }
+    }
+}
+
+/// Wait (up to 10 s) for the active terminal to show a prompt.
+async fn await_prompt(this: &WeakEntity<AppShell>, cx: &mut AsyncApp) {
+    let executor = cx.background_executor().clone();
+    for _ in 0..200 {
+        let ready = this
+            .update(cx, |shell, cx| prompt_ready(shell, cx))
+            .unwrap_or(true);
+        if ready {
+            break;
+        }
+        executor.timer(Duration::from_millis(50)).await;
     }
 }
 
