@@ -111,8 +111,7 @@ pub fn open_scene(shell: &mut AppShell, scene: &str, cx: &mut Context<AppShell>)
         }
         "localsplit" => {
             shell.open_local(None, cx);
-            // The split copies the shell: it waits for the first one to start, which a
-            // slow start (a debug build on a CI Mac) took longer than the pause alone.
+            // The split copies the shell: it waits until the first one has started.
             vec![
                 Step::Prompt,
                 Step::Wait(600),
