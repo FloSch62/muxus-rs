@@ -169,6 +169,10 @@ mod bundled {
         pub auth_directory: Option<PathBuf>,
         /// Display numbers held by sibling servers in this process, shared between them.
         pub claimed_displays: Option<ClaimedDisplays>,
+        /// `COMSPEC` for the server, which compiles its keymap through the C runtime's
+        /// `system()`: a program that runs cmd.exe without a console window. Unset, every
+        /// compile flashes a console window up, as the server itself has no console to share.
+        pub command_shell: Option<PathBuf>,
     }
 
     impl std::fmt::Debug for BundledXServerOptions {
@@ -178,6 +182,7 @@ mod bundled {
                 .field("port_in_use", &self.port_in_use.is_some())
                 .field("probe_server", &self.probe_server.is_some())
                 .field("auth_directory", &self.auth_directory)
+                .field("command_shell", &self.command_shell)
                 .finish_non_exhaustive()
         }
     }
@@ -456,10 +461,21 @@ mod bundled {
                 // A race for the display number must not pop up a modal error box.
                 "-silent-dup-error".into(),
                 "-notrayicon".into(),
+                // The multiwindow manager's first connection fails at startup and retries 5 s
+                // later. The readiness probe, or a quick client such as xclock, leaves the server
+                // without clients before then, and its reset starts a second window manager
+                // next to the waiting one: VcXsrv exits with error 1 ("another window manager
+                // is running") and drops every forwarded window.
+                "-noreset".into(),
             ];
             let spawned = match &self.options.spawn_server {
                 Some(spawn) => spawn(&self.executable(), &args, &self.directory),
-                None => spawn_vcxsrv(&self.executable(), &args, &self.directory),
+                None => spawn_vcxsrv(
+                    &self.executable(),
+                    &args,
+                    &self.directory,
+                    self.options.command_shell.as_deref(),
+                ),
             };
             let process = spawned.map_err(|err| X11Error::StartFailed(err.to_string()))?;
             let XServerProcess { kill, exited } = process;
@@ -589,7 +605,12 @@ mod bundled {
     }
 
     /// Spawn VcXsrv hidden, with no console window, and follow it until it exits or is killed.
-    fn spawn_vcxsrv(executable: &Path, args: &[String], cwd: &Path) -> io::Result<XServerProcess> {
+    fn spawn_vcxsrv(
+        executable: &Path,
+        args: &[String],
+        cwd: &Path,
+        command_shell: Option<&Path>,
+    ) -> io::Result<XServerProcess> {
         let mut command = tokio::process::Command::new(executable);
         command
             .args(args)
@@ -598,6 +619,9 @@ mod bundled {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
+        if let Some(shell) = command_shell {
+            command.env("COMSPEC", shell);
+        }
         #[cfg(windows)]
         {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -683,7 +707,13 @@ mod tests {
         assert_eq!(first.port, 6012);
         let spawn = children.get(0);
         assert_eq!(spawn.executable, dir.path().join(VCXSRV_EXECUTABLE));
-        for arg in [":12", "-multiwindow", "-noclipboard", "-silent-dup-error"] {
+        for arg in [
+            ":12",
+            "-multiwindow",
+            "-noclipboard",
+            "-silent-dup-error",
+            "-noreset",
+        ] {
             assert!(spawn.args.iter().any(|a| a == arg), "missing {arg}");
         }
         assert!(!first.clipboard);

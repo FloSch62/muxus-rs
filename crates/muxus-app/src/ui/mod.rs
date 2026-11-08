@@ -116,7 +116,38 @@ fn start_backend(login: &LoginEnvironment) -> Result<Backend, String> {
         vars: login.vars(),
         ..muxus_local::LocalEnvironment::current()
     });
+    if options.x11_server_directory.is_none() {
+        options.x11_server_directory = bundled_x11_server_directory();
+    }
+    options.x11_server_shell = hidden_cmd();
     Backend::start_blocking(options).map_err(|err| err.to_string())
+}
+
+/// `muxus-hidden-cmd.exe`, which cargo builds and the package ships next to this executable.
+fn hidden_cmd() -> Option<std::path::PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let helper = std::env::current_exe()
+        .ok()?
+        .with_file_name("muxus-hidden-cmd.exe");
+    helper.exists().then_some(helper)
+}
+
+/// Windows builds ship VcXsrv for X11 forwarding (`cargo xtask vcxsrv`): next to the
+/// executable in a package, in the workspace's `vendor/vcxsrv` for a development build
+/// (`main.ts`).
+fn bundled_x11_server_directory() -> Option<std::path::PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    if cfg!(debug_assertions) {
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()?
+            .parent()?;
+        return Some(workspace.join("vendor").join("vcxsrv"));
+    }
+    Some(std::env::current_exe().ok()?.parent()?.join("vcxsrv"))
 }
 
 /// Keeps the single-instance lock (and its socket) for the whole run.

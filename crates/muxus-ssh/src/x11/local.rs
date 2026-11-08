@@ -125,6 +125,9 @@ pub struct LocalX11Options {
     /// Directory of the X server bundled with the Windows app (vcxsrv.exe). Only Windows builds
     /// use it.
     pub bundled_server_directory: Option<PathBuf>,
+    /// `COMSPEC` for that server (see `BundledXServerOptions::command_shell`): the app's
+    /// helper that runs cmd.exe without a console window. Only Windows builds use it.
+    pub bundled_server_shell: Option<PathBuf>,
     /// Reads `DISPLAY`, `XAUTHORITY` and `HOME`; default the process environment.
     pub env: EnvLookup,
     pub platform: Platform,
@@ -141,6 +144,7 @@ impl Default for LocalX11Options {
             display: None,
             xauthority: None,
             bundled_server_directory: None,
+            bundled_server_shell: None,
             env: process_env(),
             platform: Platform::current(),
             hostname: None,
@@ -156,6 +160,7 @@ impl std::fmt::Debug for LocalX11Options {
             .field("display", &self.display)
             .field("xauthority", &self.xauthority)
             .field("bundled_server_directory", &self.bundled_server_directory)
+            .field("bundled_server_shell", &self.bundled_server_shell)
             .field("platform", &self.platform)
             .field("hostname", &self.hostname)
             .finish_non_exhaustive()
@@ -267,6 +272,7 @@ impl LocalX11 {
                 bundled_options: BundledXServerOptions {
                     // Display numbers held by this process's bundled servers.
                     claimed_displays: Some(Arc::default()),
+                    command_shell: options.bundled_server_shell,
                     ..options.bundled
                 },
                 #[cfg(any(windows, test))]

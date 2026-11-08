@@ -3,5 +3,5 @@
 jobs = 3
 
 [alias]
-# Workspace checks: `cargo xtask ci|layering|style` (see xtask/src/main.rs).
+# Workspace checks and tasks: `cargo xtask ci|layering|style|vcxsrv` (see xtask/src/main.rs).
 xtask = "run --quiet --package xtask --"

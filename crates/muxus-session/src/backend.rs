@@ -80,6 +80,9 @@ pub struct BackendOptions {
     pub update_manifest_url: String,
     /// Directory of the X server bundled with the Windows app.
     pub x11_server_directory: Option<PathBuf>,
+    /// The app's helper that the bundled X server runs cmd.exe through, so its keymap compiles
+    /// open no console windows (`muxus-hidden-cmd`, next to the executable).
+    pub x11_server_shell: Option<PathBuf>,
     /// Start the saved tunnels marked "start with Muxus".
     pub autostart_tunnels: bool,
     /// What connection diagnostics probe with; `None` is the real network, `ping` and agent.
@@ -131,6 +134,7 @@ impl BackendOptions {
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             update_manifest_url: process_update_manifest_url(),
             x11_server_directory: std::env::var_os("MUXUS_X11_SERVER_DIR").map(PathBuf::from),
+            x11_server_shell: None,
             autostart_tunnels: true,
             diagnostic_probes: None,
             system_openssh_args: Vec::new(),
@@ -175,6 +179,7 @@ impl BackendOptions {
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             update_manifest_url: UPDATE_MANIFEST_URL.to_string(),
             x11_server_directory: None,
+            x11_server_shell: None,
             autostart_tunnels: true,
             diagnostic_probes: None,
             system_openssh_args: Vec::new(),
@@ -507,6 +512,7 @@ async fn initialize(options: BackendOptions, runtime: Handle) -> ApiResult<Parts
         app_version,
         update_manifest_url,
         x11_server_directory,
+        x11_server_shell,
         autostart_tunnels,
         diagnostic_probes,
         system_openssh_args,
@@ -557,6 +563,7 @@ async fn initialize(options: BackendOptions, runtime: Handle) -> ApiResult<Parts
     let local_env = LocalEnv::with_home(&home);
     let x11 = Arc::new(LocalX11::new(LocalX11Options {
         bundled_server_directory: x11_server_directory,
+        bundled_server_shell: x11_server_shell,
         ..LocalX11Options::default()
     }));
     let connections = SshConnectionManager::new(manager_options(

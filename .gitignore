@@ -3,3 +3,5 @@
 *.png.actual
 vendor/*/target
 __pycache__/
+/vendor/vcxsrv
+/vendor/.cache
