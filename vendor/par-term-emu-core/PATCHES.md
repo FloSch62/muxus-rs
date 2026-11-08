@@ -109,6 +109,18 @@ an edit of a frame that does not exist, is an error.
 
 Frames are not played on a timer: nothing in Muxus calls `update_animations`, as before.
 
+## Kitty keyboard pop without a count
+
+`CSI < u` pops one entry off the keyboard flags stack when it has no count, as kitty and
+xterm.js (`params[0] || 1`) do. vte reports the missing count as 0, so the engine popped
+nothing: kitty-doom pushes `CSI > 11 u` and pops with a bare `CSI < u` on exit, and the flags
+stayed on, every key then reaching the shell as a kitty key report.
+
+| File | Change |
+|---|---|
+| `src/terminal/sequences/csi/keyboard.rs` | A count of 0 pops one entry. |
+| `src/terminal/tests/terminal_tests.rs` | `test_kitty_keyboard_pop_without_a_count_pops_one`. |
+
 ## Kept as upstream has it
 
 **OpenTelemetry (`src/otel.rs`, `src/otel/`, 0.80.0).** Always compiled, but without the

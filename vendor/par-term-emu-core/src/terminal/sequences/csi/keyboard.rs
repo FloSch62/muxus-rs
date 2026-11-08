@@ -30,8 +30,16 @@ pub(crate) fn handle_csi_keyboard(
             }
         } else if intermediates.contains(&b'<') {
             // Pop flags: CSI < n u
+            // Muxus patch: without a count (vte reports it as 0) one entry is popped, as kitty
+            // and xterm.js do; a bare `CSI < u` used to pop nothing and left the program's
+            // flags on after it exited.
             let mut iter = params.iter();
-            let n = iter.next().and_then(|p| p.first()).copied().unwrap_or(1) as usize;
+            let n = iter
+                .next()
+                .and_then(|p| p.first())
+                .copied()
+                .filter(|n| *n > 0)
+                .unwrap_or(1) as usize;
             for _ in 0..n {
                 if let Some(flags) = keyboard.keyboard_stack.pop() {
                     keyboard.keyboard_flags = flags;
