@@ -221,7 +221,12 @@ pub fn open_port(profile: &SerialProfile) -> Result<Box<dyn SerialLine>, serialp
         .stop_bits(stop_bits)
         .flow_control(flow_control)
         .timeout(READ_TIMEOUT);
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
+    {
+        let builder = builder.exclusive(options.lock);
+        Ok(Box::new(open_with_speed(builder, options.baud_rate)?))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         // The serial library takes the lock (TIOCEXCL and flock) and clears it on close.
         let builder = builder.exclusive(options.lock);
@@ -239,6 +244,28 @@ pub fn open_port(profile: &SerialProfile) -> Result<Box<dyn SerialLine>, serialp
         let _ = overrides;
         Ok(Box::new(builder.open()?))
     }
+}
+
+/// Open the device on macOS, where the serial library sets the speed with the IOSSIOSPEED
+/// ioctl. A pseudo-terminal (socat's pty pair, a console server's line) has no speed and
+/// refuses it with ENOTTY, which failed the whole open: open without a speed, then set it on
+/// devices that take one, flushing what arrived before as the library does.
+#[cfg(target_os = "macos")]
+fn open_with_speed(
+    builder: serialport::SerialPortBuilder,
+    baud_rate: u32,
+) -> Result<serialport::TTYPort, serialport::Error> {
+    use serialport::SerialPort as _;
+
+    // The serial library takes the lock (TIOCEXCL and flock) and clears it on close.
+    let mut port = builder.baud_rate(0).open_native()?;
+    match port.set_baud_rate(baud_rate) {
+        Ok(()) => port.clear(serialport::ClearBuffer::All)?,
+        // ENOTTY, worded as the serial library's errno table words it.
+        Err(err) if err.description == "Not a typewriter" => {}
+        Err(err) => return Err(err),
+    }
+    Ok(port)
 }
 
 /// `DCB.Parity` for mark parity (winbase.h `MARKPARITY`).
