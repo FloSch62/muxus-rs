@@ -33,7 +33,11 @@ if [[ -z "$out" ]]; then out="$(mktemp -d "${TMPDIR:-/tmp}/muxus-shots-XXXXXX")"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/muxus-mac-shots-XXXXXX")"
-trap 'rm -rf "$scratch"' EXIT
+# Keep the display awake: while it sleeps macOS reports every window as occluded and GPUI
+# draws no frames, so a shot shows the window as it was when the display went to sleep.
+caffeinate -d -u &
+caffeinate_pid=$!
+trap 'kill "$caffeinate_pid" 2>/dev/null; rm -rf "$scratch"' EXIT
 
 # The window of a process: the largest on-screen, normal-level window it owns.
 cat >"$scratch/window-id.swift" <<'SWIFT'
@@ -113,7 +117,7 @@ shot_one() {
 # The main window with the documentation's scenes (crates/muxus-app/src/ui/scenes.rs).
 shot app-empty muxus 3 MUXUS_SCENE=empty
 shot app-overview muxus 7 MUXUS_SCENE=overview
-shot app-panes muxus 16 MUXUS_SCENE=panes
+shot app-panes muxus 11 MUXUS_SCENE=panes
 shot app-local muxus 6 MUXUS_SCENE=local
 shot app-localsplit muxus 7 MUXUS_SCENE=localsplit
 # The examples, each a part of the app on a sandboxed backend.
