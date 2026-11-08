@@ -113,7 +113,7 @@ shot_one() {
 # The main window with the documentation's scenes (crates/muxus-app/src/ui/scenes.rs).
 shot app-empty muxus 3 MUXUS_SCENE=empty
 shot app-overview muxus 7 MUXUS_SCENE=overview
-shot app-panes muxus 11 MUXUS_SCENE=panes
+shot app-panes muxus 16 MUXUS_SCENE=panes
 shot app-local muxus 6 MUXUS_SCENE=local
 shot app-localsplit muxus 7 MUXUS_SCENE=localsplit
 # The examples, each a part of the app on a sandboxed backend.
