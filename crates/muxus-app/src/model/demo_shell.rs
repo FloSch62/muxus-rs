@@ -243,6 +243,11 @@ pub fn build_demo_home(base: &Path, alias: &str) -> io::Result<Option<PathBuf>> 
     for (name, script) in demo_commands(prompt) {
         write_file(&root.join("bin").join(name), &script, true)?;
     }
+    // macOS keeps temp folders behind a symlink (/var is /private/var). The shell's working
+    // directory is the resolved path, so HOME has to be as well or the prompt shows it in full
+    // instead of `~`.
+    #[cfg(unix)]
+    let root = fs::canonicalize(&root)?;
     // The listing the screenshots show carries the capture's dates.
     let mtime = demo_mtime();
     for dir in directories(&root) {
@@ -282,6 +287,8 @@ pub fn demo_shell(root: &Path, prompt: &str) -> (LocalProfile, LocalEnvironment)
         ("TERM", "xterm-256color"),
         ("LANG", "C.UTF-8"),
         ("SHELL", "/bin/bash"),
+        // macOS's bash otherwise opens with a note that zsh is the default shell now.
+        ("BASH_SILENCE_DEPRECATION_WARNING", "1"),
         ("HOSTNAME", prompt),
         ("MUXUS_DEMO", "1"),
         ("TZ", "UTC"),

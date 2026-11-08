@@ -258,7 +258,10 @@ fn reports_failed_commands_and_cwd_from_zsh() {
         "no prompt mark: {:?}",
         ready.output
     );
-    let cwd_report = format!("\x1b]133;P;Cwd={}\x07", home.path().display());
+    // zsh reports the resolved directory: macOS keeps temp folders behind a symlink (/var is
+    // /private/var).
+    let cwd = home.path().canonicalize().unwrap();
+    let cwd_report = format!("\x1b]133;P;Cwd={}\x07", cwd.display());
     assert!(
         ready.output.contains(&cwd_report),
         "no cwd report: {:?}",
