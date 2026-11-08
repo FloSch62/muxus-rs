@@ -220,6 +220,7 @@ impl FakeChildren {
             probe_server: Some(Arc::new(probe)),
             auth_directory: Some(auth_directory.to_path_buf()),
             claimed_displays: None,
+            command_shell: None,
         }
     }
 

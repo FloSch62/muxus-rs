@@ -846,6 +846,7 @@ mod tests {
                 Ok(XServerProcess::new(|| {}, exit_rx))
             })),
             claimed_displays: None,
+            command_shell: None,
         };
         let server = BundledXServer::new(dir.path(), options);
         let err = server.ensure_running(false, true).await.unwrap_err();
