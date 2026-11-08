@@ -57,7 +57,6 @@ fn ignores_case_accents_spaces_and_punctuation_inside_a_word() {
         labels("OSC52"),
         ["Allow terminal clipboard writes (OSC 52)"]
     );
-    assert_eq!(labels("webgl"), ["GPU renderer (WebGL)"]);
     assert!(labels("Thème").contains(&"Theme"));
 }
 

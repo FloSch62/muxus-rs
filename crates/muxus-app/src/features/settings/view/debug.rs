@@ -47,7 +47,7 @@ impl SettingsWindow {
                     row(&theme, "Application log")
                         .description_text(
                             &theme,
-                            "App startup and every connection attempt since launch. If the desktop app fails to start at all, its shell also writes logs/main.log in the app data directory.",
+                            "App startup and every connection attempt since launch. If Muxus fails to start at all, logs/main.log in the app data directory still has its startup.",
                         )
                         .control(view_logs)
                         .control(export_logs)

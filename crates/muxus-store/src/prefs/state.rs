@@ -221,7 +221,8 @@ prefs_state! {
     scrollback: f64 = "scrollback" => 10_000.0;
     cursor_blink: bool = "cursorBlink" => true;
     cursor_style: CursorStyle = "cursorStyle" => CursorStyle::Block;
-    /// Render terminals on the GPU (the default); off keeps the simpler renderer.
+    /// The TypeScript app's WebGL switch. GPUI always renders on the GPU, so it is only
+    /// stored, for settings shared with that app.
     webgl_renderer: bool = "webglRenderer" => true;
     /// Local terminal shell; `auto` lets the backend pick the login shell.
     local_shell: String = "localShell" => "auto".to_owned();

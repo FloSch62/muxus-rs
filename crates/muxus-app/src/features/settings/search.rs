@@ -303,15 +303,9 @@ pub static SETTINGS_SEARCH_INDEX: &[SettingsSearchEntry] = &[
     ),
     row(
         Terminal,
-        "Buffer & rendering",
+        "Buffer",
         "Scrollback lines",
         &["history", "buffer", "lines kept"],
-    ),
-    row(
-        Terminal,
-        "Buffer & rendering",
-        "GPU renderer (WebGL)",
-        &["performance", "hardware acceleration", "rendering"],
     ),
     // Local shells
     row(

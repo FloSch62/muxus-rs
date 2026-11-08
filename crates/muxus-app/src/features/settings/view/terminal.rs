@@ -258,10 +258,13 @@ impl SettingsWindow {
             },
         );
         self.sync_input("scrollback", &scrollback, window, cx);
-        let buffer = group("Buffer & rendering")
+        let buffer = group("Buffer")
             .row(
                 row(&theme, "Scrollback lines")
-                    .description_text(&theme, "How much output each terminal keeps above the screen.")
+                    .description_text(
+                        &theme,
+                        "How much output each terminal keeps above the screen.",
+                    )
                     .control(
                         field("settings-scrollback", &scrollback_input)
                             .width(140.)
@@ -269,14 +272,6 @@ impl SettingsWindow {
                     )
                     .render(),
             )
-            .row(self.switch_row(
-                &theme,
-                "settings-webgl",
-                "GPU renderer (WebGL)",
-                Some("Paints terminals on the GPU instead of the DOM: smoother under heavy output, slightly more CPU while idle. Where WebGL is unavailable, terminals keep the standard renderer."),
-                prefs.webgl_renderer,
-                |p, value| p.webgl_renderer = value,
-            ))
             .render(&theme);
 
         page(
