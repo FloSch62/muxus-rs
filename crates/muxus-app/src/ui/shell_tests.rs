@@ -40,6 +40,25 @@ fn main_window(fx: &Fixture, cx: &mut TestAppContext) -> WindowHandle<AppShell> 
     })
 }
 
+/// Wait for a tab's session to connect. The session pump yields to frames on a timer once a
+/// batch has kept it busy for a while, as the first ones of a debug build on a slower machine
+/// (a CI Mac) do, and only a moving clock fires that timer.
+fn wait_connected(window: &WindowHandle<AppShell>, tab_id: &str, cx: &mut TestAppContext) {
+    wait_until(cx, Duration::from_secs(20), "the session", |cx| {
+        cx.executor().advance_clock(Duration::from_millis(10));
+        cx.run_until_parked();
+        window
+            .update(cx, |shell, window, _| {
+                window.refresh();
+                shell
+                    .tabs
+                    .tab(tab_id)
+                    .is_some_and(|tab| tab.status == muxus_app::state::tabs::TabStatus::Connected)
+            })
+            .unwrap()
+    });
+}
+
 /// The top bar's forwarding badge counted forwards only when the launcher started one: a
 /// forward started anywhere else (the forwarding panel, a host's ssh-config lines) never
 /// showed. It follows the backend's forward list now.
@@ -99,21 +118,7 @@ fn terminal_output_is_stored_for_a_restore(cx: &mut TestAppContext) {
             id
         })
         .unwrap();
-    let connected = |cx: &mut TestAppContext| {
-        window
-            .update(cx, |shell, window, cx| {
-                window.refresh();
-                let _ = cx;
-                shell
-                    .tabs
-                    .tab(&tab_id)
-                    .is_some_and(|tab| tab.status == muxus_app::state::tabs::TabStatus::Connected)
-            })
-            .unwrap()
-    };
-    wait_until(cx, Duration::from_secs(20), "the session", |cx| {
-        connected(cx)
-    });
+    wait_connected(&window, &tab_id, cx);
     // The test server's shell greets; that output is the tab's.
     wait_until(cx, Duration::from_secs(10), "some output", |cx| {
         window
@@ -206,17 +211,7 @@ fn a_paced_paste_shows_its_progress_until_it_is_cancelled(cx: &mut TestAppContex
             id
         })
         .unwrap();
-    wait_until(cx, Duration::from_secs(20), "the session", |cx| {
-        window
-            .update(cx, |shell, window, _| {
-                window.refresh();
-                shell
-                    .tabs
-                    .tab(&tab_id)
-                    .is_some_and(|tab| tab.status == muxus_app::state::tabs::TabStatus::Connected)
-            })
-            .unwrap()
-    });
+    wait_connected(&window, &tab_id, cx);
     let progress = |cx: &mut TestAppContext| {
         // The session pump yields to frames on a timer, which only a moving clock fires.
         cx.executor().advance_clock(Duration::from_millis(20));
@@ -268,17 +263,7 @@ fn programs_mark_their_tab_until_it_is_looked_at(cx: &mut TestAppContext) {
             build
         })
         .unwrap();
-    wait_until(cx, Duration::from_secs(20), "the session", |cx| {
-        window
-            .update(cx, |shell, window, _| {
-                window.refresh();
-                shell
-                    .tabs
-                    .tab(&build)
-                    .is_some_and(|tab| tab.status == muxus_app::state::tabs::TabStatus::Connected)
-            })
-            .unwrap()
-    });
+    wait_connected(&window, &build, cx);
     // The user is in another window.
     window
         .update(cx, |shell, _, _| shell.window_active = false)
