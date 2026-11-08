@@ -107,7 +107,7 @@ keeps running (WAL included, automatic vault key copied, preferences copied).
 | Updater off by default | `updater.ts` | done | only with `MUXUS_UPDATE_FEED`; neutral "no updates" otherwise |
 | Data source | `api/*.ts` | done | `data_source::DataSource`: `BackendSource`, `DemoSource`, `LocalSource` |
 | Terminal per tab and pane | `components/TerminalViewImpl.tsx` | done | |
-| Session link and output pump | `ws/terminal-socket.ts`, xterm.js write queue | done | streaming output is gathered over an event-loop turn or two, so a `seq` flood is ~1 k updates/s instead of ~35 k; 16 KiB pieces, the UI thread yields every 12 ms |
+| Session link and output pump | `ws/terminal-socket.ts`, xterm.js write queue | done | streaming output is gathered over an event-loop turn or two, so a `seq` flood is ~1 k updates/s instead of ~35 k; 16 KiB pieces, the UI thread yields every 12 ms (a 1 ms timer; on Windows the task goes to the back of GPUI's queue instead, whose loop paints and takes input after 10 ms of tasks, since a timer there sleeps to the next 15.6 ms tick: `yield_to_event_loop`) |
 | Remote desktop tabs | `RemoteDesktopView.tsx` | done | `ui/session_views.rs`: one `RemoteDesktopView` per tab; status, prompts, toasts, reconnects, titles, focus |
 | Management tabs (gNMI, NETCONF) | `ManagementView.tsx` | done | same, `ManagementView` |
 | Shared auth, host-key and certificate dialogs | `AuthPromptDialog`, `HostKeyDialog`, `DesktopCertificateDialog` | done | one queue per window for terminals, desktops, management sessions and tunnel dials |

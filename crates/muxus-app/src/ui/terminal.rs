@@ -877,9 +877,7 @@ impl AppShell {
                     // loop every few milliseconds so frames are painted and keys
                     // handled.
                     if slice.elapsed() >= OUTPUT_SLICE {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(1))
-                            .await;
+                        yield_to_event_loop(cx).await;
                         slice = Instant::now();
                     }
                 }
@@ -2118,6 +2116,20 @@ impl AppShell {
             LinkInput::message(TerminalClientMessage::SendBreak),
             cx,
         )
+    }
+}
+
+/// Let the event loop paint a frame and handle input before more output goes in. GPUI's Windows
+/// loop does both once its foreground work has run 10 ms, so going to the back of the queue is
+/// enough there, where a 1 ms timer sleeps until the next timer tick (15.6 ms by default) with
+/// the output waiting.
+async fn yield_to_event_loop(cx: &mut muxus_ui::gpui_kit::AsyncApp) {
+    if cfg!(windows) {
+        futures_lite::future::yield_now().await;
+    } else {
+        cx.background_executor()
+            .timer(Duration::from_millis(1))
+            .await;
     }
 }
 
