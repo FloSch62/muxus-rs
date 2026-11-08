@@ -85,6 +85,30 @@ scrollback cell, and less to copy on every write and scroll.
 `docs/parity/terminal-perf.md` has the measurements (19–20% less resident memory for a filled
 scrollback, output as fast or faster).
 
+## Kitty animation frames
+
+Upstream took every `a=f` without `r=`, and every `a=f,r=1`, as a new image: it deleted the
+image's placements and placed it again, at its own pixel size, at the cursor, and moved the
+cursor below it. A program that animates one image by editing its root frame (kitty-doom sends
+`a=T` sized in cells with `C=1`, then `a=f,r=1` for every frame) drew each frame small and one
+image height lower until it scrolled. On `a=f` it also read `c=` as the composition mode, which
+is `X=`. As kitty does now: frame 1 is the image itself; `a=f,r=N` edits frame N in place,
+without `r=` a frame is appended, the data is a rectangle composed onto the frame at `x=`,`y=`
+(blended, or copied with `X=1`), a new frame starts from frame `c=` or the color `Y=`; no
+placement is made and the cursor stays; placements show the image's current frame, which
+`a=a,c=N` sets (`a=a,r=N,z=G` sets a frame's gap). A frame for an image that does not exist, or
+an edit of a frame that does not exist, is an error.
+
+| File | Change |
+|---|---|
+| `src/graphics/frames.rs` | New: `GraphicsStore::edit_kitty_frame`, `set_kitty_current_frame`, `set_kitty_frame_gap`; the rectangle's composition. The root frame joins an animation by sharing the image's buffer, so it is budgeted once. |
+| `src/graphics/kitty/dispatch.rs` | `apply_frame_command` hands the decoded rectangle to `edit_kitty_frame` and returns no graphic; `apply_animation_control` applies `c=` and `r=`/`z=`. |
+| `src/graphics/kitty/parse.rs`, `mod.rs` | On `a=f`: `c=` is `base_frame`, `X=` `frame_composition`, `Y=` `background_color`; on `a=a`: `c=` is `current_frame`, `r=` and `z=` a frame and its gap. |
+| `src/graphics/animation.rs` | `AnimationFrame::new_shared`. |
+| `src/graphics/kitty/tests.rs`, `src/terminal/tests/kitty_apc.rs` | Upstream's frame tests that built an image from `a=f` alone now transmit it first; new tests for edits in place, appended frames, base frames and background, the current frame, gaps, and kitty-doom's sequence end to end (`root_frame_edits_repaint_the_placement_in_place`). |
+
+Frames are not played on a timer: nothing in Muxus calls `update_animations`, as before.
+
 ## Kept as upstream has it
 
 **OpenTelemetry (`src/otel.rs`, `src/otel/`, 0.80.0).** Always compiled, but without the

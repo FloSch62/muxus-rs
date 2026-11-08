@@ -12,11 +12,14 @@
 //! The `GraphicsStore` handles storage, scrolling, and Kitty image ID reuse.
 
 pub mod animation;
+mod frames;
 pub mod iterm;
 pub mod kitty;
 pub mod placeholder;
 pub mod serialization;
 pub mod snapshot;
+
+pub(crate) use frames::FrameEdit;
 
 use std::collections::HashMap;
 use std::sync::Arc;
