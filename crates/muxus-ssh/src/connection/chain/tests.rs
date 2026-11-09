@@ -117,6 +117,18 @@ fn expands_nested_and_comma_listed_jumps_in_dial_order() {
 }
 
 #[test]
+fn reaches_later_hops_of_a_jump_list_through_the_hop_before_not_their_own_proxy_jump() {
+    let f = Fixture::new();
+    let c = chain(
+        &f,
+        &lines(&["Host app", "  ProxyJump a,b", "", "Host b", "  ProxyJump c"]),
+        p("app"),
+    );
+    let specs: Vec<&str> = c.iter().map(|h| h.spec.host.as_str()).collect();
+    assert_eq!(specs, vec!["a", "b", "app"]);
+}
+
+#[test]
 fn applies_profile_user_port_overrides_to_the_final_target_only() {
     let f = Fixture::new();
     let c = chain(
@@ -364,6 +376,27 @@ fn follows_a_saved_jump_host_through_its_own_saved_jump_host() {
     assert_eq!(plan[0], ("jumpuser", "bastion.example.com", 2200));
     assert_eq!(plan[1], ("relay", "inner.example.com", 22));
     assert_eq!((plan[2].1, plan[2].2), ("app.internal", 22));
+}
+
+#[test]
+fn reaches_a_saved_jump_host_later_in_the_list_through_the_hop_before_it() {
+    let f = Fixture::new();
+    let c = with_saved(
+        &f.doc(""),
+        SshProfile {
+            use_config: Some(false),
+            proxy_jump: Some(vec!["first.example.com".into(), saved_host_hop("inner")]),
+            ..p("app.internal")
+        },
+        &saved_hosts(),
+        None,
+    )
+    .unwrap();
+    let hosts: Vec<&str> = c.iter().map(|h| h.resolved.hostname.as_str()).collect();
+    assert_eq!(
+        hosts,
+        vec!["first.example.com", "inner.example.com", "app.internal"]
+    );
 }
 
 #[test]
