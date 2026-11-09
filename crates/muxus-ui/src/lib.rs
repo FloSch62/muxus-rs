@@ -7,6 +7,7 @@
 
 pub mod assets;
 pub mod color;
+pub mod composition;
 pub mod fonts;
 pub mod icon;
 pub mod label;

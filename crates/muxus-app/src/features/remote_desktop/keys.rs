@@ -22,7 +22,11 @@
 //! - a key's release names it by what it types now, which is not what it typed when it went
 //!   down once a modifier changed in between (`!` comes up as `1`, AltGr+Q's `@` as `q`). The
 //!   translator remembers each held key and reports its release with the `code` and `key` it
-//!   went down with, so the clients let go of what they pressed.
+//!   went down with, so the clients let go of what they pressed;
+//! - dead keys and input methods compose in the platform's text input, as in the terminal.
+//!   A key that types a character is therefore left to text input, and its character is
+//!   typed when text input delivers it ([`KeyTranslator::text`]); a dead key types nothing
+//!   until the key after it delivers the composed character.
 
 use muxus_session::desktop::{KeyEvent, Modifiers};
 use muxus_ui::gpui_kit::{Keystroke, Modifiers as GpuiModifiers};
@@ -226,6 +230,66 @@ const MODIFIER_KEYS: [ModifierKey; 4] = [
     (|m| m.platform, "MetaLeft", "Meta"),
 ];
 
+/// The character a DOM `key` types: one printable character other than a space.
+fn typed_char(key: &str) -> Option<char> {
+    let mut chars = key.chars();
+    match (chars.next(), chars.next()) {
+        (Some(typed), None) if !typed.is_control() && !typed.is_whitespace() => Some(typed),
+        _ => None,
+    }
+}
+
+/// Which keys' characters the platform's text input delivers to a view that takes text
+/// input. Such a key's press is not sent: the character arrives afterwards (see
+/// [`KeyTranslator::text`]) or, for a dead key, is held back until the key after it, which
+/// then delivers the composed character (`´` then `e` is `é`, `^` then Space is `^`). Input
+/// methods deliver what they compose the same way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextDelivery {
+    /// No text input: a character goes out with its key's press.
+    #[default]
+    Off,
+    /// Every key that types a character, AltGr's and Option's included (macOS, Windows).
+    Always,
+    /// Only keys pressed without Ctrl, Alt or Super: GPUI on Linux hands no others to text
+    /// input (AltGr is not one of them there).
+    Unmodified,
+}
+
+impl TextDelivery {
+    /// What this platform's GPUI delivers.
+    pub fn platform() -> Self {
+        if cfg!(any(windows, target_os = "macos")) {
+            Self::Always
+        } else {
+            Self::Unmodified
+        }
+    }
+}
+
+/// What the view does with a key's press.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyDown {
+    /// Send this to the session.
+    Send(KeyEvent),
+    /// Let the platform's text input have the key: its character comes through
+    /// [`KeyTranslator::text`].
+    AwaitText,
+    /// Nothing to send, and nothing for the platform to do either (a dead key repeating).
+    Swallow,
+}
+
+/// How a held key reaches the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Typing {
+    /// As the event reported on its press.
+    Key,
+    /// Through text input, which has not delivered a character for it (yet): a dead key.
+    Awaiting,
+    /// As the character text input delivered for it.
+    Text,
+}
+
 /// A key down on the desktop: the keystroke it went down with and how it was reported.
 #[derive(Debug, Clone)]
 struct HeldKey {
@@ -234,13 +298,13 @@ struct HeldKey {
     modifiers: GpuiModifiers,
     code: String,
     key: String,
+    typing: Typing,
 }
 
 impl HeldKey {
     /// Whether the key typed a character (rather than naming a key such as Enter).
     fn typed(&self) -> bool {
-        let mut chars = self.key.chars();
-        matches!((chars.next(), chars.next()), (Some(typed), None) if !typed.is_control() && !typed.is_whitespace())
+        typed_char(&self.key).is_some()
     }
 
     /// Whether the key finished a composition: GPUI names such a key after the character it
@@ -259,11 +323,23 @@ pub struct KeyTranslator {
     caps_lock: bool,
     /// Keys down, oldest first.
     held: Vec<HeldKey>,
+    text_input: TextDelivery,
+    /// The newest held key waits for its character from text input.
+    pending: bool,
 }
 
 impl KeyTranslator {
+    /// A translator for a view without text input.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A translator for a view that takes text input, as this platform delivers it.
+    pub fn with_text_input(text_input: TextDelivery) -> Self {
+        Self {
+            text_input,
+            ..Self::default()
+        }
     }
 
     /// Adopt the current state without reporting it (focus came back). A modifier held before
@@ -276,6 +352,7 @@ impl KeyTranslator {
     /// Every key counts as up again (focus left the desktop, which let go of them).
     pub fn release_all(&mut self) {
         self.held.clear();
+        self.pending = false;
     }
 
     /// The held key a key event names. GPUI reports no physical key, so a key is found by its
@@ -318,6 +395,33 @@ impl KeyTranslator {
         }
     }
 
+    /// Whether text input delivers the character of a key going down as `event`: a key
+    /// that types something other than white space and is no shortcut (the keys RDP types as
+    /// characters), keypad keys aside. What it types may be more than one character (Windows
+    /// reports `´x` for X after a dead key it does not combine with) or come from a named key
+    /// (Space after `^` types `^`).
+    fn awaits_text(&self, keystroke: &Keystroke, event: &KeyEvent) -> bool {
+        let unmodified = !keystroke.modifiers.control
+            && !keystroke.modifiers.alt
+            && !keystroke.modifiers.platform
+            && !keystroke.modifiers.function;
+        let delivered = match self.text_input {
+            TextDelivery::Off => false,
+            TextDelivery::Always => true,
+            TextDelivery::Unmodified => unmodified,
+        };
+        let flags = &event.modifiers;
+        let types = keystroke
+            .key_char
+            .as_deref()
+            .is_some_and(|text| !text.trim().is_empty() && !text.chars().any(char::is_control));
+        delivered
+            && types
+            && !event.code.starts_with("Numpad")
+            && !flags.meta
+            && (!(flags.ctrl || flags.alt) || flags.alt_graph)
+    }
+
     /// A key went down (`repeat` for auto-repeat). `modifiers` and `caps_lock` are the window's
     /// live state, which keeps the Shift GPUI drops from symbol keystrokes.
     pub fn key_down(
@@ -326,19 +430,24 @@ impl KeyTranslator {
         repeat: bool,
         modifiers: GpuiModifiers,
         caps_lock: bool,
-    ) -> KeyEvent {
+    ) -> KeyDown {
         self.sync(modifiers, caps_lock);
         // Auto-repeat repeats what the key went down with, whatever the modifiers are now.
         if repeat && let Some(index) = self.held_index(keystroke) {
             let held = &self.held[index];
+            if held.typing == Typing::Awaiting {
+                return KeyDown::Swallow;
+            }
             let mut event = self.event(&held.code, held.key.clone(), true, true);
-            event.modifiers.alt_graph = alt_graph(&held.keystroke, &self.modifiers);
-            return event;
+            event.modifiers.alt_graph =
+                held.typing == Typing::Text || alt_graph(&held.keystroke, &self.modifiers);
+            return KeyDown::Send(event);
         }
         let key = dom_key(keystroke, &self.modifiers, self.caps_lock);
         let code = dom_code(&keystroke.key).unwrap_or_default();
         let mut event = self.event(code, key, true, repeat);
         event.modifiers.alt_graph = alt_graph(keystroke, &self.modifiers);
+        let awaits = self.awaits_text(keystroke, &event);
         // A key that goes down again without having come up here replaces its old entry.
         self.held
             .retain(|held| !held.keystroke.key.eq_ignore_ascii_case(&keystroke.key));
@@ -347,28 +456,99 @@ impl KeyTranslator {
             modifiers: self.modifiers,
             code: event.code.clone(),
             key: event.key.clone(),
+            typing: if awaits {
+                Typing::Awaiting
+            } else {
+                Typing::Key
+            },
         });
-        event
+        self.pending = awaits;
+        if awaits {
+            KeyDown::AwaitText
+        } else {
+            KeyDown::Send(event)
+        }
     }
 
+    /// A key came up: the release of what it went down with, or nothing for a key whose
+    /// character never came (a dead key).
     pub fn key_up(
         &mut self,
         keystroke: &Keystroke,
         modifiers: GpuiModifiers,
         caps_lock: bool,
-    ) -> KeyEvent {
+    ) -> Option<KeyEvent> {
         self.sync(modifiers, caps_lock);
         if let Some(index) = self.held_index(keystroke) {
+            if index + 1 == self.held.len() {
+                self.pending = false;
+            }
             let held = self.held.remove(index);
+            if held.typing == Typing::Awaiting {
+                return None;
+            }
             let mut event = self.event(&held.code, held.key, false, false);
-            event.modifiers.alt_graph = alt_graph(&held.keystroke, &self.modifiers);
-            return event;
+            event.modifiers.alt_graph =
+                held.typing == Typing::Text || alt_graph(&held.keystroke, &self.modifiers);
+            return Some(event);
         }
         let key = dom_key(keystroke, &self.modifiers, self.caps_lock);
         let code = dom_code(&keystroke.key).unwrap_or_default();
         let mut event = self.event(code, key, false, false);
         event.modifiers.alt_graph = alt_graph(keystroke, &self.modifiers);
+        Some(event)
+    }
+
+    /// A character event typed through text input. It counts as AltGr's when Ctrl or Alt is
+    /// held, so the clients type it rather than send a shortcut.
+    fn text_event(&self, code: &str, typed: char, pressed: bool) -> KeyEvent {
+        let mut event = self.event(code, typed.to_string(), pressed, false);
+        event.modifiers.alt_graph = self.modifiers.alt || self.modifiers.control;
         event
+    }
+
+    /// Text the platform's text input delivered: what a key typed, a dead key's composition
+    /// or an input method's commit. The last character belongs to the key waiting for it,
+    /// which holds it until it comes up (a second delivery for the same key, as Windows
+    /// sends `´` and `x` for a dead key followed by a key it does not combine with, lets go
+    /// of the first); the others, and text no key waits for, are typed at once.
+    pub fn text(&mut self, text: &str, modifiers: GpuiModifiers, caps_lock: bool) -> Vec<KeyEvent> {
+        self.sync(modifiers, caps_lock);
+        let mut chars: Vec<char> = text.chars().filter(|typed| !typed.is_control()).collect();
+        let last = if self.pending { chars.pop() } else { None };
+        let mut events = Vec::new();
+        for typed in chars {
+            events.push(self.text_event("", typed, true));
+            events.push(self.text_event("", typed, false));
+        }
+        let (Some(typed), Some(held)) = (last, self.held.last()) else {
+            return events;
+        };
+        if held.typing == Typing::Text
+            && let Some(before) = typed_char(&held.key)
+        {
+            events.push(self.text_event(&held.code, before, false));
+        }
+        // The key's own code goes with its own character; a composed one has no key.
+        let own = named_key(&held.keystroke.key).is_none()
+            && held
+                .keystroke
+                .key_char
+                .as_deref()
+                .is_some_and(|own| own.chars().eq([typed]));
+        let code = if own {
+            dom_code(&held.keystroke.key).unwrap_or_default()
+        } else {
+            ""
+        };
+        let event = self.text_event(code, typed, true);
+        if let Some(held) = self.held.last_mut() {
+            held.code = event.code.clone();
+            held.key = event.key.clone();
+            held.typing = Typing::Text;
+        }
+        events.push(event);
+        events
     }
 
     /// The modifier (and Caps Lock) key events behind a change of modifier state, presses
@@ -406,6 +586,15 @@ mod tests {
     use muxus_session::desktop::rdp::scancodes::scancode;
 
     use super::*;
+
+    impl KeyDown {
+        fn sent(self) -> KeyEvent {
+            match self {
+                Self::Send(event) => event,
+                other => panic!("nothing sent: {other:?}"),
+            }
+        }
+    }
 
     fn stroke(text: &'static str) -> Keystroke {
         Keystroke::parse(text).unwrap()
@@ -483,7 +672,9 @@ mod tests {
         assert_eq!(dom_key(&typed("add", Some("+")), &none, false), "+");
         // Characters outside ASCII come through as typed (VNC sends their keysyms).
         assert_eq!(dom_key(&typed("é", Some("é")), &none, false), "é");
-        let event = KeyTranslator::new().key_down(&typed("é", Some("é")), false, none, false);
+        let event = KeyTranslator::new()
+            .key_down(&typed("é", Some("é")), false, none, false)
+            .sent();
         assert_eq!((event.code.as_str(), event.key.as_str()), ("", "é"));
     }
 
@@ -546,22 +737,31 @@ mod tests {
         let bang = typed("!", Some("!"));
         assert!(!bang.modifiers.shift, "GPUI reports no Shift on a symbol");
         ops.extend(
-            rdp.key(&keys.key_down(&bang, false, shift(), false))
+            rdp.key(&keys.key_down(&bang, false, shift(), false).sent())
                 .unwrap(),
         );
-        ops.extend(rdp.key(&keys.key_up(&bang, shift(), false)).unwrap());
+        ops.extend(
+            rdp.key(&keys.key_up(&bang, shift(), false).unwrap())
+                .unwrap(),
+        );
         let capital = stroke("shift-a");
         ops.extend(
-            rdp.key(&keys.key_down(&capital, false, shift(), false))
+            rdp.key(&keys.key_down(&capital, false, shift(), false).sent())
                 .unwrap(),
         );
-        ops.extend(rdp.key(&keys.key_up(&capital, shift(), false)).unwrap());
+        ops.extend(
+            rdp.key(&keys.key_up(&capital, shift(), false).unwrap())
+                .unwrap(),
+        );
         let tab = typed("tab", None);
         ops.extend(
-            rdp.key(&keys.key_down(&tab, false, shift(), false))
+            rdp.key(&keys.key_down(&tab, false, shift(), false).sent())
                 .unwrap(),
         );
-        ops.extend(rdp.key(&keys.key_up(&tab, shift(), false)).unwrap());
+        ops.extend(
+            rdp.key(&keys.key_up(&tab, shift(), false).unwrap())
+                .unwrap(),
+        );
         for event in keys.modifiers_changed(GpuiModifiers::default(), false) {
             ops.extend(rdp.key(&event).unwrap());
         }
@@ -597,7 +797,7 @@ mod tests {
         let mut rdp = RdpKeyboard::new();
         let none = GpuiModifiers::default();
         let mut press = |keystroke: Keystroke, modifiers: GpuiModifiers| {
-            rdp.key(&keys.key_down(&keystroke, false, modifiers, false))
+            rdp.key(&keys.key_down(&keystroke, false, modifiers, false).sent())
         };
         let ctrl_alt = GpuiModifiers {
             control: true,
@@ -647,16 +847,23 @@ mod tests {
         let mut rdp = RdpKeyboard::new();
         let mut ops = Vec::new();
         for step in steps {
-            let event = match step {
-                Step::Down(keystroke, modifiers) => {
-                    keys.key_down(keystroke, false, *modifiers, false)
+            let events = match step {
+                Step::Down(keystroke, modifiers) | Step::Repeat(keystroke, modifiers) => {
+                    let repeat = matches!(step, Step::Repeat(..));
+                    match keys.key_down(keystroke, repeat, *modifiers, false) {
+                        KeyDown::Send(event) => vec![event],
+                        KeyDown::AwaitText | KeyDown::Swallow => Vec::new(),
+                    }
                 }
-                Step::Repeat(keystroke, modifiers) => {
-                    keys.key_down(keystroke, true, *modifiers, false)
-                }
-                Step::Up(keystroke, modifiers) => keys.key_up(keystroke, *modifiers, false),
+                Step::Up(keystroke, modifiers) => keys
+                    .key_up(keystroke, *modifiers, false)
+                    .into_iter()
+                    .collect(),
+                Step::Text(text, modifiers) => keys.text(text, *modifiers, false),
             };
-            ops.extend(rdp.key(&event).unwrap_or_default());
+            for event in events {
+                ops.extend(rdp.key(&event).unwrap_or_default());
+            }
         }
         ops.retain(|op| !matches!(op, InputOp::SynchronizeLocks { .. }));
         ops
@@ -666,6 +873,8 @@ mod tests {
         Down(Keystroke, GpuiModifiers),
         Repeat(Keystroke, GpuiModifiers),
         Up(Keystroke, GpuiModifiers),
+        /// What the platform's text input delivered.
+        Text(&'static str, GpuiModifiers),
     }
 
     /// A key comes up named by what it types then; the server must let go of what it pressed.
@@ -755,9 +964,186 @@ mod tests {
             ]
         );
         // Focus leaving forgets what was held.
-        keys.key_down(&typed("a", Some("a")), false, none, false);
+        keys.key_down(&typed("a", Some("a")), false, none, false)
+            .sent();
         keys.release_all();
         assert!(keys.held.is_empty());
+    }
+
+    /// GPUI on Linux: a dead key types nothing itself (its accent waits as the composition),
+    /// and the key after it arrives named after the composed character, which text input
+    /// then delivers. Shortcuts and keys with Alt still go out on their press.
+    #[test]
+    fn types_dead_key_compositions_delivered_by_text_input_on_linux() {
+        let none = GpuiModifiers::default();
+        let mut keys = KeyTranslator::with_text_input(TextDelivery::Unmodified);
+        assert_eq!(
+            keys.key_down(&typed("eacute", Some("é")), false, none, false),
+            KeyDown::AwaitText
+        );
+        keys.release_all();
+        let alt = GpuiModifiers { alt: true, ..none };
+        let ops = rdp_ops(
+            &mut keys,
+            &[
+                // ´ then e: é, held until E comes up.
+                Step::Down(typed("dead_acute", None), none),
+                Step::Up(typed("dead_acute", None), none),
+                Step::Down(typed("eacute", Some("é")), none),
+                Step::Text("é", none),
+                Step::Up(typed("e", Some("e")), none),
+                // ´ then x, which it does not combine with: the accent, then x.
+                Step::Down(typed("dead_acute", None), none),
+                Step::Up(typed("dead_acute", None), none),
+                Step::Text("´", none),
+                Step::Down(typed("x", Some("x")), none),
+                Step::Text("x", none),
+                Step::Up(typed("x", Some("x")), none),
+                // An input method's commit, no key waiting.
+                Step::Text("日本", none),
+                // Alt+F is a shortcut: GPUI hands it no text.
+                Step::Down(
+                    Keystroke {
+                        modifiers: alt,
+                        key: "f".into(),
+                        key_char: Some("f".into()),
+                    },
+                    alt,
+                ),
+            ],
+        );
+        assert_eq!(
+            ops,
+            [
+                InputOp::UnicodePressed('é'),
+                InputOp::UnicodeReleased('é'),
+                InputOp::UnicodePressed('´'),
+                InputOp::UnicodeReleased('´'),
+                InputOp::UnicodePressed('x'),
+                InputOp::UnicodeReleased('x'),
+                InputOp::UnicodePressed('日'),
+                InputOp::UnicodeReleased('日'),
+                InputOp::UnicodePressed('本'),
+                InputOp::UnicodeReleased('本'),
+                InputOp::KeyPressed(scancode::ALT_LEFT),
+                InputOp::KeyPressed(0x21),
+            ]
+        );
+    }
+
+    /// GPUI on Windows and macOS reports a dead key as its accent; sending it would type the
+    /// accent and lose the composition, so it goes to text input, which types nothing until
+    /// the next key delivers the composed character (Windows, with the key's own event) or
+    /// commits it without one (macOS).
+    #[test]
+    fn leaves_dead_keys_to_text_input_on_windows_and_macos() {
+        let none = GpuiModifiers::default();
+        let ctrl_alt = GpuiModifiers {
+            control: true,
+            alt: true,
+            ..none
+        };
+        let option = GpuiModifiers { alt: true, ..none };
+        let mut keys = KeyTranslator::with_text_input(TextDelivery::Always);
+        let ops = rdp_ops(
+            &mut keys,
+            &[
+                // Windows: ´ (held long enough to repeat), then e.
+                Step::Down(typed("´", Some("´")), none),
+                Step::Repeat(typed("´", Some("´")), none),
+                Step::Up(typed("´", Some("´")), none),
+                Step::Down(typed("e", Some("é")), none),
+                Step::Text("é", none),
+                Step::Up(typed("e", Some("e")), none),
+                // Windows: ´ then x delivers both characters for X.
+                Step::Down(typed("´", Some("´")), none),
+                Step::Up(typed("´", Some("´")), none),
+                Step::Down(typed("x", Some("´x")), none),
+                Step::Text("´", none),
+                Step::Text("x", none),
+                Step::Up(typed("x", Some("x")), none),
+                // Windows: ^ then Space types ^, held while Space is.
+                Step::Down(typed("^", Some("^")), none),
+                Step::Up(typed("^", Some("^")), none),
+                Step::Down(typed("space", Some("^")), none),
+                Step::Text("^", none),
+                Step::Up(typed("space", Some(" ")), none),
+                // A plain Space is a key.
+                Step::Down(typed("space", Some(" ")), none),
+                // Windows AltGr+Q: typed, not a Ctrl+Alt shortcut.
+                Step::Down(
+                    Keystroke {
+                        modifiers: ctrl_alt,
+                        key: "q".into(),
+                        key_char: Some("@".into()),
+                    },
+                    ctrl_alt,
+                ),
+                Step::Text("@", ctrl_alt),
+                Step::Up(typed("q", None), ctrl_alt),
+                // macOS Option+E is a dead key; the E after it never reaches the view, its
+                // é comes as a commit and E's release lets go of nothing.
+                Step::Down(
+                    Keystroke {
+                        modifiers: option,
+                        key: "e".into(),
+                        key_char: Some("´".into()),
+                    },
+                    option,
+                ),
+                Step::Up(typed("e", None), option),
+                Step::Text("é", none),
+                Step::Up(typed("e", Some("e")), none),
+                // Ctrl+C stays a shortcut.
+                Step::Down(typed("c", None), ctrl()),
+            ],
+        );
+        assert_eq!(
+            ops,
+            [
+                InputOp::UnicodePressed('é'),
+                InputOp::UnicodeReleased('é'),
+                InputOp::UnicodePressed('´'),
+                InputOp::UnicodeReleased('´'),
+                InputOp::UnicodePressed('x'),
+                InputOp::UnicodeReleased('x'),
+                InputOp::UnicodePressed('^'),
+                InputOp::UnicodeReleased('^'),
+                InputOp::KeyPressed(0x39),
+                InputOp::UnicodePressed('@'),
+                InputOp::UnicodeReleased('@'),
+                InputOp::UnicodePressed('é'),
+                InputOp::UnicodeReleased('é'),
+                InputOp::KeyPressed(scancode::CONTROL_LEFT),
+                InputOp::KeyPressed(0x2e),
+            ]
+        );
+    }
+
+    #[test]
+    fn repeats_and_releases_a_character_text_input_delivered() {
+        let none = GpuiModifiers::default();
+        let mut keys = KeyTranslator::with_text_input(TextDelivery::Unmodified);
+        let ops = rdp_ops(
+            &mut keys,
+            &[
+                Step::Down(typed("w", Some("w")), none),
+                Step::Text("w", none),
+                Step::Repeat(typed("w", Some("w")), none),
+                Step::Up(typed("w", Some("w")), none),
+            ],
+        );
+        assert_eq!(
+            ops,
+            [
+                InputOp::UnicodePressed('w'),
+                InputOp::UnicodeRepeated('w'),
+                InputOp::UnicodeReleased('w'),
+            ]
+        );
+        // The key's own character keeps its key's code (VNC servers with scancodes need it).
+        keys.key_down(&typed("a", Some("a")), false, none, false);
+        assert_eq!(keys.text("a", none, false)[0].code, "KeyA");
     }
 
     #[test]
@@ -766,8 +1152,9 @@ mod tests {
         let mut rdp = RdpKeyboard::new();
         let none = GpuiModifiers::default();
         let held = typed("backspace", None);
-        rdp.key(&keys.key_down(&held, false, none, false)).unwrap();
-        let repeat = keys.key_down(&held, true, none, false);
+        rdp.key(&keys.key_down(&held, false, none, false).sent())
+            .unwrap();
+        let repeat = keys.key_down(&held, true, none, false).sent();
         assert!(repeat.repeat);
         assert_eq!(rdp.key(&repeat).unwrap(), [InputOp::KeyPressed(0x0e)]);
         let caps = keys.modifiers_changed(none, true);
@@ -779,12 +1166,14 @@ mod tests {
     fn reports_keys_rdp_cannot_send_as_unknown() {
         let mut keys = KeyTranslator::new();
         let mut rdp = RdpKeyboard::new();
-        let event = keys.key_down(
-            &typed("xf86audioplay", None),
-            false,
-            GpuiModifiers::default(),
-            false,
-        );
+        let event = keys
+            .key_down(
+                &typed("xf86audioplay", None),
+                false,
+                GpuiModifiers::default(),
+                false,
+            )
+            .sent();
         assert_eq!(event.code, "");
         assert_eq!(event.key, "Unidentified");
         assert!(rdp.key(&event).is_none());

@@ -18,13 +18,15 @@ use muxus_session::recovery::{
     AUTO_RECONNECT_DELAYS_MS, AUTO_RECONNECT_STABLE_MS, AutoReconnectInput, auto_reconnect_delay_ms,
 };
 use muxus_ui::color::alpha;
+use muxus_ui::composition::Composition;
 use muxus_ui::gpui_kit::{
     AnyElement, App, AppContext, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase,
-    Entity, EventEmitter, FocusHandle, Focusable, HitboxBehavior, InteractiveElement, IntoElement,
-    KeyDownEvent, KeyUpEvent, ModifiersChangedEvent, MouseButton as GpuiButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, NavigationDirection, ParentElement, Pixels, Render, ScrollDelta,
-    ScrollEvent, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window,
-    canvas, div, px, relative,
+    ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
+    HitboxBehavior, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent,
+    ModifiersChangedEvent, MouseButton as GpuiButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    NavigationDirection, ParentElement, Pixels, Render, ScrollDelta, ScrollEvent, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Task, UTF16Selection, Window, canvas, div,
+    px, relative,
 };
 use muxus_ui::icon::icon;
 use muxus_ui::label::{label, paragraph};
@@ -33,7 +35,7 @@ use muxus_ui::widgets::button::{Button, ButtonColor, IconButton, elevation};
 use muxus_ui::widgets::progress::CircularProgress;
 
 use super::KEY_CONTEXT;
-use super::keys::KeyTranslator;
+use super::keys::{KeyDown, KeyTranslator, TextDelivery};
 use super::picture::{Picture, PictureSnapshot};
 
 /// The toolbar's distance from the top of the pane (`top: 6`), and the height of the strip
@@ -169,6 +171,8 @@ pub struct RemoteDesktopView {
     /// Where the desktop is drawn, in window coordinates.
     view_rect: ViewRect,
     keys: KeyTranslator,
+    /// What a dead key or an input method is composing (typed once it is done).
+    composition: Composition,
     pressed: Vec<MouseButton>,
     /// The pointer is over the pane.
     pointer_inside: bool,
@@ -352,7 +356,8 @@ impl RemoteDesktopView {
             cursor: DesktopCursor::Default,
             viewport: Bounds::default(),
             view_rect: ViewRect::default(),
-            keys: KeyTranslator::new(),
+            keys: KeyTranslator::with_text_input(TextDelivery::platform()),
+            composition: Composition::default(),
             pressed: Vec::new(),
             pointer_inside: false,
             toolbar: Toolbar {
@@ -820,6 +825,7 @@ impl RemoteDesktopView {
     fn release_all(&mut self) {
         self.pressed.clear();
         self.keys.release_all();
+        self.composition.clear();
         if let Some(connection) = &self.connection {
             connection.release_all();
         }
@@ -829,14 +835,21 @@ impl RemoteDesktopView {
         let Some(connection) = &self.connection else {
             return;
         };
-        let key = self.keys.key_down(
+        match self.keys.key_down(
             &event.keystroke,
             event.is_held,
             window.modifiers(),
             window.capslock().on,
-        );
-        if connection.key(&key) {
-            cx.stop_propagation();
+        ) {
+            KeyDown::Send(key) => {
+                if connection.key(&key) {
+                    cx.stop_propagation();
+                }
+            }
+            // The character comes through the input handler, composed with a dead key before
+            // it if there was one, as in the terminal.
+            KeyDown::AwaitText => {}
+            KeyDown::Swallow => cx.stop_propagation(),
         }
     }
 
@@ -844,10 +857,11 @@ impl RemoteDesktopView {
         let Some(connection) = &self.connection else {
             return;
         };
-        let key = self
-            .keys
-            .key_up(&event.keystroke, window.modifiers(), window.capslock().on);
-        if connection.key(&key) {
+        if let Some(key) =
+            self.keys
+                .key_up(&event.keystroke, window.modifiers(), window.capslock().on)
+            && connection.key(&key)
+        {
             cx.stop_propagation();
         }
     }
@@ -1227,6 +1241,7 @@ impl RemoteDesktopView {
             .map(DesktopConnection::desktop_size)
             .unwrap_or_default();
         let rdp = matches!(self.profile, DesktopProfile::Rdp(_));
+        let focus = self.focus.clone();
         let measured_view = view.clone();
         canvas(
             move |bounds, window, cx| {
@@ -1257,8 +1272,11 @@ impl RemoteDesktopView {
                     view_rect,
                 )
             },
-            move |pane, (hitbox, view_rect), window, _| {
+            move |pane, (hitbox, view_rect), window, cx| {
                 snapshot.paint(view_rect, window);
+                // Typed text arrives through the platform's text input, which composes dead
+                // keys and runs input methods.
+                window.handle_input(&focus, ElementInputHandler::new(pane, view.clone()), cx);
                 window.set_cursor_style(CursorStyle::Arrow, &hitbox);
                 let target = view.clone();
                 let over = hitbox.clone();
@@ -1296,6 +1314,96 @@ impl RemoteDesktopView {
         )
         .absolute()
         .inset_0()
+    }
+}
+
+/// Text input for the desktop, as in the terminal: the input method sees only what it is
+/// composing; committed text is typed on the remote side.
+impl EntityInputHandler for RemoteDesktopView {
+    fn text_for_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        adjusted: &mut Option<std::ops::Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        self.composition.text_for_range(range, adjusted)
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _: bool,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        Some(self.composition.selection())
+    }
+
+    fn marked_text_range(
+        &self,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        self.composition.marked_range()
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
+        self.composition.clear();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _: Option<std::ops::Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        self.composition.clear();
+        let Some(connection) = &self.connection else {
+            return;
+        };
+        for key in self
+            .keys
+            .text(text, window.modifiers(), window.capslock().on)
+        {
+            connection.key(&key);
+        }
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _: Option<std::ops::Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        self.composition.set(new_text);
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _: std::ops::Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        // An input method's window opens at the desktop's top left corner: there is no caret
+        // to put it by.
+        Some(Bounds::new(element_bounds.origin, Default::default()))
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _: gpui_point::Point,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+
+    fn accepts_text_input(&self, _: &mut Window, _: &mut Context<Self>) -> bool {
+        self.connection.is_some()
     }
 }
 
