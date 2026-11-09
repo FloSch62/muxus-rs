@@ -37,7 +37,7 @@ use muxus_ui::widgets::menu::{self, MenuItem};
 use muxus_ui::widgets::{Checkbox, IconButton};
 
 use super::dialogs::{ConfirmOptions, DialogQueue, PromptOptions, QueueOf};
-use super::download::{downloaded_message, save_into_folder};
+use super::download::{downloaded_message, local_file_name, save_into_folder};
 use super::format::{format_mtime, format_size, parent_path, sort_entries};
 use super::icons::file_type_icon;
 use super::placement::{
@@ -2305,8 +2305,11 @@ fn mirrored_icon_button(
         ))
 }
 
-/// `saveDownload`: the save dialog Electron shows for a download, then the file.
+/// `saveDownload`: the save dialog Electron shows for a download, then the file. `name`
+/// comes from the server: it is cleaned, so it cannot point outside the downloads folder
+/// (the dialog's suggestion, or the folder itself when no dialog can be shown).
 pub fn save_bytes(name: String, bytes: Vec<u8>, cx: &mut App) {
+    let name = local_file_name(&name);
     let directory = downloads_dir();
     let target = crate::util::file_dialog::ask_save_path(&directory, &name, cx);
     cx.spawn(async move |cx| {
