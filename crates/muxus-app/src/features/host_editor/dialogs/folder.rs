@@ -705,3 +705,6 @@ impl Render for FolderDialog {
             ))
     }
 }
+
+#[cfg(test)]
+mod tests;
