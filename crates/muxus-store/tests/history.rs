@@ -682,6 +682,81 @@ fn truncates_an_incomplete_final_frame_and_marks_a_crash_interrupted_session() {
     block_on(store.close()).unwrap();
 }
 
+fn insert_active_session(root: &Path, id: &str) {
+    let database = rusqlite::Connection::open(root.join("session-history.sqlite")).unwrap();
+    database
+        .execute(
+            "INSERT INTO session_logs(
+               id, profile_key, title, kind, host, started_at, status,
+               capture_input, current_part
+             ) VALUES (?, 'ssh:edge', ?, 'ssh', 'edge', '2026-01-01T10:00:00.000Z',
+                       'active', 0, 1)",
+            [id, id],
+        )
+        .unwrap();
+}
+
+fn segment_with(raw: &[u8]) -> Vec<u8> {
+    let mut segment = vec![0x4d, 0x55, 0x58, 0x4c, 0x4f, 0x47, 0x01, 0x0a];
+    segment.extend_from_slice(&((25 + raw.len()) as u32).to_be_bytes());
+    segment.extend_from_slice(&1u64.to_be_bytes());
+    segment.extend_from_slice(&1_767_261_601_000u64.to_be_bytes());
+    segment.extend_from_slice(&1_000u64.to_be_bytes());
+    segment.push(2);
+    segment.extend_from_slice(raw);
+    segment
+}
+
+#[test]
+fn opens_after_a_crash_left_partials_without_a_header_or_an_unreadable_session() {
+    let root = temp_root();
+    let store = open(root.path(), settings());
+    block_on(store.close()).unwrap();
+
+    let sessions = root.path().join("sessions");
+    let partial = |id: &str, bytes: &[u8]| {
+        let directory = sessions.join(id);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("000001.muxlog.partial"), bytes).unwrap();
+        directory
+    };
+    // A crash between creating a partial and its header reaching the disk.
+    insert_active_session(root.path(), "empty");
+    let empty = partial("empty", b"");
+    insert_active_session(root.path(), "torn-header");
+    let torn = partial("torn-header", b"MUXLO");
+    // Longer than a header but not a segment: kept aside, never decoded.
+    insert_active_session(root.path(), "garbage");
+    let garbage = partial("garbage", &[0xab; 40]);
+    // A session whose directory cannot be read must not stop the others.
+    insert_active_session(root.path(), "unreadable");
+    std::fs::write(sessions.join("unreadable"), b"not a directory").unwrap();
+    insert_active_session(root.path(), "intact");
+    let intact = partial("intact", &segment_with(b"hello"));
+
+    let store = open(root.path(), settings());
+    for id in ["empty", "torn-header", "garbage", "unreadable", "intact"] {
+        let detail = block_on(store.session_log(id, None, None))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            detail.summary.status,
+            SessionLogStatus::Disconnected,
+            "{id}"
+        );
+    }
+    assert!(entries(&empty).is_empty());
+    assert!(entries(&torn).is_empty());
+    assert_eq!(entries(&garbage), vec!["000001.muxlog.partial.damaged"]);
+    assert_eq!(entries(&intact), vec!["000001.muxlog.zst"]);
+    let events = block_on(store.raw_session_log_events("intact"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].raw, b"hello");
+    block_on(store.close()).unwrap();
+}
+
 /// The version-6 application database layout, before history moved to its own root.
 const LEGACY_HISTORY_SCHEMA: &str = "
   CREATE TABLE session_logs (
