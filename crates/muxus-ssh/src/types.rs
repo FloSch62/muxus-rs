@@ -55,12 +55,15 @@ pub fn render_patch<T>(patch: &Patch<T>, format: impl FnOnce(&T) -> String) -> P
 /// ssh_config spellings of the yes/no-style choice options.
 pub trait ConfigChoice: Sized + Copy + 'static {
     const VALUES: &'static [(&'static str, Self)];
+    /// Other spellings OpenSSH reads for the same values; never written back.
+    const ALIASES: &'static [(&'static str, Self)] = &[];
 
     /// Case-insensitive parse of an ssh_config value.
     fn parse(value: &str) -> Option<Self> {
         let value = value.to_ascii_lowercase();
         Self::VALUES
             .iter()
+            .chain(Self::ALIASES)
             .find(|(name, _)| *name == value)
             .map(|(_, v)| *v)
     }
@@ -85,6 +88,8 @@ impl ConfigChoice for RequestTty {
         ("force", RequestTty::Force),
         ("auto", RequestTty::Auto),
     ];
+    const ALIASES: &'static [(&'static str, Self)] =
+        &[("true", RequestTty::Yes), ("false", RequestTty::No)];
 }
 
 impl ConfigChoice for StrictHostKeyChecking {
@@ -94,11 +99,37 @@ impl ConfigChoice for StrictHostKeyChecking {
         ("accept-new", StrictHostKeyChecking::AcceptNew),
         ("ask", StrictHostKeyChecking::Ask),
     ];
+    const ALIASES: &'static [(&'static str, Self)] = &[
+        ("true", StrictHostKeyChecking::Yes),
+        ("false", StrictHostKeyChecking::No),
+        ("off", StrictHostKeyChecking::No),
+    ];
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_other_spellings_openssh_accepts_but_writes_the_canonical_one() {
+        assert_eq!(
+            StrictHostKeyChecking::parse("TRUE"),
+            Some(StrictHostKeyChecking::Yes)
+        );
+        assert_eq!(
+            StrictHostKeyChecking::parse("false"),
+            Some(StrictHostKeyChecking::No)
+        );
+        assert_eq!(
+            StrictHostKeyChecking::parse("off"),
+            Some(StrictHostKeyChecking::No)
+        );
+        assert_eq!(StrictHostKeyChecking::No.as_str(), "no");
+        assert_eq!(RequestTty::parse("true"), Some(RequestTty::Yes));
+        assert_eq!(RequestTty::parse("False"), Some(RequestTty::No));
+        assert_eq!(RequestTty::Yes.as_str(), "yes");
+        assert_eq!(RequestTty::parse("off"), None);
+    }
 
     #[test]
     fn saved_host_hops_round_trip() {

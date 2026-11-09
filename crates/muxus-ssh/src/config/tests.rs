@@ -447,6 +447,65 @@ fn reads_connect_timeout_and_server_alive_interval() {
 }
 
 #[test]
+fn reads_true_false_and_off_as_openssh_does_for_yes_no_options() {
+    let f = Fixture::new();
+    let doc = f.doc(&lines(&[
+        "Host on",
+        "  ForwardAgent true",
+        "  ForwardX11 TRUE",
+        "  Compression true",
+        "  IdentitiesOnly True",
+        "  PasswordAuthentication true",
+        "  RequestTTY true",
+        "  StrictHostKeyChecking true",
+        "",
+        "Host off",
+        "  PasswordAuthentication false",
+        "  KbdInteractiveAuthentication false",
+        "  PubkeyAuthentication false",
+        "  Compression false",
+        "  RequestTTY false",
+        "  StrictHostKeyChecking off",
+    ]));
+    let on = resolve_host(&doc, "on", None);
+    assert!(on.forward_agent);
+    assert_eq!(on.forward_x11, Some(true));
+    assert_eq!(on.compression, Some(true));
+    assert!(on.identities_only);
+    assert_eq!(on.password_authentication, Some(true));
+    assert_eq!(on.request_tty, Some(RequestTty::Yes));
+    assert_eq!(
+        on.strict_host_key_checking,
+        Some(StrictHostKeyChecking::Yes)
+    );
+    let off = resolve_host(&doc, "off", None);
+    assert_eq!(off.password_authentication, Some(false));
+    assert_eq!(off.kbd_interactive_authentication, Some(false));
+    assert!(off.password_only);
+    assert_eq!(off.compression, Some(false));
+    assert_eq!(off.request_tty, Some(RequestTty::No));
+    assert_eq!(
+        off.strict_host_key_checking,
+        Some(StrictHostKeyChecking::No)
+    );
+
+    let hosts = list_hosts(&doc, None);
+    let on = &hosts.iter().find(|h| h.alias == "on").unwrap().options;
+    assert_eq!(on.forward_agent, Some(true));
+    assert_eq!(on.forward_x11, Some(true));
+    assert_eq!(
+        on.strict_host_key_checking,
+        Some(StrictHostKeyChecking::Yes)
+    );
+    let off = &hosts.iter().find(|h| h.alias == "off").unwrap().options;
+    assert_eq!(off.password_only, Some(true));
+    assert_eq!(
+        off.strict_host_key_checking,
+        Some(StrictHostKeyChecking::No)
+    );
+}
+
+#[test]
 fn resolves_the_dial_time_tunables_muxus_applies_from_advanced_options() {
     let f = Fixture::new();
     let doc = f.doc(&lines(&[
