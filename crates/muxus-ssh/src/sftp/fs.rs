@@ -355,6 +355,20 @@ impl RemoteFs {
         .map(|handle| handle.handle)
     }
 
+    /// Sets an open file's permission bits. Unlike the mode given to `open`, the server's umask
+    /// does not apply.
+    pub(crate) async fn set_mode(&self, handle: &str, mode: u32) -> SftpResult<()> {
+        let attrs = FileAttributes {
+            permissions: Some(mode),
+            ..FileAttributes::empty()
+        };
+        self.call(|c| {
+            let (handle, attrs) = (handle.to_string(), attrs.clone());
+            async move { status_only(c.session.fsetstat(handle, attrs).await) }
+        })
+        .await
+    }
+
     pub(crate) async fn close(&self, handle: &str) -> SftpResult<()> {
         self.call(|c| {
             let handle = handle.to_string();

@@ -186,6 +186,23 @@ async fn atomically_replaces_an_existing_regular_file_after_explicit_overwrite_c
     assert_eq!(fx.read("/remote/report.txt"), "payload");
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn keeps_the_exact_mode_of_a_replaced_file_despite_the_server_umask() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fixture::new().await;
+    let existing = fx.write("/remote/run.sh", "old");
+    // A umask that clears any group or other bit would turn this into 0644 or 0664.
+    set_mode(&existing, 0o666);
+
+    upload(&fx, "/remote/run.sh", &overwrite(), b"payload")
+        .await
+        .unwrap();
+
+    let meta = std::fs::metadata(&existing).unwrap();
+    assert_eq!(meta.permissions().mode() & 0o7777, 0o666);
+}
+
 #[tokio::test]
 async fn replaces_a_file_only_while_it_keeps_the_modification_time_the_client_downloaded() {
     let fx = Fixture::new().await;
@@ -732,6 +749,31 @@ async fn atomically_replaces_the_remote_text_when_the_version_still_matches() {
         renames(&fx, "posix-rename"),
         vec![(temp.clone(), "/etc/example.conf".to_string())]
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn keeps_the_exact_mode_of_saved_text_despite_the_server_umask() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fixture::new().await;
+    let conf = fx.write("/etc/shared.conf", "old value");
+    set_mode(&conf, 0o666);
+
+    fx.service
+        .save_file(
+            &fx.conn_id,
+            "/etc/shared.conf",
+            &SftpFileSaveRequest {
+                content: "new value".into(),
+                expected_mtime_ms: None,
+                force: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let meta = std::fs::metadata(&conf).unwrap();
+    assert_eq!(meta.permissions().mode() & 0o7777, 0o666);
 }
 
 #[cfg(unix)]
