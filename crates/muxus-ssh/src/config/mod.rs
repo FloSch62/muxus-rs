@@ -1396,7 +1396,8 @@ pub fn list_hosts(
 }
 
 /// Resolve an Include argument to concrete files, supporting `~` and filename-level `*`/`?`
-/// globs.
+/// globs. As in glob(3), a wildcard does not match a leading dot: `*` skips dotfiles such as the
+/// editor's hidden backups unless the pattern itself starts with a dot.
 fn expand_include_path(pattern: &str, include_base: &Path, env: &LocalEnv) -> Vec<PathBuf> {
     let expanded = expand_tilde(pattern, env);
     let mut p = PathBuf::from(&expanded);
@@ -1417,7 +1418,11 @@ fn expand_include_path(pattern: &str, include_base: &Path, env: &LocalEnv) -> Ve
     let mut names: Vec<String> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|f| glob_match(&name, f) && !f.contains(['/', '\\']))
+        .filter(|f| {
+            (name.starts_with('.') || !f.starts_with('.'))
+                && glob_match(&name, f)
+                && !f.contains(['/', '\\'])
+        })
         .collect();
     names.sort();
     names.into_iter().map(|f| dir.join(f)).collect()

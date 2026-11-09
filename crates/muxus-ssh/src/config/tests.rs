@@ -742,6 +742,18 @@ fn expands_relative_and_globbed_includes_against_the_root_directory() {
     assert_eq!(aliases, s(&["a-host", "b-host"]));
 }
 
+#[test]
+fn include_globs_skip_dotfiles_unless_the_pattern_starts_with_a_dot() {
+    let f = Fixture::new();
+    f.write_named("Host visible\n", "conf.d/work");
+    f.write_named("Host hidden\n", "conf.d/.work.muxus.bak");
+    let aliases = |doc: &ConfigDocument| -> Vec<String> {
+        list_hosts(doc, None).into_iter().map(|h| h.alias).collect()
+    };
+    assert_eq!(aliases(&f.doc("Include conf.d/*\n")), s(&["visible"]));
+    assert_eq!(aliases(&f.doc("Include conf.d/.*\n")), s(&["hidden"]));
+}
+
 // --- sessionEnvironment ---
 
 fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {

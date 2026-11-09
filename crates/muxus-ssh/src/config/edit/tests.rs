@@ -420,7 +420,46 @@ fn keeps_a_muxus_bak_of_the_previous_content() {
     let h = Homes::new();
     let root = h.seed(&lines(&["Host web", "  User old", ""]));
     upsert_host(&editing("web"), &root, &h.env).unwrap();
-    assert!(read(&PathBuf::from(format!("{}.muxus.bak", path_string(&root)))).contains("User old"));
+    assert!(read(&backup(&root)).contains("User old"));
+}
+
+#[test]
+fn a_deleted_host_does_not_come_back_from_the_backup_through_an_include_glob() {
+    let h = Homes::new();
+    let root = h.seed(&lines(&["Include config.d/*", ""]));
+    let work = root.with_file_name("config.d").join("work");
+    std::fs::create_dir_all(work.parent().unwrap()).unwrap();
+    std::fs::write(
+        &work,
+        lines(&[
+            "Host gone",
+            "  HostName gone.example.com",
+            "",
+            "Host kept",
+            "",
+        ]),
+    )
+    .unwrap();
+
+    delete_host("gone", &root, &h.env).unwrap();
+
+    assert!(read(&backup(&work)).contains("Host gone"));
+    let names: Vec<String> = list_hosts(&load_config_document(&root, &h.env), None)
+        .into_iter()
+        .map(|h| h.alias)
+        .collect();
+    assert_eq!(names, aliases(&["kept"]));
+}
+
+#[test]
+fn replaces_a_backup_left_in_the_old_place_next_to_the_file() {
+    let h = Homes::new();
+    let root = h.seed(&lines(&["Host web", "  User old", ""]));
+    let legacy = PathBuf::from(format!("{}.muxus.bak", path_string(&root)));
+    std::fs::write(&legacy, "Host stale\n").unwrap();
+    upsert_host(&editing("web"), &root, &h.env).unwrap();
+    assert!(!legacy.exists());
+    assert!(read(&backup(&root)).contains("User old"));
 }
 
 #[cfg(unix)]
@@ -446,7 +485,7 @@ fn preserves_a_config_symlink_and_atomically_replaces_its_target() {
             .is_symlink()
     );
     assert!(read(&target).contains("HostName web.example.com"));
-    assert!(read(&PathBuf::from(format!("{}.muxus.bak", path_string(&root)))).contains("User old"));
+    assert!(read(&backup(&root)).contains("User old"));
 }
 
 // --- patchHosts ---
@@ -636,10 +675,7 @@ fn patch_spans_included_files_writing_each_file_once() {
         assert_eq!(host.options.user.as_deref(), Some("new"));
     }
     // One write per file: the backup holds the content from before the whole edit.
-    assert_eq!(
-        read(&PathBuf::from(format!("{}.muxus.bak", path_string(&root)))),
-        before
-    );
+    assert_eq!(read(&backup(&root)), before);
 }
 
 #[test]
@@ -793,10 +829,7 @@ fn delete_hosts_spans_included_files_writing_each_file_once() {
         .map(|h| h.alias)
         .collect();
     assert_eq!(names, aliases(&["z"]));
-    assert_eq!(
-        read(&PathBuf::from(format!("{}.muxus.bak", path_string(&root)))),
-        before
-    );
+    assert_eq!(read(&backup(&root)), before);
 }
 
 #[test]
@@ -852,7 +885,7 @@ fn preview_renders_exactly_what_upsert_would_write() {
             "  Port 2222"
         ])
     );
-    assert!(!PathBuf::from(format!("{}.muxus.tmp", path_string(&root))).exists());
+    assert!(!root.with_file_name(".config.muxus.tmp").exists());
 }
 
 #[test]
@@ -938,8 +971,10 @@ fn host(alias: &str) -> HostUpsertRequest {
     }
 }
 
+/// The editor's hidden backup next to `root`: `.{name}.muxus.bak`.
 fn backup(root: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.muxus.bak", path_string(root)))
+    let name = root.file_name().unwrap().to_string_lossy();
+    root.with_file_name(format!(".{name}.muxus.bak"))
 }
 
 #[test]
