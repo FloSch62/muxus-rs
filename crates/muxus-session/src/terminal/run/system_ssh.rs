@@ -98,12 +98,14 @@ impl Session {
                     .map(LoginSequenceHost::Alias),
             }
         };
-        let login = self.prepare_login_sequence(login_host, &recorder);
+        let login = self.prepare_login_sequence(login_host.clone(), &recorder);
         let finisher = Finisher::new(
             self.facade.clone(),
             recorder.clone(),
             format!("ssh {}", profile.target),
         );
+        let pacer = lock(&self.io).pacer.clone();
+        let anti_idle_recorder = recorder.clone();
         let pump = {
             let facade = self.facade.clone();
             let login = login.clone();
@@ -115,6 +117,9 @@ impl Session {
                             recorder.output(&data);
                             if let Some(login) = &login {
                                 login.output(&data);
+                            }
+                            if let Some(pacer) = &pacer {
+                                pacer.output(&data);
                             }
                             facade.send_data(data);
                             facade.wait_for_room().await;
@@ -153,6 +158,10 @@ impl Session {
         if let Some(login) = &login {
             login.start();
         }
+        // `ssh` asks for passwords in the terminal itself, so, as on Telnet, the first wait
+        // starts at the first input and nothing is typed into a login prompt.
+        self.start_anti_idle(login_host, &anti_idle_recorder, true)
+            .await;
         self.facade.send_message(TerminalServerMessage::Ready {
             conn_id: session.id.clone(),
             host: None,
