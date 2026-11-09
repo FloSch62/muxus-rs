@@ -618,17 +618,20 @@ fn test_get_word_at_beyond_wide_char_run() {
 
 #[test]
 fn test_get_word_at_emoji_zwj_line() {
-    // 👨‍💻 is a single multi-char cell (technologist) covering columns 0..2.
+    // 👨‍💻 (technologist) keeps Unicode 11 widths (Muxus patch): the man
+    // and the ZWJ are one multi-char cell covering columns 0..2, the
+    // laptop covers 2..4.
     let mut term = Terminal::new(80, 24);
     term.process("👨‍💻 hi".as_bytes());
 
     // The word after the emoji must resolve without the column walk
     // counting the ZWJ sequence's string length instead of its cell width.
-    assert_eq!(term.get_word_at(3, 0, None), Some("hi".to_string()));
-    assert_eq!(term.get_word_at(4, 0, None), Some("hi".to_string()));
+    assert_eq!(term.get_word_at(5, 0, None), Some("hi".to_string()));
+    assert_eq!(term.get_word_at(6, 0, None), Some("hi".to_string()));
     // Emoji are not word characters (same as before the fix).
-    assert_eq!(term.get_word_at(0, 0, None), None);
-    assert_eq!(term.get_word_at(1, 0, None), None);
+    for col in 0..4 {
+        assert_eq!(term.get_word_at(col, 0, None), None);
+    }
 }
 
 #[test]

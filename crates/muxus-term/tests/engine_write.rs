@@ -53,3 +53,21 @@ fn a_combining_mark_after_the_last_column_joins_the_character_there() {
     assert_eq!(row(&term, 0), "ab\u{107}");
     assert_eq!(row(&term, 1), "d");
 }
+
+#[test]
+fn emoji_sequences_keep_unicode_11_widths_so_the_cursor_follows_the_program() {
+    // A program counts ❤️ as one column (wcwidth, xterm.js with Unicode 11 widths): the x must
+    // land right after the heart, not under its glyph.
+    let mut term = emulator(10, 3);
+    term.write("\u{2764}\u{FE0F}xyz".as_bytes());
+    assert_eq!(row(&term, 0), "\u{2764}\u{FE0F}xyz");
+    assert_eq!(cells(&term, 0)[0], ("\u{2764}\u{FE0F}".to_string(), 1));
+    assert_eq!(cursor(&term), (4, 0));
+
+    // 👨‍💻 is 2 + 0 + 2 columns there.
+    let mut term = emulator(10, 3);
+    term.write("\u{1F468}\u{200D}\u{1F4BB}x".as_bytes());
+    assert_eq!(cells(&term, 0)[2], ("\u{1F4BB}".to_string(), 2));
+    assert_eq!(cells(&term, 0)[4], ("x".to_string(), 1));
+    assert_eq!(cursor(&term), (5, 0));
+}

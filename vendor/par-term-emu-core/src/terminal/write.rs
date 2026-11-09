@@ -179,9 +179,8 @@ impl Terminal {
             return;
         }
 
-        // Handle combining characters (variation selectors, ZWJ, skin tone
-        // modifiers) and ZWJ-sequence continuations: these attach to the
-        // previous cell instead of creating a new cell.
+        // Zero-width characters (combining marks, variation selectors, ZWJ)
+        // attach to the previous cell instead of creating a new cell.
         if self.try_apply_combining_mark(c, cols) {
             return;
         }
@@ -434,143 +433,67 @@ impl Terminal {
         }
     }
 
-    /// Attach a combining character (variation selector, ZWJ, skin tone
-    /// modifier, combining mark) or a ZWJ-sequence continuation to the
-    /// previous cell instead of creating a new one.
+    /// Attach a zero-width character (combining mark, variation selector,
+    /// ZWJ) to the cell of the character written last instead of creating
+    /// a new cell.
+    ///
+    /// Cells keep the width of the character that started them (Muxus
+    /// patch): a variation selector or ZWJ never widens a cell, and a
+    /// character that has a width of its own (an emoji after a ZWJ, a skin
+    /// tone modifier) takes its own cells. That is what `wcwidth` and
+    /// xterm.js with Unicode 11 widths count, so the cursor stays where the
+    /// program writing the text expects it (`❤️` is one column there).
     ///
     /// Returns `true` when the character was consumed here.
     fn try_apply_combining_mark(&mut self, c: char, cols: usize) -> bool {
-        if grapheme::is_variation_selector(c)
+        if !(grapheme::is_variation_selector(c)
             || grapheme::is_zwj(c)
-            || grapheme::is_skin_tone_modifier(c)
-            || grapheme::is_combining_mark(c)
+            || grapheme::is_combining_mark(c))
         {
-            // The cell of the character written last; at (0, 0) there is
-            // nothing to attach to.
-            let Some((target_col, target_row)) = self.last_written_cell(cols) else {
-                return true;
-            };
-
-            // Copy normalization form before mutable borrow
-            let norm_form = self.unicode_state.normalization_form;
-
-            // Add combining character to the target cell
-            if let Some(target_cell) = self.active_grid_mut().get_mut(target_col, target_row) {
-                target_cell.combining_push(c);
-
-                // Fast path: Kitty TGP placeholder cells (base char U+10EEEE)
-                // encode an image ID via combining marks, not real text. Skip
-                // NFC/NFKC normalization and grapheme width recalc — both
-                // would allocate strings per combining mark and dominate the
-                // cost of rendering an N×M placeholder rectangle (e.g., 40×20
-                // = 800 cells × 3 diacritics = 2400 normalize calls).
-                if target_cell.c == crate::graphics::placeholder::PLACEHOLDER_CHAR {
-                    return true;
-                }
-
-                // Apply Unicode normalization if NFC or NFKC (composition forms)
-                // This composes base + combining into precomposed form when possible
-                if matches!(
-                    norm_form,
-                    crate::unicode_normalization_config::NormalizationForm::NFC
-                        | crate::unicode_normalization_config::NormalizationForm::NFKC
-                ) {
-                    let grapheme = target_cell.get_grapheme();
-                    let normalized = norm_form.normalize(&grapheme);
-                    let mut chars = normalized.chars();
-                    if let Some(base) = chars.next() {
-                        target_cell.c = base;
-                        target_cell.combining_replace(chars.collect());
-                    }
-                }
-
-                // Recalculate width if needed (e.g., emoji with variation selector)
-                let grapheme = target_cell.get_grapheme();
-                let new_width = grapheme::is_wide_grapheme(&grapheme);
-                if new_width && target_cell.width() == 1 {
-                    target_cell.set_width(2);
-                    target_cell.flags.set_wide_char(true);
-
-                    if target_col + 1 < cols {
-                        let mut spacer_flags = target_cell.flags;
-                        spacer_flags.set_wide_char(false);
-                        spacer_flags.set_wide_char_spacer(true);
-
-                        let spacer = Cell {
-                            c: ' ',
-                            combining: None,
-                            fg: target_cell.fg,
-                            bg: target_cell.bg,
-                            underline_color: target_cell.underline_color,
-                            flags: spacer_flags.with_width(1),
-                        };
-                        self.active_grid_mut()
-                            .set(target_col + 1, target_row, spacer);
-                    }
-                }
-
-                self.triggers.mark_written(target_row);
-            }
+            return false;
+        }
+        // The cell of the character written last; at (0, 0) there is
+        // nothing to attach to.
+        let Some((target_col, target_row)) = self.last_written_cell(cols) else {
             return true;
-        }
-
-        // Check if previous cell has ZWJ - if so, this char is part of ZWJ sequence
-        // and should be added as combining character (e.g., 👨 + ZWJ + 💻 = 👨‍💻)
-        // OPTIMIZATION: Only check for emoji characters (most text won't trigger this)
-        let char_code = c as u32;
-        let is_potential_emoji = matches!(char_code,
-            0x2600..=0x27BF  // Misc Symbols (❤️, ☀️, etc.)
-            | 0x1F000..=0x1FFFF // Emoji blocks
-        );
-
-        let last_written = if is_potential_emoji {
-            self.last_written_cell(cols)
-        } else {
-            None
         };
-        if let Some((target_col, target_row)) = last_written {
-            // Check if target cell has ZWJ in combining chars
-            if let Some(target_cell) = self.active_grid().get(target_col, target_row) {
-                if target_cell.combining_has('\u{200D}') {
-                    // Previous cell has ZWJ, add current char as combining
-                    if let Some(target_cell_mut) =
-                        self.active_grid_mut().get_mut(target_col, target_row)
-                    {
-                        target_cell_mut.combining_push(c);
 
-                        // Recalculate width if needed
-                        let grapheme = target_cell_mut.get_grapheme();
-                        let new_width = grapheme::is_wide_grapheme(&grapheme);
-                        if new_width && target_cell_mut.width() == 1 {
-                            target_cell_mut.set_width(2);
-                            target_cell_mut.flags.set_wide_char(true);
+        // Copy normalization form before mutable borrow
+        let norm_form = self.unicode_state.normalization_form;
 
-                            if target_col + 1 < cols {
-                                let mut spacer_flags = target_cell_mut.flags;
-                                spacer_flags.set_wide_char(false);
-                                spacer_flags.set_wide_char_spacer(true);
+        // Add combining character to the target cell
+        if let Some(target_cell) = self.active_grid_mut().get_mut(target_col, target_row) {
+            target_cell.combining_push(c);
 
-                                let spacer = Cell {
-                                    c: ' ',
-                                    combining: None,
-                                    fg: target_cell_mut.fg,
-                                    bg: target_cell_mut.bg,
-                                    underline_color: target_cell_mut.underline_color,
-                                    flags: spacer_flags.with_width(1),
-                                };
-                                self.active_grid_mut()
-                                    .set(target_col + 1, target_row, spacer);
-                            }
-                        }
+            // Fast path: Kitty TGP placeholder cells (base char U+10EEEE)
+            // encode an image ID via combining marks, not real text. Skip
+            // NFC/NFKC normalization — it would allocate strings per
+            // combining mark and dominate the cost of rendering an N×M
+            // placeholder rectangle (e.g., 40×20 = 800 cells × 3
+            // diacritics = 2400 normalize calls).
+            if target_cell.c == crate::graphics::placeholder::PLACEHOLDER_CHAR {
+                return true;
+            }
 
-                        self.triggers.mark_written(target_row);
-                    }
-                    return true;
+            // Apply Unicode normalization if NFC or NFKC (composition forms)
+            // This composes base + combining into precomposed form when possible
+            if matches!(
+                norm_form,
+                crate::unicode_normalization_config::NormalizationForm::NFC
+                    | crate::unicode_normalization_config::NormalizationForm::NFKC
+            ) {
+                let grapheme = target_cell.get_grapheme();
+                let normalized = norm_form.normalize(&grapheme);
+                let mut chars = normalized.chars();
+                if let Some(base) = chars.next() {
+                    target_cell.c = base;
+                    target_cell.combining_replace(chars.collect());
                 }
             }
-        }
 
-        false
+            self.triggers.mark_written(target_row);
+        }
+        true
     }
 
     /// Handle a regional indicator character (flag emoji pairing).
@@ -1031,6 +954,44 @@ mod tests {
         assert_eq!(grid.get(3, 0).unwrap().c, 'x');
         assert_eq!(grid.get(0, 1).unwrap().c, '\u{1F1F8}');
         assert_eq!((term.cursor.col, term.cursor.row), (1, 1));
+    }
+
+    #[test]
+    fn emoji_sequences_keep_unicode_11_widths() {
+        // VS16 does not widen the heart: one column, as wcwidth counts it,
+        // and the next character lands right after it.
+        let mut term = Terminal::new(10, 3);
+        term.process("\u{2764}\u{FE0F}xyz".as_bytes());
+        let grid = term.active_grid();
+        assert_eq!(grid.get(0, 0).unwrap().get_grapheme(), "\u{2764}\u{FE0F}");
+        assert_eq!(grid.get(0, 0).unwrap().width(), 1);
+        assert_eq!(grid.row_text(0).trim_end(), "\u{2764}\u{FE0F}xyz");
+        assert_eq!(term.cursor.col, 4);
+
+        // After a ZWJ the next emoji takes its own cells: 2 + 0 + 2 columns.
+        let mut term = Terminal::new(10, 3);
+        term.process("\u{1F468}\u{200D}\u{1F4BB}x".as_bytes());
+        let grid = term.active_grid();
+        assert_eq!(grid.get(0, 0).unwrap().get_grapheme(), "\u{1F468}\u{200D}");
+        assert_eq!(grid.get(2, 0).unwrap().c, '\u{1F4BB}');
+        assert_eq!(grid.get(4, 0).unwrap().c, 'x');
+        assert_eq!(term.cursor.col, 5);
+
+        // A narrow base joined by ZWJ does not widen either.
+        let mut term = Terminal::new(10, 3);
+        term.process("\u{2764}\u{FE0F}\u{200D}\u{1F525}x".as_bytes());
+        let grid = term.active_grid();
+        assert_eq!(grid.get(0, 0).unwrap().width(), 1);
+        assert_eq!(grid.get(1, 0).unwrap().c, '\u{1F525}');
+        assert_eq!(grid.get(3, 0).unwrap().c, 'x');
+
+        // A skin tone modifier is a wide character of its own.
+        let mut term = Terminal::new(10, 3);
+        term.process("\u{1F44D}\u{1F3FD}x".as_bytes());
+        let grid = term.active_grid();
+        assert_eq!(grid.get(2, 0).unwrap().c, '\u{1F3FD}');
+        assert_eq!(grid.get(4, 0).unwrap().c, 'x');
+        assert_eq!(term.cursor.col, 5);
     }
 
     #[test]
