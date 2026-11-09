@@ -18,7 +18,11 @@
 //!   RDP client would release Shift before the key and type `1` for `!`;
 //! - Caps Lock state is known, Num Lock and Scroll Lock are not. Num Lock is reported as
 //!   unknown, so the clients leave the remote one alone instead of switching it off; Scroll
-//!   Lock is reported off.
+//!   Lock is reported off;
+//! - a key's release names it by what it types now, which is not what it typed when it went
+//!   down once a modifier changed in between (`!` comes up as `1`, AltGr+Q's `@` as `q`). The
+//!   translator remembers each held key and reports its release with the `code` and `key` it
+//!   went down with, so the clients let go of what they pressed.
 
 use muxus_session::desktop::{KeyEvent, Modifiers};
 use muxus_ui::gpui_kit::{Keystroke, Modifiers as GpuiModifiers};
@@ -222,12 +226,39 @@ const MODIFIER_KEYS: [ModifierKey; 4] = [
     (|m| m.platform, "MetaLeft", "Meta"),
 ];
 
+/// A key down on the desktop: the keystroke it went down with and how it was reported.
+#[derive(Debug, Clone)]
+struct HeldKey {
+    keystroke: Keystroke,
+    /// The window's modifiers when it went down.
+    modifiers: GpuiModifiers,
+    code: String,
+    key: String,
+}
+
+impl HeldKey {
+    /// Whether the key typed a character (rather than naming a key such as Enter).
+    fn typed(&self) -> bool {
+        let mut chars = self.key.chars();
+        matches!((chars.next(), chars.next()), (Some(typed), None) if !typed.is_control() && !typed.is_whitespace())
+    }
+
+    /// Whether the key finished a composition: GPUI names such a key after the character it
+    /// composed (`eacute`, `asciicircum`), not after the key that came up.
+    fn composed(&self) -> bool {
+        let key = self.keystroke.key.as_str();
+        key.chars().count() > 1 && named_key(key).is_none() && self.typed()
+    }
+}
+
 /// Turns one view's GPUI key events into DOM key events, rebuilding the modifier and Caps
 /// Lock key events GPUI reports only as state.
 #[derive(Debug, Default, Clone)]
 pub struct KeyTranslator {
     modifiers: GpuiModifiers,
     caps_lock: bool,
+    /// Keys down, oldest first.
+    held: Vec<HeldKey>,
 }
 
 impl KeyTranslator {
@@ -240,6 +271,41 @@ impl KeyTranslator {
     pub fn sync(&mut self, modifiers: GpuiModifiers, caps_lock: bool) {
         self.modifiers = modifiers;
         self.caps_lock = caps_lock;
+    }
+
+    /// Every key counts as up again (focus left the desktop, which let go of them).
+    pub fn release_all(&mut self) {
+        self.held.clear();
+    }
+
+    /// The held key a key event names. GPUI reports no physical key, so a key is found by its
+    /// name: the same name, or the same US key (`!` comes up as `1` once Shift is up). A
+    /// character key whose name changed otherwise (with a layout's own Shift level, as German
+    /// Shift+7 `/` coming up as `7`; with AltGr, which GPUI does not report on Linux; or with
+    /// a composition, `é` coming up as `e`) is the oldest key that typed a character, one
+    /// pressed under other modifiers than now first; a named key (Space ending `^ Space`) can
+    /// only be the end of a composition.
+    fn held_index(&self, keystroke: &Keystroke) -> Option<usize> {
+        let key = keystroke.key.as_str();
+        if let Some(index) = self
+            .held
+            .iter()
+            .position(|held| held.keystroke.key.eq_ignore_ascii_case(key))
+        {
+            return Some(index);
+        }
+        if let Some(code) = dom_code(key)
+            && let Some(index) = self.held.iter().position(|held| held.code == code)
+        {
+            return Some(index);
+        }
+        let character = key.chars().count() == 1;
+        let named = named_key(key).is_some();
+        let candidate = |held: &HeldKey| (character && held.typed()) || (named && held.composed());
+        self.held
+            .iter()
+            .position(|held| candidate(held) && held.modifiers != self.modifiers)
+            .or_else(|| self.held.iter().position(candidate))
     }
 
     fn event(&self, code: &str, key: String, pressed: bool, repeat: bool) -> KeyEvent {
@@ -262,10 +328,26 @@ impl KeyTranslator {
         caps_lock: bool,
     ) -> KeyEvent {
         self.sync(modifiers, caps_lock);
+        // Auto-repeat repeats what the key went down with, whatever the modifiers are now.
+        if repeat && let Some(index) = self.held_index(keystroke) {
+            let held = &self.held[index];
+            let mut event = self.event(&held.code, held.key.clone(), true, true);
+            event.modifiers.alt_graph = alt_graph(&held.keystroke, &self.modifiers);
+            return event;
+        }
         let key = dom_key(keystroke, &self.modifiers, self.caps_lock);
         let code = dom_code(&keystroke.key).unwrap_or_default();
         let mut event = self.event(code, key, true, repeat);
         event.modifiers.alt_graph = alt_graph(keystroke, &self.modifiers);
+        // A key that goes down again without having come up here replaces its old entry.
+        self.held
+            .retain(|held| !held.keystroke.key.eq_ignore_ascii_case(&keystroke.key));
+        self.held.push(HeldKey {
+            keystroke: keystroke.clone(),
+            modifiers: self.modifiers,
+            code: event.code.clone(),
+            key: event.key.clone(),
+        });
         event
     }
 
@@ -276,6 +358,12 @@ impl KeyTranslator {
         caps_lock: bool,
     ) -> KeyEvent {
         self.sync(modifiers, caps_lock);
+        if let Some(index) = self.held_index(keystroke) {
+            let held = self.held.remove(index);
+            let mut event = self.event(&held.code, held.key, false, false);
+            event.modifiers.alt_graph = alt_graph(&held.keystroke, &self.modifiers);
+            return event;
+        }
         let key = dom_key(keystroke, &self.modifiers, self.caps_lock);
         let code = dom_code(&keystroke.key).unwrap_or_default();
         let mut event = self.event(code, key, false, false);
@@ -552,6 +640,124 @@ mod tests {
         let alt_f = press(typed("f", Some("f")), alt).unwrap();
         assert_eq!(alt_f.last(), Some(&InputOp::KeyPressed(0x21)));
         assert!(alt_f.contains(&InputOp::KeyPressed(scancode::ALT_LEFT)));
+    }
+
+    /// What RDP sends for a run of key events, after the first key's lock sync.
+    fn rdp_ops(keys: &mut KeyTranslator, steps: &[Step]) -> Vec<InputOp> {
+        let mut rdp = RdpKeyboard::new();
+        let mut ops = Vec::new();
+        for step in steps {
+            let event = match step {
+                Step::Down(keystroke, modifiers) => {
+                    keys.key_down(keystroke, false, *modifiers, false)
+                }
+                Step::Repeat(keystroke, modifiers) => {
+                    keys.key_down(keystroke, true, *modifiers, false)
+                }
+                Step::Up(keystroke, modifiers) => keys.key_up(keystroke, *modifiers, false),
+            };
+            ops.extend(rdp.key(&event).unwrap_or_default());
+        }
+        ops.retain(|op| !matches!(op, InputOp::SynchronizeLocks { .. }));
+        ops
+    }
+
+    enum Step {
+        Down(Keystroke, GpuiModifiers),
+        Repeat(Keystroke, GpuiModifiers),
+        Up(Keystroke, GpuiModifiers),
+    }
+
+    /// A key comes up named by what it types then; the server must let go of what it pressed.
+    #[test]
+    fn releases_the_character_a_key_went_down_with() {
+        let none = GpuiModifiers::default();
+        let mut keys = KeyTranslator::new();
+        // US Shift+1, Shift let go first: `!` comes up as `1`, and repeats stay `!`.
+        // Linux AltGr+Q (GPUI reports no modifier): `@` comes up as `q`.
+        let ops = rdp_ops(
+            &mut keys,
+            &[
+                Step::Down(typed("!", Some("!")), shift()),
+                Step::Repeat(typed("1", Some("1")), none),
+                Step::Up(typed("1", Some("1")), none),
+                Step::Down(typed("@", Some("@")), none),
+                Step::Up(typed("q", Some("q")), none),
+            ],
+        );
+        assert_eq!(
+            ops,
+            [
+                InputOp::UnicodePressed('!'),
+                InputOp::UnicodeRepeated('!'),
+                InputOp::UnicodeReleased('!'),
+                InputOp::UnicodePressed('@'),
+                InputOp::UnicodeReleased('@'),
+            ]
+        );
+        assert!(keys.held.is_empty());
+    }
+
+    #[test]
+    fn matches_releases_of_keys_held_together() {
+        let none = GpuiModifiers::default();
+        let mut keys = KeyTranslator::new();
+        // German Shift+7 and Shift+8 held, Shift let go, then the keys: the oldest goes
+        // first. W held throughout comes up by its own name.
+        let ops = rdp_ops(
+            &mut keys,
+            &[
+                Step::Down(typed("w", Some("w")), none),
+                Step::Down(typed("/", Some("/")), shift()),
+                Step::Down(typed("(", Some("(")), shift()),
+                Step::Up(typed("7", Some("7")), none),
+                Step::Up(typed("8", Some("8")), none),
+                // A dead key coming up (its press went to the input method) lets go of nothing.
+                Step::Up(typed("dead_acute", None), none),
+                Step::Up(typed("w", Some("w")), none),
+            ],
+        );
+        assert_eq!(
+            ops,
+            [
+                InputOp::UnicodePressed('w'),
+                InputOp::UnicodePressed('/'),
+                InputOp::UnicodePressed('('),
+                InputOp::UnicodeReleased('/'),
+                InputOp::UnicodeReleased('('),
+                InputOp::UnicodeReleased('w'),
+            ]
+        );
+    }
+
+    /// GPUI on Linux names the key that finishes a composition after what it composed; it
+    /// comes up under its own name.
+    #[test]
+    fn releases_a_composed_character_when_its_key_comes_up() {
+        let none = GpuiModifiers::default();
+        let mut keys = KeyTranslator::new();
+        let ops = rdp_ops(
+            &mut keys,
+            &[
+                Step::Down(typed("eacute", Some("é")), none),
+                Step::Up(typed("e", Some("e")), none),
+                Step::Down(typed("asciicircum", Some("^")), none),
+                Step::Up(typed("space", Some(" ")), none),
+            ],
+        );
+        assert_eq!(
+            ops,
+            [
+                InputOp::UnicodePressed('é'),
+                InputOp::UnicodeReleased('é'),
+                InputOp::UnicodePressed('^'),
+                InputOp::UnicodeReleased('^'),
+            ]
+        );
+        // Focus leaving forgets what was held.
+        keys.key_down(&typed("a", Some("a")), false, none, false);
+        keys.release_all();
+        assert!(keys.held.is_empty());
     }
 
     #[test]
