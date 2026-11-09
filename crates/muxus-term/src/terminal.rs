@@ -198,7 +198,8 @@ fn styled_cell(cell: &Cell) -> StyledCell {
         style: CellStyle {
             fg: fg_color(cell.fg()),
             bg: bg_color(cell.bg()),
-            underline_color: cell.underline_color().map(fg_color),
+            // Only SGR 58 sets it, so ANSI white is palette 7, never the default stand-in.
+            underline_color: cell.underline_color().map(plain_color),
             underline,
             bold: flags.bold(),
             dim: flags.dim(),
@@ -1216,6 +1217,26 @@ mod tests {
         );
         assert_eq!(cells[3].style.fg, CellColor::Default);
         assert!(cells[3].text.is_empty());
+    }
+
+    #[test]
+    fn reads_the_semicolon_form_of_the_underline_color() {
+        let mut term = emulator(10, 2);
+        term.write(b"\x1b[4;58;5;7mA\x1b[0;4;58;2;255;0;0mB\x1b[0;4;58:5:1mC");
+        let cells = term.styled_line(term.scrollback_len()).unwrap();
+        let style = cells[0].style;
+        assert_eq!(
+            (style.underline, style.underline_color),
+            (UnderlineStyle::Single, Some(CellColor::Palette(7)))
+        );
+        assert!(!style.blink && !style.inverse, "{style:?}");
+        let style = cells[1].style;
+        assert_eq!(
+            (style.underline, style.underline_color),
+            (UnderlineStyle::Single, Some(CellColor::Rgb(255, 0, 0)))
+        );
+        assert!(!style.dim, "{style:?}");
+        assert_eq!(cells[2].style.underline_color, Some(CellColor::Palette(1)));
     }
 
     #[test]

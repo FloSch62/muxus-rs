@@ -86,7 +86,7 @@ fn reset_sgr(attrs: &mut TextAttributes, theme: &ColorThemeState) {
     attrs.underline_color = None;
 }
 
-/// Apply one SGR parameter. The `38`/`48` semicolon forms consume their
+/// Apply one SGR parameter. The `38`/`48`/`58` semicolon forms consume their
 /// mode and value parameters from `iter`.
 fn apply_sgr_param(
     attrs: &mut TextAttributes,
@@ -140,8 +140,10 @@ fn apply_sgr_param(
         }
         49 => attrs.bg = theme.default_bg,
         58 => {
-            // Set underline color (colon sub-parameter form only)
-            if let Some(color) = parse_extended_color_subparams(param_slice) {
+            // Muxus patch: the underline color takes the semicolon form (`58;5;n`,
+            // `58;2;r;g;b`) as 38 and 48 do; it read the colon form only, and its arguments
+            // as SGR codes.
+            if let Some(color) = parse_extended_color(param_slice, iter) {
                 attrs.underline_color = Some(color);
             }
         }
@@ -176,7 +178,7 @@ fn apply_sgr_underline(attrs: &mut TextAttributes, param_slice: &[u16]) {
     }
 }
 
-/// Parse an SGR extended-color specifier (`38`/`48`): either the colon
+/// Parse an SGR extended-color specifier (`38`/`48`/`58`): either the colon
 /// sub-parameter form (`38:2:r:g:b` / `38:5:n`) carried entirely in
 /// `param_slice`, or the semicolon form (`38;2;r;g;b` / `38;5;n`) whose
 /// mode and value parameters are consumed from `iter`. Returns `None`
