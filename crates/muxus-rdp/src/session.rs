@@ -676,6 +676,21 @@ fn wheel_pixels(amount: i16, unit: WheelUnit) -> i16 {
     pixels.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
+/// Pause as a keyboard sends it: Ctrl with the EXTENDED1 prefix, then Num Lock, both
+/// released at once ([MS-RDPBCGR] 2.2.8.1.2.2.1). The input database cannot express the
+/// prefix, and Pause holds no state for it to track.
+fn pause_events() -> [FastPathInputEvent; 4] {
+    use ironrdp::pdu::input::fast_path::KeyboardFlags;
+    const CTRL: u8 = 0x1d;
+    const NUM_LOCK: u8 = 0x45;
+    [
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED1, CTRL),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), NUM_LOCK),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED1 | KeyboardFlags::RELEASE, CTRL),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, NUM_LOCK),
+    ]
+}
+
 /// The fast-path events for a batch of device events, tracked through the input database.
 fn fastpath_events(database: &mut Database, ops: &[InputOp]) -> Vec<FastPathInputEvent> {
     let mut events = Vec::new();
@@ -714,6 +729,10 @@ fn fastpath_events(database: &mut Database, ops: &[InputOp]) -> Vec<FastPathInpu
             }
             InputOp::ReleaseAll => {
                 events.extend(database.release_all());
+                continue;
+            }
+            InputOp::Pause => {
+                events.extend(pause_events());
                 continue;
             }
         };
@@ -1248,5 +1267,31 @@ mod send_probe {
         drop(assert_send(async move {
             connect(options, RdpTransport::Direct, handler).await
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp::pdu::input::fast_path::KeyboardFlags;
+
+    use super::*;
+
+    #[test]
+    fn sends_pause_with_the_extended1_prefix() {
+        let mut database = Database::new();
+        assert_eq!(
+            fastpath_events(&mut database, &[InputOp::Pause]),
+            [
+                FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED1, 0x1d),
+                FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x45),
+                FastPathInputEvent::KeyboardEvent(
+                    KeyboardFlags::EXTENDED1 | KeyboardFlags::RELEASE,
+                    0x1d
+                ),
+                FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x45),
+            ]
+        );
+        // Nothing is left held: releasing everything sends no keys.
+        assert!(database.release_all().is_empty());
     }
 }

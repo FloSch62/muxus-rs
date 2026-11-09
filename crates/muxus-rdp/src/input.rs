@@ -134,6 +134,9 @@ pub enum InputOp {
     },
     /// Let go of every key and button the input database holds.
     ReleaseAll,
+    /// The Pause key: the EXTENDED1 sequence (Ctrl 0x1D, then Num Lock 0x45, pressed and
+    /// released) a keyboard sends for it, as mstsc and FreeRDP do. It has no key-up of its own.
+    Pause,
 }
 
 /// Modifier flags on every key event, with the scancodes that produce them.
@@ -184,6 +187,11 @@ impl RdpKeyboard {
     /// The device events for one key event, or `None` for keys RDP has no scancode for, so
     /// the caller may let them be.
     pub fn key(&mut self, event: &KeyEvent) -> Option<Vec<InputOp>> {
+        // Pause has a scancode sequence of its own; with Ctrl held the key is Break (0xE046),
+        // which the table has.
+        if event.code == "Pause" && !event.modifiers.ctrl {
+            return Some(self.pause(event));
+        }
         let scancode = scancode_for_code(&event.code)?;
         let modifier = is_modifier_code(scancode);
         let mut ops = Vec::new();
@@ -220,6 +228,20 @@ impl RdpKeyboard {
             ops.push(InputOp::KeyReleased(scancode));
         }
         Some(ops)
+    }
+
+    /// Pause goes out whole on the press; auto-repeat and the release send nothing.
+    fn pause(&mut self, event: &KeyEvent) -> Vec<InputOp> {
+        let mut ops = Vec::new();
+        if !event.pressed || event.repeat {
+            return ops;
+        }
+        if self.sync_lock_keys(event, &mut ops) {
+            self.held_modifiers.clear();
+        }
+        self.reconcile_modifiers(event, &mut ops);
+        ops.push(InputOp::Pause);
+        ops
     }
 
     /// Bring the server's modifiers in line with the event's flags. A modifier pressed before
@@ -651,6 +673,31 @@ mod tests {
             },
         ));
         assert_eq!(rdp.sent, ["sync 010", "down e038", "down 10", "down 11"]);
+    }
+
+    #[test]
+    fn sends_pause_as_its_extended1_sequence_and_ctrl_pause_as_break() {
+        let mut rdp = Recorder::new();
+        rdp.key(down("Pause", KeyState::default()));
+        rdp.key(down(
+            "Pause",
+            KeyState {
+                repeat: true,
+                ..KeyState::default()
+            },
+        ));
+        assert!(rdp.key(up("Pause", KeyState::default())));
+        assert_eq!(rdp.sent, ["sync 010", "Pause"]);
+        rdp.sent.clear();
+        let mut ctrl = down("ControlLeft", KeyState::default());
+        ctrl.modifiers.ctrl = true;
+        rdp.key(ctrl.clone());
+        let mut brk = down("Pause", KeyState::default());
+        brk.modifiers.ctrl = true;
+        rdp.key(brk.clone());
+        brk.pressed = false;
+        rdp.key(brk);
+        assert_eq!(rdp.sent, ["down 1d", "down e046", "up e046"]);
     }
 
     #[test]

@@ -131,6 +131,7 @@ pub fn scancode_for_code(code: &str) -> Option<u16> {
         "NumpadDivide" => 0xe035,
         "PrintScreen" => 0xe037,
         "AltRight" => 0xe038,
+        // Break (Ctrl+Pause). Pause alone is a sequence of its own (`InputOp::Pause`).
         "Pause" => 0xe046,
         "Home" => 0xe047,
         "ArrowUp" => 0xe048,
