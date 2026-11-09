@@ -286,6 +286,17 @@ top/bottom and left/right margins and homes the cursor; the rows lose their wrap
 | `src/grid/mod.rs` | `Grid::fill_screen`. |
 | `src/terminal/write.rs` (tests), `crates/muxus-term/src/terminal.rs` | `decaln_fills_the_screen_with_e_and_resets_the_margins`; `escape_sequences_with_intermediates_are_not_their_plain_forms` expects the pattern and the cursor at home. |
 
+## The engine's own tests
+
+CI runs the engine's suite when a pull request changes this folder (`.github/workflows/lint.yml`):
+`cargo test --locked --manifest-path vendor/par-term-emu-core/Cargo.toml` from the checkout root,
+with no features, as Muxus builds it (`muxus-term` turns the defaults off, and the engine has
+none), against this folder's `Cargo.lock`. Cargo looks for a workspace above the package and
+skips Muxus's, which excludes `vendor`; in a checkout nested inside another one (a git worktree
+under `.claude/worktrees`) it reaches the outer checkout's and refuses, so run it from a
+checkout of its own. The two kitty file tests that need a fixture outside every temp directory
+write it to `target/` in this folder, so the checkout must not be under `/tmp` either.
+
 ## Kept as upstream has it
 
 **OpenTelemetry (`src/otel.rs`, `src/otel/`, 0.80.0).** Always compiled, but without the
@@ -315,8 +326,7 @@ update for no change in behaviour, so the parser is upstream's.
 3. Cherry-pick the "Engine:" commits that follow the previous "as published" commit, oldest
    first, resolving conflicts (`git log --oneline -- vendor/par-term-emu-core` lists them). The
    manifest edits (`memchr` in; `portable-pty` and the readme out) go in by hand.
-4. Run the engine's tests from a copy outside the workspace with its own `[workspace]` table
-   (not under `/tmp`: two kitty file tests refuse it), update its `Cargo.lock` from that copy,
+4. Run the engine's tests as CI does (above; without `--locked` it updates its `Cargo.lock`),
    then pin `par-term-emu-core-rust` in `crates/muxus-term/Cargo.toml` to the same version and
    run `cargo xtask ci` and the `throughput` example (`docs/parity/terminal-perf.md`).
 5. Update the version here, in `docs/parity/terminal.md` and in `ATTRIBUTION.md`.
