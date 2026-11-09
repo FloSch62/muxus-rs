@@ -135,11 +135,13 @@ impl KnownHostsStore {
         &self.global_files
     }
 
-    /// Checks a presented key blob for `host:port`.
+    /// Checks a presented key blob for `host:port`. Like OpenSSH, a matching `@revoked` entry in
+    /// any file wins over a plain entry for the same key, wherever either one sits.
     pub fn verify(&self, host: &str, port: u16, key: &[u8]) -> KnownHostVerdict {
         let names = host_names(host, port);
         let key_type = host_key_type(key);
         let key_b64 = B64.encode(key);
+        let mut known = false;
         let mut previous: Option<String> = None;
 
         for file in self.user_files.iter().chain(self.global_files.iter()) {
@@ -161,13 +163,20 @@ impl KnownHostsStore {
                     if entry.marker == Some(Marker::Revoked) {
                         return KnownHostVerdict::Revoked;
                     }
-                    return KnownHostVerdict::Ok;
+                    known = true;
+                    continue;
+                }
+                if entry.marker == Some(Marker::Revoked) {
+                    continue; // revoking another key says nothing about this one
                 }
                 if previous.is_none() {
                     let old = B64.decode(entry.key_b64).unwrap_or_default();
                     previous = Some(fingerprint_sha256(&old));
                 }
             }
+        }
+        if known {
+            return KnownHostVerdict::Ok;
         }
         match previous {
             Some(previous) => KnownHostVerdict::Changed { previous },
@@ -568,6 +577,63 @@ mod tests {
             f.store(vec![file]).verify("example.com", 22, &key),
             KnownHostVerdict::Revoked
         );
+    }
+
+    #[test]
+    fn a_revocation_in_a_later_file_wins_over_a_plain_entry_read_first() {
+        let f = Files::new();
+        let (user, global) = (f.fresh(), f.fresh());
+        let key = make_key("ssh-ed25519");
+        let (key_type, key_b64) = (host_key_type(&key), B64.encode(&key));
+        std::fs::write(&user, format!("example.com {key_type} {key_b64}\n")).unwrap();
+        std::fs::write(&global, format!("@revoked * {key_type} {key_b64}\n")).unwrap();
+        let store = KnownHostsStore::new(vec![user], vec![global]);
+        assert_eq!(
+            store.verify("example.com", 22, &key),
+            KnownHostVerdict::Revoked
+        );
+    }
+
+    #[test]
+    fn a_revocation_wins_over_an_earlier_plain_line_in_the_same_file() {
+        let f = Files::new();
+        let file = f.fresh();
+        let key = make_key("ssh-ed25519");
+        let (key_type, key_b64) = (host_key_type(&key), B64.encode(&key));
+        std::fs::write(
+            &file,
+            format!(
+                "example.com {key_type} {key_b64}\n@revoked example.com {key_type} {key_b64}\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            f.store(vec![file]).verify("example.com", 22, &key),
+            KnownHostVerdict::Revoked
+        );
+    }
+
+    #[test]
+    fn revoking_another_key_does_not_make_a_known_key_changed() {
+        let f = Files::new();
+        let file = f.fresh();
+        let (key, other) = (make_key("ssh-ed25519"), make_key("ssh-ed25519"));
+        std::fs::write(
+            &file,
+            format!(
+                "@revoked * {} {}\n",
+                host_key_type(&other),
+                B64.encode(&other)
+            ),
+        )
+        .unwrap();
+        let store = f.store(vec![file]);
+        assert_eq!(
+            store.verify("example.com", 22, &key),
+            KnownHostVerdict::Unknown
+        );
+        store.record("example.com", 22, &key).unwrap();
+        assert_eq!(store.verify("example.com", 22, &key), KnownHostVerdict::Ok);
     }
 
     #[test]
