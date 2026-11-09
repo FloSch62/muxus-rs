@@ -189,7 +189,9 @@ xterm and xterm.js take SGR 21 as doubly underlined (ECMA-48); the engine ignore
 | `src/terminal/sequences/csi/style.rs` | SGR 21 turns on the double underline; SGR 24 turns it off. The test is Muxus's `sgr_21_is_a_double_underline` (`crates/muxus-term/src/terminal.rs`). |
 
 OSC 4, 104 and 110–112 no longer reach the engine: Muxus answers and applies them itself
-(`crates/muxus-term/src/filter.rs`, `muxus_term::terminal::Emulator`), on top of the theme.
+(`crates/muxus-term/src/filter.rs`, `muxus_term::terminal::Emulator`), on top of the theme. So do
+XTPUSHCOLORS, XTPOPCOLORS and XTREPORTCOLORS (`CSI # P/Q/R`, `muxus_term::color_stack`), whose
+stack holds those colors; the engine's own stack is never used.
 
 ## A wide character in the last column
 

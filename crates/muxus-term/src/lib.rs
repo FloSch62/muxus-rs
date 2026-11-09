@@ -3,6 +3,7 @@
 pub mod buffer;
 pub mod clipboard_paste;
 pub mod color;
+pub mod color_stack;
 pub mod custom_schemes;
 pub mod drop_paths;
 pub mod file_drop;
