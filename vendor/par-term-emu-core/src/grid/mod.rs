@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 
-use crate::cell::Cell;
+use crate::cell::{Cell, PackedColor};
 use crate::zone::Zone;
 
 mod edit;
@@ -372,6 +372,55 @@ impl Grid {
             .all(|(row, &used)| row.iter().skip(used).all(|cell| *cell == blank))
     }
 
+    /// Muxus patch: before cells `[start, end)` of screen row `row` are
+    /// overwritten or erased, blank the half of a wide character that lies
+    /// outside the span while its other half is inside it (with background
+    /// `bg`), as xterm does: no wide character is left without its spacer
+    /// and no spacer without its character, which would hide the cell next
+    /// to it from rendering and copying.
+    pub(crate) fn split_wide_chars_at(
+        &mut self,
+        row: usize,
+        start: usize,
+        end: usize,
+        bg: PackedColor,
+    ) {
+        let end = end.min(self.cols);
+        if row >= self.rows || start >= end {
+            return;
+        }
+        let cells = &self.screen[row];
+        // A wide character just left of the span loses its spacer, and a
+        // spacer just right of it loses its wide character. Both halves
+        // were written, so they lie inside the row's written part.
+        let head = start > 0 && cells[start - 1].flags.wide_char();
+        let spacer = end < self.cols && cells[end].flags.wide_char_spacer();
+        if head || spacer {
+            self.blank_wide_halves(row, head.then(|| start - 1), spacer.then_some(end), bg);
+        }
+    }
+
+    /// Blank the cells `split_wide_chars_at` found (kept out of line: the
+    /// printing fast path rarely needs it).
+    #[cold]
+    #[inline(never)]
+    fn blank_wide_halves(
+        &mut self,
+        row: usize,
+        head: Option<usize>,
+        spacer: Option<usize>,
+        bg: PackedColor,
+    ) {
+        let blank = Cell {
+            bg,
+            ..Cell::default()
+        };
+        for col in [head, spacer].into_iter().flatten() {
+            self.screen[row][col] = blank.clone();
+        }
+        self.mark_row_content(row);
+    }
+
     /// Write printable ASCII `text` into row `row` from column `col` on,
     /// each byte as a cell like `pen` (whose `c` is ignored). The row is
     /// marked changed once. Bytes past the last column are ignored.
@@ -382,7 +431,12 @@ impl Grid {
         let end = (col + text.len()).min(self.cols);
         self.mark_row_content(row);
         self.row_used[row] = self.row_used[row].max(end);
-        for (cell, &byte) in self.screen[row][col..end].iter_mut().zip(text) {
+        let cells = &mut self.screen[row];
+        // A wide character half overwritten at either end of the span
+        // (see `split_wide_chars_at`), found before the span is written.
+        let head = col > 0 && cells[col - 1].flags.wide_char();
+        let spacer = end < cells.len() && cells[end].flags.wide_char_spacer();
+        for (cell, &byte) in cells[col..end].iter_mut().zip(text) {
             *cell = Cell {
                 c: byte as char,
                 combining: None,
@@ -391,6 +445,9 @@ impl Grid {
                 underline_color: pen.underline_color,
                 flags: pen.flags.with_width(1),
             };
+        }
+        if head || spacer {
+            self.blank_wide_halves(row, head.then(|| col - 1), spacer.then_some(end), pen.bg);
         }
     }
 

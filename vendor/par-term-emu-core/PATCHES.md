@@ -240,6 +240,22 @@ line editing and full-screen redraws, unless both sides agree on mode 2027.
 | `src/terminal/tests/screen.rs` | `test_get_word_at_emoji_zwj_line` expects the laptop in its own cells. |
 | `src/terminal/write.rs` (tests), `crates/muxus-term/tests/engine_write.rs` | `emoji_sequences_keep_unicode_11_widths`, `emoji_sequences_keep_unicode_11_widths_so_the_cursor_follows_the_program`. |
 
+## Half a wide character
+
+Writing over one half of a wide character, or deleting, inserting or erasing at one half, left the
+other half behind: a wide character without its spacer kept covering the next cell, and a spacer
+without its wide character hid nothing but stayed out of copies (`中`, `CUP 1;2`, `X`: the `X`
+was hidden under the `中`; `a中bc` with DCH on the right half lost the `b`). xterm and xterm.js
+blank the other half.
+
+| File | Change |
+|---|---|
+| `src/grid/mod.rs` | `Grid::split_wide_chars_at`: before a span is overwritten or erased, a wide character just left of it and a spacer just right of it are blanked (with the pen's or the erase's background). `Grid::write_ascii` makes the same two flag checks once per row segment (the blanking itself is out of line), so the printing fast path stays as fast: instruction counts of the `throughput` streams within -0.5% (plain log) to +1.6% (colored log) of the engine before. |
+| `src/grid/erase.rs` | EL, ECH and the partial rows of ED (`erase_span`) call it. |
+| `src/grid/edit.rs` | ICH blanks a wide character it splits and one pushed half off the row; DCH blanks a wide character that lost its spacer and a spacer that lost its wide character. A count of 0 changes nothing. |
+| `src/terminal/write.rs` | Every cell write (characters, regional indicators and a flag's spacer) calls it. |
+| `src/terminal/write.rs` (tests), `crates/muxus-term/tests/engine_write.rs` | `overwriting_half_a_wide_character_blanks_the_other_half`, `editing_half_a_wide_character_blanks_the_other_half`, `overwriting_or_deleting_half_a_wide_character_blanks_the_other_half`. |
+
 ## Kept as upstream has it
 
 **OpenTelemetry (`src/otel.rs`, `src/otel/`, 0.80.0).** Always compiled, but without the

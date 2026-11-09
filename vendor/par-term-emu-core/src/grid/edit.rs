@@ -48,25 +48,37 @@ impl Grid {
 
     /// Insert n blank characters at position
     pub fn insert_chars(&mut self, col: usize, row: usize, n: usize) {
-        if row >= self.rows || col >= self.cols {
+        if row >= self.rows || col >= self.cols || n == 0 {
             return;
         }
         let n = n.min(self.cols - col);
         let cols = self.cols;
 
         if let Some(row_cells) = self.row_mut(row) {
+            // Muxus patch: a wide character the insertion splits is
+            // blanked (both halves), and so is one pushed half off the
+            // row, as in xterm.
+            if col > 0 && row_cells[col - 1].flags.wide_char() {
+                row_cells[col - 1].reset();
+                if row_cells[col].flags.wide_char_spacer() {
+                    row_cells[col].reset();
+                }
+            }
             for i in ((col + n)..cols).rev() {
                 row_cells[i] = row_cells[i - n].clone();
             }
             for cell in row_cells.iter_mut().skip(col).take(n) {
                 cell.reset();
             }
+            if row_cells[cols - 1].flags.wide_char() {
+                row_cells[cols - 1].reset();
+            }
         }
     }
 
     /// Delete n characters at position
     pub fn delete_chars(&mut self, col: usize, row: usize, n: usize) {
-        if row >= self.rows || col >= self.cols {
+        if row >= self.rows || col >= self.cols || n == 0 {
             return;
         }
         let n = n.min(self.cols - col);
@@ -78,6 +90,15 @@ impl Grid {
             }
             for cell in row_cells.iter_mut().skip(cols - n).take(n) {
                 cell.reset();
+            }
+            // Muxus patch: a wide character whose spacer was deleted, and a
+            // spacer whose wide character was deleted, are blanked, as in
+            // xterm.
+            if col > 0 && row_cells[col - 1].flags.wide_char() {
+                row_cells[col - 1].reset();
+            }
+            if row_cells[col].flags.wide_char_spacer() {
+                row_cells[col].reset();
             }
         }
     }

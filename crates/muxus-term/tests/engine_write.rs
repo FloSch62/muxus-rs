@@ -71,3 +71,25 @@ fn emoji_sequences_keep_unicode_11_widths_so_the_cursor_follows_the_program() {
     assert_eq!(cells(&term, 0)[4], ("x".to_string(), 1));
     assert_eq!(cursor(&term), (5, 0));
 }
+
+#[test]
+fn overwriting_or_deleting_half_a_wide_character_blanks_the_other_half() {
+    // X over the right half of 中 shows: the 中 goes, as in xterm.
+    let mut term = emulator(6, 3);
+    term.write("中\x1b[1;2HX".as_bytes());
+    assert_eq!(row(&term, 0), " X");
+    assert_eq!(cells(&term, 0)[0], (String::new(), 1));
+
+    // DCH on the right half keeps the b.
+    let mut term = emulator(8, 3);
+    term.write("a中bc\x1b[1;3H\x1b[P".as_bytes());
+    assert_eq!(row(&term, 0), "a bc");
+
+    // ECH and EL on one half erase the whole character.
+    let mut term = emulator(8, 3);
+    term.write("a中bc\x1b[1;3H\x1b[X".as_bytes());
+    assert_eq!(row(&term, 0), "a  bc");
+    let mut term = emulator(8, 3);
+    term.write("a中bc\x1b[1;3H\x1b[K".as_bytes());
+    assert_eq!(row(&term, 0), "a");
+}
