@@ -147,6 +147,18 @@ ended in an SGR 0. It now goes through `parse_extended_color` as 38 and 48 do.
 |---|---|
 | `src/terminal/sequences/csi/style.rs` | SGR 58 parses both forms. The test is Muxus's `reads_the_semicolon_form_of_the_underline_color` (`crates/muxus-term/src/terminal.rs`). |
 
+## The color space in colon truecolor (`38:2::r:g:b`)
+
+ITU T.416 puts a color-space id before the components: `38:2:cs:r:g:b`, usually written with the
+id left empty, `38:2::r:g:b` (Muxus's own serializer writes underline colors that way). The
+engine read the components from the id's slot, so `58:2::1:2:3` was `Rgb(0, 1, 2)` and restored
+scrollback had the wrong underline colors. With six or more sub-parameters the components now
+follow the id, as in xterm; `38:2:r:g:b` is read as before.
+
+| File | Change |
+|---|---|
+| `src/terminal/sequences/csi/style.rs` | `parse_extended_color_subparams` skips the color-space slot. The tests are Muxus's `reads_colon_truecolor_with_and_without_the_color_space` (`crates/muxus-term/src/terminal.rs`) and the underline colors in `round_trips_through_a_replay` (`crates/muxus-term/src/serialize.rs`). |
+
 ## Kept as upstream has it
 
 **OpenTelemetry (`src/otel.rs`, `src/otel/`, 0.80.0).** Always compiled, but without the
