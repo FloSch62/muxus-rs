@@ -785,8 +785,9 @@ impl TerminalView {
         }
     }
 
-    /// Input reached the session: the view follows it like a terminal does.
-    fn after_input(&mut self, cx: &mut Context<Self>) {
+    /// Input reached the session: the view follows it like a terminal does, to the bottom and
+    /// without the selection. For input sent past the view, such as a paste the backend paces.
+    pub fn after_input(&mut self, cx: &mut Context<Self>) {
         self.emulator.scroll_to_bottom();
         self.selection = None;
         self.restart_blink();

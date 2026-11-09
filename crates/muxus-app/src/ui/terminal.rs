@@ -2092,10 +2092,9 @@ impl AppShell {
         if sent {
             self.mark_paced_paste(tab_id);
             view.update(cx, |view, cx| {
-                view.echo_input(text, cx);
                 // A paste typed in follows the output, like typing does.
-                let _ = view.send_input(Vec::<u8>::new());
-                cx.notify();
+                view.after_input(cx);
+                view.echo_input(text, cx);
             });
             if source {
                 self.mirror_paste(tab_id, text, cx);

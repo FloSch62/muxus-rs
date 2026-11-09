@@ -245,6 +245,38 @@ fn a_paced_paste_shows_its_progress_until_it_is_cancelled(cx: &mut TestAppContex
     });
 }
 
+/// A paced paste follows the output like typing does: the selection goes as it is sent.
+#[gpui::test]
+fn a_paced_paste_drops_the_selection(cx: &mut TestAppContext) {
+    let fx = Fixture::start(|_| {});
+    let window = main_window(&fx, cx);
+    let tab_id = window
+        .update(cx, |shell, window, cx| {
+            let id = shell.tabs.open(muxus_app::model::ssh_profile("box"), "box");
+            shell.tabs_changed(cx);
+            window.refresh();
+            id
+        })
+        .unwrap();
+    wait_connected(&window, &tab_id, cx);
+    let selected = window
+        .update(cx, |shell, _, cx| {
+            let view = shell.terminals[&tab_id].view.clone();
+            view.update(cx, |view, cx| {
+                view.write_output(b"some output\r\n", cx);
+                view.select_all(cx);
+            });
+            let selected = view.read(cx).has_selection();
+            shell.paste_into_session(&tab_id, "true\n", Some(2_000), true, cx);
+            (selected, view.read(cx).has_selection())
+        })
+        .unwrap();
+    assert_eq!(selected, (true, false));
+    window
+        .update(cx, |shell, _, cx| shell.cancel_paste(&tab_id, cx))
+        .unwrap();
+}
+
 /// A program reporting with OSC 7501 marks its tab: work in progress until the next prompt,
 /// a finished result until the tab is looked at.
 #[gpui::test]
