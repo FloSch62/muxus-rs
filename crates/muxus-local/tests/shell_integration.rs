@@ -148,6 +148,20 @@ fn prefixes_the_native_cmd_prompt_with_a_live_windows_cwd_report() {
 }
 
 #[test]
+fn reads_the_cmd_prompt_under_any_casing() {
+    assert_eq!(
+        shell_integration(
+            "cmd.exe",
+            &env(&[("Prompt", "$S$P$G")]),
+            None,
+            Platform::Windows
+        )
+        .env,
+        env(&[("PROMPT", r"$E]133;P;CwdRaw=$P$E\$S$P$G")])
+    );
+}
+
+#[test]
 fn uses_the_standard_visible_cmd_prompt_when_none_was_configured() {
     assert_eq!(
         shell_integration("cmd.exe", &HashMap::new(), None, Platform::Windows).env,

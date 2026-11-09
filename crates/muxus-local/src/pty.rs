@@ -17,7 +17,7 @@ use muxus_core::stream::{
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use regex::Regex;
 
-use crate::platform::Platform;
+use crate::platform::{Platform, env_var, set_env_var};
 use crate::profile::LocalProfile;
 use crate::shell_integration::{integration_root, shell_integration};
 
@@ -56,8 +56,13 @@ impl LocalEnvironment {
 /// The user's home directory for an environment: `$HOME` (`%USERPROFILE%` on
 /// Windows) first, as Node's `os.homedir()` does.
 pub fn home_dir(env: &HashMap<String, String>) -> Option<PathBuf> {
-    let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    env.get(key)
+    let platform = Platform::current();
+    let key = if platform == Platform::Windows {
+        "USERPROFILE"
+    } else {
+        "HOME"
+    };
+    env_var(env, key, platform)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(std::env::home_dir)
@@ -74,8 +79,7 @@ fn default_shell_with(
     exists: impl Fn(&str) -> bool,
 ) -> String {
     if platform == Platform::Windows {
-        return env
-            .get("COMSPEC")
+        return env_var(env, "COMSPEC", platform)
             .cloned()
             .unwrap_or_else(|| "powershell.exe".to_string());
     }
@@ -172,7 +176,9 @@ pub fn pty_environment(environment: &LocalEnvironment) -> HashMap<String, String
         .filter(|(key, _)| !is_host_terminal_env(key))
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
-    env.extend(pty_environment_overrides());
+    for (name, value) in pty_environment_overrides() {
+        set_env_var(&mut env, name, value, environment.platform);
+    }
     env
 }
 
@@ -217,9 +223,14 @@ pub fn plan_local_pty(profile: &LocalProfile, environment: &LocalEnvironment) ->
         None => local_pty_args(profile, &integration.args),
     };
     let mut env = pty_environment(environment);
-    env.extend(integration.env);
     // The terminal's own variables win over anything the integration set.
-    env.extend(pty_environment_overrides());
+    for (name, value) in integration
+        .env
+        .into_iter()
+        .chain(pty_environment_overrides())
+    {
+        set_env_var(&mut env, name, value, environment.platform);
+    }
     let cwd = profile
         .cwd
         .as_deref()
@@ -534,6 +545,18 @@ mod tests {
         assert_eq!(
             default_shell_with(&HashMap::new(), Platform::Windows, |_| true),
             "powershell.exe"
+        );
+    }
+
+    #[test]
+    fn default_shell_on_windows_reads_comspec_as_windows_spells_it() {
+        let env = HashMap::from([(
+            "ComSpec".to_string(),
+            r"C:\Windows\system32\cmd.exe".to_string(),
+        )]);
+        assert_eq!(
+            default_shell_with(&env, Platform::Windows, |_| true),
+            r"C:\Windows\system32\cmd.exe"
         );
     }
 
