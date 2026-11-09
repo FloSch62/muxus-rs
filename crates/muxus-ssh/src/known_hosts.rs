@@ -336,6 +336,8 @@ fn hashed_matches(field: &str, names: &[String]) -> bool {
     })
 }
 
+mod recorded;
+
 #[cfg(test)]
 mod tests {
     use super::*;

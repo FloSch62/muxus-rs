@@ -20,7 +20,10 @@ use super::health::{
     KeepaliveOptions, ObservedStream, TransportActivity, TransportHealth, ssh_keepalive_options,
 };
 use super::io::{ConnectIo, HostKeyChallenge, HostKeyState, PasswordVault};
-use crate::algorithms::{AlgorithmSettings, connection_algorithms};
+use crate::algorithms::{
+    AlgorithmSettings, connection_algorithms, host_key_algorithms_preferring_known,
+};
+use crate::config::ResolvedTarget;
 use crate::key_scan::resolve_agent_socket;
 use crate::known_hosts::{
     GLOBAL_KNOWN_HOSTS, KnownHostVerdict, KnownHostsStore, default_known_hosts_path,
@@ -347,6 +350,19 @@ pub fn known_hosts_for(
         .map(|files| files.iter().map(PathBuf::from).collect())
         .unwrap_or_else(|| vec![PathBuf::from(GLOBAL_KNOWN_HOSTS)]);
     KnownHostsStore::new(user, global)
+}
+
+/// The hop's settings with the host key algorithms in the order ssh(1) asks for them when the
+/// config sets none: the key type a link fingerprint pins, else the key types known_hosts
+/// already holds for the host, so a host recorded only with an ECDSA or RSA key is not met as a
+/// new host because the server answered with its ed25519 key.
+pub(crate) fn host_key_preference(hop: &ChainHop, known_hosts: &KnownHostsStore) -> ResolvedTarget {
+    let mut resolved = pinned_host_key_preference(hop);
+    if resolved.host_key_algorithms.is_none() {
+        let recorded = known_hosts.recorded_key_types(&hop.resolved.hostname, hop.port);
+        resolved.host_key_algorithms = host_key_algorithms_preferring_known(&recorded);
+    }
+    resolved
 }
 
 async fn verify_host_key(v: &HostKeyVerifier, key: &[u8]) -> bool {
@@ -676,9 +692,12 @@ pub(crate) async fn dial_hop(
     let ready_timeout = Duration::from_secs_f64(hop.resolved.connect_timeout.unwrap_or(20.0));
     let deadline = Arc::new(PausableDeadline::new(ready_timeout));
 
-    let algorithms =
-        connection_algorithms(&AlgorithmSettings::from(&pinned_host_key_preference(hop)))
-            .map_err(|e| ConnectError::new(ConnectErrorKind::Negotiation, e.to_string()))?;
+    let known_hosts = known_hosts_for(hop, &cx.known_hosts, &cx.env);
+    let algorithms = connection_algorithms(&AlgorithmSettings::from(&host_key_preference(
+        hop,
+        &known_hosts,
+    )))
+    .map_err(|e| ConnectError::new(ConnectErrorKind::Negotiation, e.to_string()))?;
     for note in &algorithms.notes {
         tracing::debug!(host = %hop.resolved.hostname, "{note}");
         cx.io.status(note, false);
@@ -724,7 +743,7 @@ pub(crate) async fn dial_hop(
     *lock(&shared.verifier) = Some(Arc::new(HostKeyVerifier {
         hop: hop.clone(),
         io: cx.io.clone(),
-        store: known_hosts_for(hop, &cx.known_hosts, &cx.env),
+        store: known_hosts,
         deadline: deadline.clone(),
     }));
     *lock(&shared.banner_io) = Some(cx.io.clone());

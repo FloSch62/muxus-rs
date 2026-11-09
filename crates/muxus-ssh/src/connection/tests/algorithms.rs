@@ -213,3 +213,47 @@ async fn reports_config_algorithms_the_engine_cannot_offer() {
             .any(|s| s.contains("KexAlgorithms: skipping sntrup761x25519-sha512@openssh.com"))
     );
 }
+
+#[tokio::test]
+async fn asks_for_the_host_key_type_known_hosts_already_holds() {
+    let ecdsa = PrivateKey::random(
+        &mut russh::keys::key::safe_rng(),
+        Algorithm::Ecdsa {
+            curve: russh::keys::EcdsaCurve::NistP256,
+        },
+    )
+    .unwrap();
+    // The server holds an ed25519 key too, the type asked for first by default.
+    let mut spec = ServerSpec::new().password(PASSWORD);
+    spec.extra_host_keys = vec![ecdsa.clone()];
+    let server = start(spec).await;
+    let sandbox = Sandbox::new();
+    config(&sandbox, server.port(), &[]);
+    let recorded = format!(
+        "[127.0.0.1]:{} {}\n",
+        server.port(),
+        ecdsa.public_key().to_openssh().unwrap()
+    );
+    std::fs::create_dir_all(sandbox.known_hosts.parent().unwrap()).unwrap();
+    std::fs::write(&sandbox.known_hosts, &recorded).unwrap();
+    let io = TestIo::accepting(PASSWORD);
+    let _shell = sandbox
+        .manager()
+        .connect_shell(
+            &SshProfile::new("console"),
+            io.clone(),
+            80,
+            24,
+            "xterm-256color",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    // The recorded key verified: no question, and accept-new recorded no second key.
+    assert!(io.host_keys.lock().unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(&sandbox.known_hosts).unwrap(),
+        recorded
+    );
+}
