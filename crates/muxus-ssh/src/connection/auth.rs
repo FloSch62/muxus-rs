@@ -1,7 +1,8 @@
-//! OpenSSH's client auth order: none → agent (unless IdentitiesOnly) → configured certificates
-//! with their matching private keys → identity files (config ones first, else the default id_*
-//! files) with passphrase prompts → keyboard-interactive → password. Every attempt happens
-//! inside one SSH connection, like the real client.
+//! OpenSSH's client auth order: none → agent (with IdentitiesOnly, only the identities that
+//! match a configured identity) → configured certificates with their matching private keys →
+//! identity files (config ones first, else the default id_* files) with passphrase prompts →
+//! keyboard-interactive → password. Every attempt happens inside one SSH connection, like the
+//! real client.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -298,7 +299,7 @@ impl AuthLadder {
         let resolved = &self.cx.hop.resolved;
         let mut attempts = vec![Attempt::None];
         if !resolved.password_only {
-            if self.cx.agent.is_some() && !resolved.identities_only {
+            if self.cx.agent.is_some() {
                 attempts.push(Attempt::Agent);
             }
             let files = self.identity_files();
@@ -344,15 +345,40 @@ impl AuthLadder {
     }
 
     fn identity_files(&self) -> Vec<String> {
+        self.identity_candidates()
+            .into_iter()
+            .filter(|file| self.explicit_identity_files() || Path::new(file).exists())
+            .collect()
+    }
+
+    /// The configured identity files, else every default id_* path whether or not it exists.
+    fn identity_candidates(&self) -> Vec<String> {
         if self.explicit_identity_files() {
             return self.cx.hop.resolved.identity_files.clone();
         }
         let dir = self.cx.env.ssh_dir();
         DEFAULT_IDENTITY_NAMES
             .iter()
-            .map(|name| dir.join(name))
-            .filter(|p| p.exists())
-            .map(|p| p.to_string_lossy().into_owned())
+            .map(|name| dir.join(name).to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// The public key and certificate blobs IdentitiesOnly lets the agent offer, the way ssh(1)
+    /// loads them: each identity file itself (a public key, or the public half an OpenSSH
+    /// private key file carries in the clear), its `.pub` and `-cert.pub` siblings, and every
+    /// CertificateFile.
+    fn configured_identity_blobs(&self) -> HashSet<Vec<u8>> {
+        let mut paths: Vec<String> = Vec::new();
+        for file in self.identity_candidates() {
+            paths.push(format!("{file}.pub"));
+            paths.push(format!("{file}-cert.pub"));
+            paths.push(file);
+        }
+        paths.extend(self.cx.hop.resolved.certificate_files.iter().cloned());
+        paths
+            .iter()
+            .filter_map(|path| std::fs::read(path).ok())
+            .filter_map(|content| identity_file_blob(&content))
             .collect()
     }
 
@@ -632,6 +658,20 @@ impl AuthLadder {
                 }
                 return Ok(Outcome::Unavailable);
             }
+        };
+        let identities = if self.cx.hop.resolved.identities_only {
+            let allowed = self.configured_identity_blobs();
+            let (offered, skipped): (Vec<_>, Vec<_>) = identities
+                .into_iter()
+                .partition(|identity| allowed.contains(&identity_blob(identity)));
+            tracing::debug!(
+                offered = offered.len(),
+                skipped = skipped.len(),
+                "IdentitiesOnly: offering only the agent identities of configured keys"
+            );
+            offered
+        } else {
+            identities
         };
         self.agent_identity_prints = Some(
             identities
@@ -1067,6 +1107,21 @@ impl AuthLadder {
         let fingerprint = fingerprint_sha256(&blob);
         self.agent_holds_fingerprint(&fingerprint).await
     }
+}
+
+/// The key blob a public key or certificate line (`<type> <base64> [comment]`) names, else the
+/// public key an OpenSSH private key file holds unencrypted.
+fn identity_file_blob(content: &[u8]) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let text = String::from_utf8_lossy(content);
+    let mut fields = text.split_whitespace();
+    if let (Some(key_type), Some(encoded)) = (fields.next(), fields.next())
+        && let Ok(blob) = base64::engine::general_purpose::STANDARD.decode(encoded)
+        && crate::known_hosts::host_key_type(&blob) == key_type
+    {
+        return Some(blob);
+    }
+    crate::security_keys::read_openssh_key_file(content).map(|file| file.public_blob)
 }
 
 fn basename(file: &str) -> String {
