@@ -14,7 +14,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use crate::platform::Platform;
+use crate::platform::{Platform, env_var};
 
 pub use muxus_core::shell_integration::{
     LOCAL_BASH_INIT as BASH_INIT, SHELL_CWD_REPORT, ZSHENV, ZSHRC,
@@ -127,8 +127,7 @@ pub fn shell_integration(
         if name != "cmd" && name != "cmd.exe" {
             return none;
         }
-        let prompt = base_env
-            .get("PROMPT")
+        let prompt = env_var(base_env, "PROMPT", platform)
             .filter(|prompt| !prompt.is_empty())
             .map(String::as_str)
             .unwrap_or("$P$G");

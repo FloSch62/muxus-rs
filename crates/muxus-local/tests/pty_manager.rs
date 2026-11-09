@@ -109,6 +109,32 @@ fn plans_the_environment_of_a_local_shell() {
     assert!(Path::new(&plan.env["ZDOTDIR"]).ends_with("shell-integration/zsh"));
 }
 
+/// Windows keeps variable names as they were set (`ComSpec`) and matches them in any case.
+#[test]
+fn plans_cmd_on_windows_from_variables_in_windows_casing() {
+    let home = tempfile::tempdir().unwrap();
+    let mut environment = scratch_environment(home.path());
+    environment.platform = Platform::Windows;
+    environment
+        .vars
+        .insert("ComSpec".into(), r"C:\Windows\system32\cmd.exe".into());
+    environment.vars.insert("Prompt".into(), "$S$P$G".into());
+    let plan = plan_local_pty(&LocalProfile::default(), &environment);
+    assert_eq!(plan.program, r"C:\Windows\system32\cmd.exe");
+    let prompts: Vec<_> = plan
+        .env
+        .iter()
+        .filter(|(key, _)| key.eq_ignore_ascii_case("PROMPT"))
+        .collect();
+    assert_eq!(
+        prompts,
+        [(
+            &"PROMPT".to_string(),
+            &r"$E]133;P;CwdRaw=$P$E\$S$P$G".to_string()
+        )]
+    );
+}
+
 /// A container, pod or console session runs its tool directly, without shell integration.
 #[test]
 fn enters_a_container_instead_of_starting_a_shell() {
