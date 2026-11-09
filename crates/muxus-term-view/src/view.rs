@@ -1355,6 +1355,7 @@ impl TerminalView {
             }
             self.on_right_click(event, cx);
             if self.mouse_reporting(event.modifiers.shift) {
+                self.reporting_button = Some(ReportButton::Right);
                 self.report_mouse(
                     event.position,
                     ReportButton::Right,
@@ -2846,6 +2847,30 @@ mod tests {
         right_click(&view, cx);
         assert_eq!(sent(&ends, cx), "");
         assert_eq!(requests.get(), 1);
+    }
+
+    #[gpui::test]
+    fn a_reported_right_press_is_reported_released(cx: &mut TestAppContext) {
+        let settings = TerminalSettings {
+            right_click: RightClickAction::Menu,
+            is_mac: false,
+            ..TerminalSettings::default()
+        };
+        let (view, ends, cx) = terminal(cx, settings, 40, 5);
+        // Button-event tracking with SGR coordinates.
+        write(&view, cx, "\x1b[?1002h\x1b[?1006h");
+        place(&view, cx, 40, 5);
+        sent(&ends, cx);
+        let at = cell(&view, cx, 2, 1);
+        press(
+            &view,
+            cx,
+            down(at, MouseButton::Right, Modifiers::default()),
+        );
+        view.update(cx, |view, cx| {
+            view.on_mouse_up(&up(at, MouseButton::Right, Modifiers::default()), cx)
+        });
+        assert_eq!(sent(&ends, cx), "\x1b[<2;3;2M\x1b[<2;3;2m");
     }
 
     #[gpui::test]
