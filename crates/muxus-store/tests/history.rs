@@ -875,6 +875,88 @@ fn imports_legacy_blob_events_from_a_version_6_application_database() {
     block_on(store.close()).unwrap();
 }
 
+#[test]
+fn imports_a_legacy_session_whole_after_an_interrupted_import() {
+    let directory = tempfile::Builder::new()
+        .prefix("muxus-history-migration-")
+        .tempdir()
+        .unwrap();
+    let database_path = directory.path().join("muxus.sqlite");
+    let legacy = rusqlite::Connection::open(&database_path).unwrap();
+    // Without the direction check, so an unreadable event can stop the import halfway.
+    legacy
+        .execute_batch(
+            &LEGACY_HISTORY_SCHEMA.replace("CHECK(direction IN ('input', 'output', 'system'))", ""),
+        )
+        .unwrap();
+    legacy
+        .execute(
+            "INSERT INTO session_logs(
+               id, profile_key, title, kind, host, started_at, ended_at,
+               status, capture_input
+             ) VALUES ('legacy-session', 'ssh:legacy', 'Legacy router', 'ssh', 'legacy',
+                       '2026-01-01T10:00:00.000Z', '2026-01-01T10:01:00.000Z',
+                       'completed', 0)",
+            [],
+        )
+        .unwrap();
+    for (sequence, direction, text) in [(1, "output", "first line"), (2, "bogus", "second line")] {
+        legacy
+            .execute(
+                "INSERT INTO session_log_events(
+                   session_id, part_number, sequence, recorded_at, elapsed_ms,
+                   direction, raw_data, normalized_text
+                 ) VALUES ('legacy-session', 1, ?, '2026-01-01T10:00:01.000Z', 1000, ?, ?, ?)",
+                rusqlite::params![sequence, direction, text.as_bytes().to_vec(), text],
+            )
+            .unwrap();
+    }
+    drop(legacy);
+
+    let history_path = directory.path().join("history");
+    let options = || HistoryOpenOptions {
+        root: Some(history_path.clone()),
+        settings: settings(),
+        legacy_database_path: Some(database_path.clone()),
+    };
+    assert!(block_on(SessionHistoryStore::open(options())).is_err());
+
+    let legacy = rusqlite::Connection::open(&database_path).unwrap();
+    legacy
+        .execute(
+            "UPDATE session_log_events SET direction = 'output' WHERE sequence = 2",
+            [],
+        )
+        .unwrap();
+    drop(legacy);
+
+    let store = block_on(SessionHistoryStore::open(options())).unwrap();
+    let found = block_on(store.session_history(query(None, 10)))
+        .unwrap()
+        .sessions;
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].event_count, 2);
+    assert_eq!(found[0].raw_bytes, 21);
+    let raw = block_on(store.raw_session_log_events("legacy-session"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        raw.iter()
+            .map(|event| event.raw.clone())
+            .collect::<Vec<_>>(),
+        vec![b"first line".to_vec(), b"second line".to_vec()]
+    );
+    let detail = block_on(store.session_log("legacy-session", None, None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(detail.events.len(), 2);
+    assert_eq!(
+        entries(&history_path.join("sessions").join("legacy-session")),
+        vec!["000001.muxlog.zst"]
+    );
+    block_on(store.close()).unwrap();
+}
+
 fn seed_session(store: &SessionHistoryStore) -> String {
     let policy = PartPolicy {
         max_part_bytes: 1024 * 1024,
