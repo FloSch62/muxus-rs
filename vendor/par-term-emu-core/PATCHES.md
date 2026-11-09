@@ -217,6 +217,29 @@ write its spacer over the last column.
 | `src/terminal/write.rs` | `Terminal::last_written_cell`: the cursor's own cell while a wrap is pending, else the one before it, a spacer resolved to its wide character; the combining and ZWJ paths use it. A regional indicator during the pending wrap starts a new pair on the next row. |
 | `src/terminal/write.rs` (tests), `crates/muxus-term/tests/engine_write.rs` | `a_combining_mark_during_the_pending_wrap_joins_the_last_column`, `a_regional_indicator_during_the_pending_wrap_starts_a_new_pair`, `a_combining_mark_after_the_last_column_joins_the_character_there`. |
 
+## Unicode 11 widths for emoji sequences
+
+The engine widened a narrow cell to two columns when a variation selector 16 or a ZWJ
+continuation joined it, without moving the cursor (`❤️xyz`: the `x` landed on the heart's second
+column and was lost), and folded an emoji after a ZWJ, or a skin tone modifier, into the previous
+cell, swallowing its two columns. Either way the cursor ended up left of where the program writing
+the text puts it.
+
+Two ways out: widen and also advance the cursor (kitty, WezTerm with a newer `unicode_version`,
+Ghostty's grapheme clustering, mode 2027), or keep every character's own width. This copy keeps
+the widths. Shells, readline, editors and ncurses count columns with `wcwidth`, where VS16 and ZWJ
+are 0 and every emoji has its own width, so `❤️` is 1 column and `👨‍💻` 4; xterm, VTE, Alacritty,
+WezTerm's default and xterm.js with the unicode11 addon (what Muxus mirrors) draw them that way.
+A terminal that widens disagrees with those programs about every following column, which breaks
+line editing and full-screen redraws, unless both sides agree on mode 2027.
+
+| File | Change |
+|---|---|
+| `src/terminal/write.rs` | Only zero-width characters (combining marks, variation selectors, ZWJ) attach to the previous cell, and attaching never changes its width. An emoji after a ZWJ and a skin tone modifier are written as characters of their own. Regional indicator pairs stay one two-column cell (1 + 1 columns). |
+| `src/cell.rs` | `Cell::combining_has` (unused now) removed. |
+| `src/terminal/tests/screen.rs` | `test_get_word_at_emoji_zwj_line` expects the laptop in its own cells. |
+| `src/terminal/write.rs` (tests), `crates/muxus-term/tests/engine_write.rs` | `emoji_sequences_keep_unicode_11_widths`, `emoji_sequences_keep_unicode_11_widths_so_the_cursor_follows_the_program`. |
+
 ## Kept as upstream has it
 
 **OpenTelemetry (`src/otel.rs`, `src/otel/`, 0.80.0).** Always compiled, but without the

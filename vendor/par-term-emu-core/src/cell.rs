@@ -606,12 +606,6 @@ impl Cell {
         };
     }
 
-    /// Whether the combining sequence contains `ch`.
-    #[inline]
-    pub(crate) fn combining_has(&self, ch: char) -> bool {
-        self.combining.as_ref().is_some_and(|m| m.contains(&ch))
-    }
-
     // Test-only writes: production code paths build cells through the
     // constructors, so the setters exist purely for test seeding.
     /// Set the foreground color.
