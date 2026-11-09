@@ -180,6 +180,17 @@ DECALN itself is still not implemented and does nothing.
 |---|---|
 | `src/terminal/sequences/esc.rs` | Those arms match `[]` instead of `_`. The test is Muxus's `escape_sequences_with_intermediates_are_not_their_plain_forms` (`crates/muxus-term/src/terminal.rs`). |
 
+## SGR 21
+
+xterm and xterm.js take SGR 21 as doubly underlined (ECMA-48); the engine ignored it.
+
+| File | Change |
+|---|---|
+| `src/terminal/sequences/csi/style.rs` | SGR 21 turns on the double underline; SGR 24 turns it off. The test is Muxus's `sgr_21_is_a_double_underline` (`crates/muxus-term/src/terminal.rs`). |
+
+OSC 4, 104 and 110–112 no longer reach the engine: Muxus answers and applies them itself
+(`crates/muxus-term/src/filter.rs`, `muxus_term::terminal::Emulator`), on top of the theme.
+
 ## Kept as upstream has it
 
 **OpenTelemetry (`src/otel.rs`, `src/otel/`, 0.80.0).** Always compiled, but without the

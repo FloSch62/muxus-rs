@@ -2,6 +2,8 @@
 //! DOM renderer applies to every cell (`DomRendererRowFactory.createRow`, xterm.js, MIT): inverse,
 //! bold-as-bright, dim, decorations, the selection, and the minimum contrast ratio.
 
+use std::collections::BTreeMap;
+
 use crate::color::{Rgba, ensure_contrast_ratio};
 use crate::palette::ResolvedPalette;
 
@@ -93,12 +95,15 @@ pub struct StyledCell {
     pub hyperlink: Option<u32>,
 }
 
-/// Color overrides programs set with OSC 10/11/12 (xterm applies them on top of the theme).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Color overrides programs set with OSC 10/11/12 and OSC 4 (xterm applies them on top of the
+/// theme).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ColorOverrides {
     pub foreground: Option<Rgba>,
     pub background: Option<Rgba>,
     pub cursor: Option<Rgba>,
+    /// Palette entries by index.
+    pub palette: BTreeMap<u8, Rgba>,
 }
 
 /// The theme colors in effect: the resolved palette with program overrides applied.
@@ -113,8 +118,12 @@ pub struct EffectiveColors {
 
 impl EffectiveColors {
     pub fn new(palette: &ResolvedPalette, overrides: &ColorOverrides) -> Self {
+        let mut effective = palette.clone();
+        for (&index, &color) in &overrides.palette {
+            effective.ansi[usize::from(index)] = color;
+        }
         Self {
-            palette: palette.clone(),
+            palette: effective,
             foreground: overrides.foreground.unwrap_or(palette.foreground),
             background: overrides.background.unwrap_or(palette.background),
             cursor: overrides.cursor.unwrap_or(palette.cursor),

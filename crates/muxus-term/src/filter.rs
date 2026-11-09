@@ -1,6 +1,6 @@
 //! A streaming pre-parser in front of the emulator. It finds the few sequences Muxus handles itself
-//! — OSC 7, 10, 11, 12, 52, 110, 111, 112, 133, 633 and 7501, the mouse modes, erase-in-display
-//! and resets — and
+//! — OSC 4, 7, 10, 11, 12, 52, 104, 110, 111, 112, 133, 633 and 7501, the mouse modes,
+//! erase-in-display and resets — and
 //! rewrites the two SGR colors the emulator cannot tell apart from the default colors (ANSI white
 //! foreground and ANSI black background). Everything else passes through unchanged, split at the
 //! points where a handled sequence sits so the terminal state is right when it is handled.
@@ -55,10 +55,10 @@ enum State {
     StringEscape,
 }
 
-const HANDLED_OSC: [u32; 11] = [7, 10, 11, 12, 52, 110, 111, 112, 133, 633, 7501];
+const HANDLED_OSC: [u32; 13] = [4, 7, 10, 11, 12, 52, 104, 110, 111, 112, 133, 633, 7501];
 /// Handled OSCs that are complete without a payload (`OSC 110 BEL`); they come out with an empty
 /// one.
-const BARE_OSC: [u32; 3] = [110, 111, 112];
+const BARE_OSC: [u32; 4] = [104, 110, 111, 112];
 /// The private modes the emulator follows besides the engine: the mouse protocols and encodings,
 /// and the alternate screens (which bring the viewport back to the bottom). Full-screen programs
 /// toggle others (the cursor, 25) on every redraw; those stay in the byte stream.
@@ -613,6 +613,17 @@ mod tests {
         );
         // ESC ends the string and starts the next sequence.
         assert_eq!(run(&[b"\x1b]110\x1b[1m"]), [reset(110), bytes("\x1b[1m")]);
+        // The palette reset, and palette changes with their payload.
+        assert_eq!(
+            run(&[b"\x1b]104\x07\x1b]4;1;?\x07"]),
+            [
+                reset(104),
+                Segment::Osc {
+                    code: 4,
+                    data: "1;?".into()
+                }
+            ]
+        );
     }
 
     #[test]

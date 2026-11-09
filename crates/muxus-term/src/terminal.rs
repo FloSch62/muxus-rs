@@ -338,10 +338,19 @@ impl Emulator {
         self.core.process(b"\x1b[0m");
     }
 
-    /// The palette OSC 4 queries report.
+    /// The palette entry in effect: the theme's, or what a program set with OSC 4.
+    fn palette_color(&self, index: u8) -> Rgba {
+        self.overrides
+            .palette
+            .get(&index)
+            .copied()
+            .unwrap_or(self.palette.ansi[usize::from(index)])
+    }
+
+    /// Keep the engine's copy of the ANSI colors (which its own palette reports read) in step.
     fn apply_palette(&mut self) {
         for index in 0..16 {
-            let c = self.palette.ansi[index];
+            let c = self.palette_color(index as u8);
             let _ = self
                 .core
                 .set_ansi_palette_color(index, Color::Rgb(c.r, c.g, c.b));
@@ -577,6 +586,7 @@ impl Emulator {
                         self.cursor_shape = None;
                         self.cursor_blink = None;
                         self.overrides = ColorOverrides::default();
+                        self.apply_palette();
                     }
                     self.init_pen();
                 }
@@ -676,6 +686,8 @@ impl Emulator {
                     }
                 }
             }
+            4 => self.palette_colors(data),
+            104 => self.reset_palette_colors(data),
             10..=12 => self.dynamic_colors(code, data),
             // Back to the theme's colors; the engine's own reset would set fixed ones.
             110 => self.overrides.foreground = None,
@@ -710,13 +722,7 @@ impl Emulator {
                     11 => colors.background,
                     _ => colors.cursor,
                 };
-                let channel = |c: u8| format!("{c:02x}{c:02x}");
-                self.reply(format!(
-                    "\x1b]{slot};rgb:{}/{}/{}\x1b\\",
-                    channel(color.r),
-                    channel(color.g),
-                    channel(color.b)
-                ));
+                self.reply(color_report(&slot.to_string(), color));
             } else if let Some(color) = parse_x_color(value) {
                 match slot {
                     10 => self.overrides.foreground = Some(color),
@@ -725,6 +731,36 @@ impl Emulator {
                 }
             }
         }
+    }
+
+    /// OSC 4: set or query palette entries, given as `index;color` pairs (`?` queries), as in
+    /// xterm. A pair with a bad index or color is skipped.
+    fn palette_colors(&mut self, data: &str) {
+        let mut slots = data.split(';');
+        while let (Some(index), Some(value)) = (slots.next(), slots.next()) {
+            let Some(index) = palette_index(index) else {
+                continue;
+            };
+            if value == "?" {
+                let color = self.palette_color(index);
+                self.reply(color_report(&format!("4;{index}"), color));
+            } else if let Some(color) = parse_x_color(value) {
+                self.overrides.palette.insert(index, color);
+            }
+        }
+        self.apply_palette();
+    }
+
+    /// OSC 104: back to the theme's palette, all of it or the listed entries.
+    fn reset_palette_colors(&mut self, data: &str) {
+        if data.is_empty() {
+            self.overrides.palette.clear();
+        } else {
+            for index in data.split(';').filter_map(palette_index) {
+                self.overrides.palette.remove(&index);
+            }
+        }
+        self.apply_palette();
     }
 
     fn private_modes(&mut self, modes: &[u16], set: bool) {
@@ -1052,8 +1088,27 @@ impl Emulator {
     }
 }
 
-/// Parse an X11 color spec as OSC 10/11/12 take it: `rgb:r/g/b` (1–4 hex digits per channel),
-/// `#rgb`-style hex, or a CSS color.
+/// An OSC color report, `OSC <ident> ; rgb:rrrr/gggg/bbbb ST`, as xterm writes it.
+fn color_report(ident: &str, color: Rgba) -> String {
+    let channel = |c: u8| format!("{c:02x}{c:02x}");
+    format!(
+        "\x1b]{ident};rgb:{}/{}/{}\x1b\\",
+        channel(color.r),
+        channel(color.g),
+        channel(color.b)
+    )
+}
+
+/// A palette index in OSC 4 and 104: decimal digits, 0 to 255.
+fn palette_index(text: &str) -> Option<u8> {
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// Parse an X11 color spec as OSC 4 and 10/11/12 take it: `rgb:r/g/b` (1–4 hex digits per
+/// channel), `#rgb`-style hex, or a CSS color.
 fn parse_x_color(value: &str) -> Option<Rgba> {
     if let Some(spec) = value.strip_prefix("rgb:") {
         let parts: Vec<&str> = spec.split('/').collect();
@@ -1399,6 +1454,55 @@ mod tests {
                 (CellColor::Default, CellColor::Default)
             );
         }
+    }
+
+    #[test]
+    fn answers_and_applies_palette_requests() {
+        let mut term = emulator(10, 2);
+        let theme = term.colors();
+        // The query is answered with the theme's color.
+        term.write(b"\x1b]4;1;?\x07");
+        let red = theme.palette.ansi[1];
+        let channel = |c: u8| format!("{c:02x}{c:02x}");
+        assert_eq!(
+            replies(&mut term),
+            format!(
+                "\x1b]4;1;rgb:{}/{}/{}\x1b\\",
+                channel(red.r),
+                channel(red.g),
+                channel(red.b)
+            )
+        );
+        // Several pairs, sets and queries mixed, in one sequence; a bad pair is skipped.
+        term.write(b"\x1b]4;1;rgb:ff/00/80;300;#fff;196;#102030;1;?\x1b\\");
+        assert_eq!(replies(&mut term), "\x1b]4;1;rgb:ffff/0000/8080\x1b\\");
+        let colors = term.colors();
+        assert_eq!(colors.palette.ansi[1], Rgba::rgb(255, 0, 128));
+        assert_eq!(colors.palette.ansi[196], Rgba::rgb(0x10, 0x20, 0x30));
+        // A cell in palette color 1 is painted with the new color.
+        term.write(b"\x1b[31mx");
+        let cell = &term.styled_line(term.scrollback_len()).unwrap()[0];
+        let painted =
+            crate::style::resolve_cell(cell, &colors, &crate::style::CellContext::default());
+        assert_eq!(painted.fg, Rgba::rgb(255, 0, 128));
+        // OSC 104 restores listed entries, or all of them.
+        term.write(b"\x1b]104;1\x07");
+        assert_eq!(term.colors().palette.ansi[1], red);
+        assert_eq!(term.colors().palette.ansi[196], Rgba::rgb(0x10, 0x20, 0x30));
+        term.write(b"\x1b]104\x07");
+        assert_eq!(term.colors(), theme);
+        // A full reset drops them too.
+        term.write(b"\x1b]4;2;#123456\x07\x1bc");
+        assert_eq!(term.colors(), theme);
+    }
+
+    #[test]
+    fn sgr_21_is_a_double_underline() {
+        let mut term = emulator(10, 2);
+        term.write(b"\x1b[21mA\x1b[24mB");
+        let cells = term.styled_line(term.scrollback_len()).unwrap();
+        assert_eq!(cells[0].style.underline, UnderlineStyle::Double);
+        assert_eq!(cells[1].style.underline, UnderlineStyle::None);
     }
 
     #[test]

@@ -105,6 +105,11 @@ fn apply_sgr_param(
         7 => attrs.flags.set_reverse(true),
         8 => attrs.flags.set_hidden(true),
         9 => attrs.flags.set_strikethrough(true),
+        21 => {
+            // Muxus patch: doubly underlined, as in xterm and xterm.js (ECMA-48); it was ignored.
+            attrs.flags.set_underline(true);
+            attrs.flags.underline_style = crate::cell::UnderlineStyle::Double;
+        }
         22 => {
             attrs.flags.set_bold(false);
             attrs.flags.set_dim(false);
