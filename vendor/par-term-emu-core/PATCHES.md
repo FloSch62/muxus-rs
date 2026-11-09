@@ -159,6 +159,16 @@ follow the id, as in xterm; `38:2:r:g:b` is read as before.
 |---|---|
 | `src/terminal/sequences/csi/style.rs` | `parse_extended_color_subparams` skips the color-space slot. The tests are Muxus's `reads_colon_truecolor_with_and_without_the_color_space` (`crates/muxus-term/src/terminal.rs`) and the underline colors in `round_trips_through_a_replay` (`crates/muxus-term/src/serialize.rs`). |
 
+## Semicolons in OSC 8 URIs
+
+vte splits an OSC at every `;`, and the hyperlink handler took the third piece as the URI, so
+`OSC 8 ; ; https://h/p;a=1` linked to `https://h/p`. Everything after the parameters is the URI,
+`;` included, as in xterm.js.
+
+| File | Change |
+|---|---|
+| `src/terminal/sequences/osc/mod.rs` | `handle_osc_hyperlink` joins the pieces after the parameters with `;`. The test is Muxus's `keeps_semicolons_in_hyperlink_urls` (`crates/muxus-term/src/terminal.rs`). |
+
 ## Kept as upstream has it
 
 **OpenTelemetry (`src/otel.rs`, `src/otel/`, 0.80.0).** Always compiled, but without the

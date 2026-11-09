@@ -1262,6 +1262,19 @@ mod tests {
     }
 
     #[test]
+    fn keeps_semicolons_in_hyperlink_urls() {
+        let mut term = emulator(10, 2);
+        term.write(b"\x1b]8;id=x;https://h/p;a=1;b=2\x1b\\link\x1b]8;;\x1b\\");
+        let cells = term.styled_line(term.scrollback_len()).unwrap();
+        let id = cells[0].hyperlink.expect("a hyperlink");
+        assert_eq!(
+            term.hyperlink_url(id).as_deref(),
+            Some("https://h/p;a=1;b=2")
+        );
+        assert_eq!(cells[4].hyperlink, None);
+    }
+
+    #[test]
     fn soft_wraps_long_lines() {
         let mut term = emulator(4, 3);
         term.write(b"abcdef");
