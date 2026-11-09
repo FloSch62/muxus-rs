@@ -983,7 +983,13 @@ impl KeyboardEvent {
             (Some(text), None) => text.into(),
             (None, None) => key.into(),
         };
-        if let Some(c) = base.or_else(|| ev.key.chars().next()) {
+        // The key code comes from a one-character key or the one character it types; the first
+        // letter of a key name ("pause", "scroll_lock", "begin") would make Ctrl+Pause a ^P.
+        let typed = produced.and_then(|text| {
+            let mut chars = text.chars();
+            chars.next().filter(|_| chars.next().is_none())
+        });
+        if let Some(c) = base.or(typed) {
             ev.code = code_for_char(c);
             ev.key_code = key_code_for_char(c);
         }
@@ -1329,5 +1335,20 @@ mod tests {
         );
         let ev = KeyboardEvent::from_key("c", None, false, false, true, false);
         assert_eq!((ev.key.as_str(), ev.key_code), ("c", 67));
+    }
+
+    #[test]
+    fn unnamed_keys_are_not_sent_as_their_first_letter() {
+        let ctx = KeyEncodeContext::default();
+        for key in ["pause", "break", "scroll_lock", "begin", "copy"] {
+            let ev = KeyboardEvent::from_key(key, None, false, false, true, false);
+            assert_eq!((ev.code.as_str(), ev.key_code), ("", 0), "{key}");
+            assert_eq!(send(key, None, CTRL, ctx), KeyAction::Ignored, "Ctrl+{key}");
+            assert_eq!(send(key, None, ALT, ctx), KeyAction::Ignored, "Alt+{key}");
+            assert_eq!(send(key, None, NONE, ctx), KeyAction::Ignored, "{key}");
+        }
+        // A key without a one-letter name still gets its code from the character it types.
+        let ev = KeyboardEvent::from_key("kp_5", Some("5"), false, false, false, false);
+        assert_eq!((ev.code.as_str(), ev.key_code), ("Digit5", 53));
     }
 }
