@@ -126,6 +126,8 @@ impl Terminal {
                         ));
                 }
             }
+            // DECALN - Screen Alignment Pattern (Muxus patch)
+            (b'8', [b'#']) => self.screen_alignment_pattern(),
             // SCS — Select Character Set (G0 slot)
             // ESC ( 0  → G0 = DEC Special / Line Drawing
             (b'0', [b'(']) => self.charset_state.g0_charset = Charset::DecLineDrawing,

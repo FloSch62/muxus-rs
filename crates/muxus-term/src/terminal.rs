@@ -1336,9 +1336,10 @@ mod tests {
     #[test]
     fn escape_sequences_with_intermediates_are_not_their_plain_forms() {
         let mut term = emulator(10, 4);
-        // DECSC at the top left, then DECALN must not restore it.
-        term.write(b"\x1b7\x1b[3;5H\x1b#8");
-        assert_eq!((term.cursor().line, term.cursor().col), (2, 4));
+        // DECSC at 3;5, then DECALN homes the cursor instead of restoring it.
+        term.write(b"\x1b[3;5H\x1b7\x1b[2;2H\x1b#8");
+        assert_eq!((term.cursor().line, term.cursor().col), (0, 0));
+        assert_eq!(screen(&term), ["EEEEEEEEEE"; 4]);
         // A character set designation ending in `=` is not DECPAM.
         term.write(b"\x1b(=");
         assert!(!term.core.application_keypad());
