@@ -129,6 +129,8 @@ struct Document {
     editor: Entity<EditorState>,
     saved_content: String,
     mtime_ms: Option<i64>,
+    /// The file's contents reached the editor at least once.
+    loaded: bool,
     loading: bool,
     saving: bool,
     conflict: bool,
@@ -148,6 +150,18 @@ struct Document {
     /// A later look at a large text after typing pauses.
     analysis: Option<Task<()>>,
     _events: Subscription,
+}
+
+impl Document {
+    /// Whether the editor holds the file's contents, so saving cannot replace the file with
+    /// an empty or stale text after a load failed.
+    fn savable(&self) -> bool {
+        savable(self.loaded, self.loading, self.error.as_deref())
+    }
+}
+
+fn savable(loaded: bool, loading: bool, error: Option<&str>) -> bool {
+    loaded && !loading && error.is_none()
 }
 
 /// Go to Line, open over the editor (Monaco's quick input).
@@ -546,6 +560,7 @@ impl RemoteEditorWorkspace {
                     editor,
                     saved_content: String::new(),
                     mtime_ms: None,
+                    loaded: false,
                     loading: true,
                     saving: false,
                     conflict: false,
@@ -589,6 +604,7 @@ impl RemoteEditorWorkspace {
                     Ok(file) => {
                         document.saved_content = file.content.clone();
                         document.mtime_ms = file.mtime_ms;
+                        document.loaded = true;
                         document.dirty = false;
                         document.crlf = file.content.contains("\r\n");
                         let editor = document.editor.clone();
@@ -641,7 +657,7 @@ impl RemoteEditorWorkspace {
     ) -> Option<Task<bool>> {
         let source = self.options.source.clone();
         let document = self.documents.get_mut(&path)?;
-        if !source.available() || document.loading || document.saving {
+        if !source.available() || !document.savable() || document.saving {
             return None;
         }
         let content = document.editor.read(cx).value().to_string();
@@ -1615,6 +1631,7 @@ impl RemoteEditorWorkspace {
         let available = self.options.source.available();
         let document = self.documents.get(path);
         let loading = document.is_none_or(|doc| doc.loading);
+        let savable = document.is_some_and(Document::savable);
         let saving = document.is_some_and(|doc| doc.saving);
         let dirty = document.is_some_and(|doc| doc.dirty);
         let any_dirty = self.has_dirty();
@@ -1690,7 +1707,7 @@ impl RemoteEditorWorkspace {
                 } else {
                     ButtonColor::Default
                 })
-                .disabled(document.is_none() || loading || !available)
+                .disabled(!savable || !available)
                 .on_click(cx.listener(|this, _, _, cx| this.save_active(false, cx)))
                 .into_any_element()
         };
@@ -2361,5 +2378,22 @@ impl Render for RemoteEditorWorkspace {
         }
         let _ = relative(1.);
         root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_loaded_document_without_an_error_saves() {
+        assert!(savable(true, false, None));
+        // A file that could not be read leaves an empty editor behind.
+        assert!(!savable(false, false, Some("The file is not UTF-8 text.")));
+        assert!(!savable(false, false, None));
+        assert!(!savable(false, true, None));
+        // A reload that failed keeps the old text, which may no longer match the file.
+        assert!(!savable(true, false, Some("No such file")));
+        assert!(!savable(true, true, None));
     }
 }
