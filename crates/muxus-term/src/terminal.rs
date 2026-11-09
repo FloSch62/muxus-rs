@@ -31,7 +31,8 @@ use crate::program_status::{
 };
 use crate::shell_integration::{CommandMarkerHost, CommandTracker, CwdTracker};
 use crate::style::{
-    CellColor, CellStyle, ColorOverrides, EffectiveColors, StyledCell, UnderlineStyle,
+    CellColor, CellStyle, ColorOverrides, EffectiveColors, SPECIAL_COLORS, StyledCell,
+    UnderlineStyle,
 };
 
 /// What the emulator tells its owner after processing output.
@@ -694,8 +695,8 @@ impl Emulator {
                     }
                 }
             }
-            4 => self.palette_colors(data),
-            104 => self.reset_palette_colors(data),
+            4 | 5 => self.palette_colors(code, data),
+            104 | 105 => self.reset_palette_colors(code, data),
             10..=12 => self.dynamic_colors(code, data),
             // Back to the theme's colors; the engine's own reset would set fixed ones.
             110 => self.overrides.foreground = None,
@@ -741,31 +742,65 @@ impl Emulator {
         }
     }
 
-    /// OSC 4: set or query palette entries, given as `index;color` pairs (`?` queries), as in
+    /// The color at an xterm color index: a palette entry below 256, a special color above.
+    /// An unset special color is the theme's foreground, as xterm's resources default to it.
+    fn indexed_color(&self, index: u16) -> Rgba {
+        match u8::try_from(index) {
+            Ok(index) => self.palette_color(index),
+            Err(_) => {
+                self.overrides.special[usize::from(index - 256)].unwrap_or(self.palette.foreground)
+            }
+        }
+    }
+
+    /// Set (`Some`) or reset (`None`) the color at an xterm color index.
+    fn set_indexed_color(&mut self, index: u16, color: Option<Rgba>) {
+        match (u8::try_from(index), color) {
+            (Ok(index), Some(color)) => {
+                self.overrides.palette.insert(index, color);
+            }
+            (Ok(index), None) => {
+                self.overrides.palette.remove(&index);
+            }
+            (Err(_), color) => self.overrides.special[usize::from(index - 256)] = color,
+        }
+    }
+
+    /// OSC 4 and OSC 5: set or query palette entries (OSC 4: 0–255, and 256–260 for the special
+    /// colors) or special colors (OSC 5: 0–4), given as `index;color` pairs (`?` queries), as in
     /// xterm. A pair with a bad index or color is skipped.
-    fn palette_colors(&mut self, data: &str) {
+    fn palette_colors(&mut self, code: u32, data: &str) {
         let mut slots = data.split(';');
-        while let (Some(index), Some(value)) = (slots.next(), slots.next()) {
-            let Some(index) = palette_index(index) else {
+        while let (Some(number), Some(value)) = (slots.next(), slots.next()) {
+            let Some(index) = color_index(code, number) else {
                 continue;
             };
             if value == "?" {
-                let color = self.palette_color(index);
-                self.reply(color_report(&format!("4;{index}"), color));
+                let color = self.indexed_color(index);
+                let number = if code == 5 { index - 256 } else { index };
+                self.reply(color_report(&format!("{code};{number}"), color));
             } else if let Some(color) = parse_x_color(value) {
-                self.overrides.palette.insert(index, color);
+                self.set_indexed_color(index, Some(color));
             }
         }
         self.apply_palette();
     }
 
-    /// OSC 104: back to the theme's palette, all of it or the listed entries.
-    fn reset_palette_colors(&mut self, data: &str) {
+    /// OSC 104 and OSC 105: back to the theme's colors for the listed entries (numbered as in
+    /// OSC 4 and OSC 5), or without a list for all of them: OSC 104 the palette and the special
+    /// colors, as in xterm, OSC 105 the special colors.
+    fn reset_palette_colors(&mut self, code: u32, data: &str) {
         if data.is_empty() {
-            self.overrides.palette.clear();
+            if code == 104 {
+                self.overrides.palette.clear();
+            }
+            self.overrides.special = Default::default();
         } else {
-            for index in data.split(';').filter_map(palette_index) {
-                self.overrides.palette.remove(&index);
+            for index in data
+                .split(';')
+                .filter_map(|number| color_index(code, number))
+            {
+                self.set_indexed_color(index, None);
             }
         }
         self.apply_palette();
@@ -1124,12 +1159,15 @@ fn color_report(ident: &str, color: Rgba) -> String {
     )
 }
 
-/// A palette index in OSC 4 and 104: decimal digits, 0 to 255.
-fn palette_index(text: &str) -> Option<u8> {
+/// The xterm color index a number in OSC 4/104 (0 to 260) or OSC 5/105 (0 to 4, the special
+/// colors after the 256 palette entries) names: decimal digits.
+fn color_index(code: u32, text: &str) -> Option<u16> {
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    text.parse().ok()
+    let base = if matches!(code, 5 | 105) { 256 } else { 0 };
+    let index = text.parse::<u16>().ok()?.checked_add(base)?;
+    (usize::from(index) < 256 + SPECIAL_COLORS).then_some(index)
 }
 
 /// Parse an X11 color spec as OSC 4 and 10/11/12 take it: `rgb:r/g/b` (1–4 hex digits per
@@ -1520,6 +1558,51 @@ mod tests {
         // A full reset drops them too.
         term.write(b"\x1b]4;2;#123456\x07\x1bc");
         assert_eq!(term.colors(), theme);
+    }
+
+    #[test]
+    fn keeps_and_reports_the_special_colors() {
+        let mut term = emulator(10, 2);
+        let theme = term.colors();
+        let fg = theme.foreground;
+        let channel = |c: u8| format!("{c:02x}{c:02x}");
+        let report = |ident: &str, c: Rgba| {
+            format!(
+                "\x1b]{ident};rgb:{}/{}/{}\x1b\\",
+                channel(c.r),
+                channel(c.g),
+                channel(c.b)
+            )
+        };
+        // Unset, they read as the theme's foreground, in either numbering.
+        term.write(b"\x1b]4;256;?\x07\x1b]5;4;?\x07");
+        assert_eq!(replies(&mut term), report("4;256", fg) + &report("5;4", fg));
+        // OSC 4 256–260 and OSC 5 0–4 are the same five colors; 261 and OSC 5 5 are not colors.
+        term.write(b"\x1b]4;256;#010203;261;#ffffff\x07\x1b]5;3;#040506;5;#ffffff\x07");
+        term.write(b"\x1b]5;0;?\x07\x1b]4;259;?\x07");
+        assert_eq!(
+            replies(&mut term),
+            report("5;0", Rgba::rgb(1, 2, 3)) + &report("4;259", Rgba::rgb(4, 5, 6))
+        );
+        // They change no palette entry and nothing painted.
+        assert_eq!(term.colors(), theme);
+        // OSC 105 resets the listed ones or all; OSC 104 with an index too.
+        term.write(b"\x1b]105;0\x07\x1b]5;0;?;3;?\x07");
+        assert_eq!(
+            replies(&mut term),
+            report("5;0", fg) + &report("5;3", Rgba::rgb(4, 5, 6))
+        );
+        term.write(b"\x1b]104;259\x07\x1b]5;3;?\x07");
+        assert_eq!(replies(&mut term), report("5;3", fg));
+        term.write(b"\x1b]5;1;#070809\x07\x1b]4;1;#0a0b0c\x07\x1b]105\x07\x1b]5;1;?\x07");
+        assert_eq!(replies(&mut term), report("5;1", fg));
+        assert_eq!(term.colors().palette.ansi[1], Rgba::rgb(10, 11, 12));
+        // A bare OSC 104 resets them along with the palette, as in xterm.
+        term.write(b"\x1b]5;2;#070809\x07\x1b]104\x07\x1b]5;2;?\x07");
+        assert_eq!(replies(&mut term), report("5;2", fg));
+        // The color stack saves them with the others.
+        term.write(b"\x1b]5;4;#0d0e0f\x07\x1b[#P\x1b]105\x07\x1b[#Q\x1b]5;4;?\x07");
+        assert_eq!(replies(&mut term), report("5;4", Rgba::rgb(13, 14, 15)));
     }
 
     #[test]
