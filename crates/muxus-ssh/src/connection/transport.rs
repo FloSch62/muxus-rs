@@ -684,8 +684,10 @@ pub(crate) async fn dial_hop(
         cx.io.status(note, false);
     }
 
-    let agent = match (&agent_socket, hop.resolved.identities_only) {
-        (Some(socket), false) => Some(Arc::new(ResponsiveAgent::new(
+    // IdentitiesOnly keeps the agent: like ssh(1), it signs for the configured identities it
+    // holds, and the auth ladder offers only those.
+    let agent = agent_socket.as_ref().map(|socket| {
+        Arc::new(ResponsiveAgent::new(
             AgentEndpoint::Socket(PathBuf::from(socket)),
             ResponsiveAgentOptions {
                 hooks: Arc::new(DialAgentHooks {
@@ -700,9 +702,8 @@ pub(crate) async fn dial_hop(
                 operation_timeout: Some(cx.agent_operation_timeout),
                 security_key_timeout: Some(crate::responsive_agent::DEFAULT_SECURITY_KEY_TIMEOUT),
             },
-        ))),
-        _ => None,
-    };
+        ))
+    });
 
     let keepalive = ssh_keepalive_options(
         hop.resolved.server_alive_interval,

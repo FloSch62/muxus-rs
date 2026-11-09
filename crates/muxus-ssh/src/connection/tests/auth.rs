@@ -116,34 +116,117 @@ async fn silently_falls_back_when_the_agent_socket_is_unreachable() {
     assert_eq!(io.prompt_count(), 1);
 }
 
+fn ecdsa() -> russh::keys::PrivateKey {
+    russh::keys::PrivateKey::random(
+        &mut russh::keys::key::safe_rng(),
+        russh::keys::Algorithm::Ecdsa {
+            curve: russh::keys::EcdsaCurve::NistP256,
+        },
+    )
+    .unwrap()
+}
+
+fn write_public_key(path: &std::path::Path, key: &russh::keys::PrivateKey) {
+    std::fs::write(path, key.public_key().to_openssh().unwrap()).unwrap();
+}
+
 #[tokio::test]
-async fn does_not_contact_the_agent_for_identities_only_hosts() {
+async fn offers_only_the_configured_agent_identity_for_identities_only_hosts() {
+    // The 1Password / Secretive setup: the agent holds the key, the config names its .pub.
+    let configured = ed25519();
+    let other = ecdsa();
+    let mut spec = ServerSpec::new().password(PASSWORD);
+    spec.authorized_keys = vec![configured.public_key().clone(), other.public_key().clone()];
+    let server = start(spec).await;
+    let sandbox = Sandbox::new();
+    let pub_file = sandbox.dir.path().join("configured.pub");
+    write_public_key(&pub_file, &configured);
+    let identity_line = format!("  IdentityFile {}", pub_file.display());
+    lab(
+        &sandbox,
+        server.port(),
+        &[&identity_line, "  IdentitiesOnly yes"],
+    );
+    // The server takes the other key too, so offering it would log in with it.
+    let sock = start_agent(sandbox.dir.path(), &[other, configured]).await;
+    let mut options = sandbox.options();
+    with_agent(&mut options, &sock);
+    let io = TestIo::accepting(PASSWORD);
+    let lease = connect(&SshConnectionManager::new(options), io.clone())
+        .await
+        .unwrap();
+    assert_eq!(io.prompt_count(), 0);
+    let facts = &lease.connection().facts.handshake;
+    assert_eq!(facts.auth_methods, vec!["agent".to_string()]);
+    assert_eq!(facts.auth_key_algorithm.as_deref(), Some("ssh-ed25519"));
+    assert_eq!(
+        server.auth_events(),
+        vec!["auth publickey:accepted ssh-ed25519".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn signs_an_encrypted_identities_only_key_through_the_agent_without_a_passphrase() {
     let key = ed25519();
     let mut spec = ServerSpec::new().password(PASSWORD);
     spec.authorized_keys = vec![key.public_key().clone()];
     let server = start(spec).await;
     let sandbox = Sandbox::new();
+    // No .pub sibling: the public half comes from the key file's clear header.
     let key_file = sandbox.dir.path().join("agent-key");
-    write_key(&key_file, &key, None);
+    write_key(&key_file, &key, Some(PASSPHRASE));
     let identity_line = format!("  IdentityFile {}", key_file.display());
     lab(
         &sandbox,
         server.port(),
         &[&identity_line, "  IdentitiesOnly yes"],
     );
-    let (sock, counters) =
-        start_hanging_agent(sandbox.dir.path(), Some(key.public_key().clone()), false).await;
+    let sock = start_agent(sandbox.dir.path(), std::slice::from_ref(&key)).await;
     let mut options = sandbox.options();
     with_agent(&mut options, &sock);
     let io = TestIo::accepting(PASSWORD);
-    let lease = connect(&SshConnectionManager::new(options), io)
+    let lease = connect(&SshConnectionManager::new(options), io.clone())
         .await
         .unwrap();
-    assert_eq!(counters.identities.load(Ordering::SeqCst), 0);
-    assert_eq!(counters.signs.load(Ordering::SeqCst), 0);
+    assert_eq!(io.prompt_count(), 0);
     assert_eq!(
         lease.connection().facts.handshake.auth_methods,
-        vec!["publickey".to_string()]
+        vec!["agent".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn keeps_unconfigured_agent_identities_away_from_identities_only_hosts() {
+    let agent_key = ed25519();
+    let mut spec = ServerSpec::new().password(PASSWORD);
+    spec.authorized_keys = vec![agent_key.public_key().clone()];
+    let server = start(spec).await;
+    let sandbox = Sandbox::new();
+    let pub_file = sandbox.dir.path().join("configured.pub");
+    write_public_key(&pub_file, &ed25519());
+    let identity_line = format!("  IdentityFile {}", pub_file.display());
+    lab(
+        &sandbox,
+        server.port(),
+        &[&identity_line, "  IdentitiesOnly yes"],
+    );
+    let sock = start_agent(sandbox.dir.path(), std::slice::from_ref(&agent_key)).await;
+    let mut options = sandbox.options();
+    with_agent(&mut options, &sock);
+    let io = TestIo::accepting(PASSWORD);
+    let lease = connect(&SshConnectionManager::new(options), io.clone())
+        .await
+        .unwrap();
+    assert_eq!(io.prompt_count(), 1);
+    assert_eq!(
+        lease.connection().facts.handshake.auth_methods,
+        vec!["password".to_string()]
+    );
+    assert!(
+        !server
+            .auth_events()
+            .iter()
+            .any(|e| e.starts_with("auth publickey"))
     );
 }
 
