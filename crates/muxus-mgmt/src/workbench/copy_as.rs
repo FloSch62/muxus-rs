@@ -193,8 +193,11 @@ fn compact_json(text: &str) -> String {
     }
 }
 
+/// A Python literal for `text`: a readable `"""…"""` block, or the
+/// JSON-escaped form (also valid Python) when the block would end early or
+/// read a backslash as an escape.
 fn python_string(text: &str) -> String {
-    if !text.contains("\"\"\"") && !text.ends_with('"') {
+    if !text.contains("\"\"\"") && !text.ends_with('"') && !text.contains('\\') {
         return format!("\"\"\"{text}\"\"\"");
     }
     serde_json::to_string(text).unwrap_or_default()
@@ -318,5 +321,16 @@ mod tests {
             "subscribe --path /a --mode stream --stream-mode sample --sample-interval 10s"
         ));
         assert!(gnmic_command(&profile, None, None).ends_with(" capabilities"));
+    }
+
+    #[test]
+    fn keeps_backslashes_literal_in_python_strings() {
+        assert_eq!(python_string("\n<a/>\n"), "\"\"\"\n<a/>\n\"\"\"");
+        assert_eq!(python_string("say \"hi\""), "\"say \\\"hi\\\"\"");
+        // `\t` would become a tab and `\x` or `\N` a syntax error in """…""".
+        assert_eq!(
+            python_string("<filter>C:\\tmp\\x</filter>"),
+            "\"<filter>C:\\\\tmp\\\\x</filter>\""
+        );
     }
 }
