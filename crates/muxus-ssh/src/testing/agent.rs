@@ -6,14 +6,30 @@ use std::path::{Path, PathBuf};
 use russh::keys::PrivateKey;
 use russh::keys::agent::client::AgentClient;
 
-/// Starts an ssh-agent holding `keys` (a Unix socket in `dir`, a named pipe on Windows).
+/// Starts an ssh-agent holding `keys` (a Unix socket in `dir`, a named pipe on Windows). It
+/// lists them in the order given.
 pub async fn start_agent(dir: &Path, keys: &[PrivateKey]) -> PathBuf {
-    let (path, listener) = listen(dir, "agent");
-    let connections = futures::stream::unfold(listener, |mut listener| async move {
-        Some((listener.accept().await, listener))
+    let (path, mut listener) = listen(dir, "agent");
+    // russh's agent lists its keys in hash map order, so a test that needs the client to
+    // skip one could pass by luck. Each client talks to it through a relay that puts the
+    // list back in the order the keys were added.
+    let order: Vec<Vec<u8>> = keys
+        .iter()
+        .map(|key| crate::security_keys::public_key_blob(key.public_key()))
+        .collect();
+    let (connections, agent_side) =
+        futures::channel::mpsc::unbounded::<std::io::Result<tokio::io::DuplexStream>>();
+    tokio::spawn(async move {
+        let _ = russh::keys::agent::server::serve(agent_side, ()).await;
     });
     tokio::spawn(async move {
-        let _ = russh::keys::agent::server::serve(Box::pin(connections), ()).await;
+        while let Ok(client) = listener.accept().await {
+            let (relay_side, agent) = tokio::io::duplex(64 * 1024);
+            if connections.unbounded_send(Ok(agent)).is_err() {
+                return;
+            }
+            tokio::spawn(relay_in_order(client, relay_side, order.clone()));
+        }
     });
     #[cfg(unix)]
     let mut client = AgentClient::connect_uds(&path).await.unwrap();
@@ -35,6 +51,73 @@ pub async fn start_silent_agent(dir: &Path) -> PathBuf {
         }
     });
     path
+}
+
+/// Passes one client's requests to the agent and its replies back, the identity list sorted
+/// by `order` (keys not in it last). The protocol is one reply per request, in turn.
+async fn relay_in_order(
+    mut client: AgentStream,
+    mut agent: tokio::io::DuplexStream,
+    order: Vec<Vec<u8>>,
+) {
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+
+    async fn frame(stream: &mut (impl AsyncRead + Unpin)) -> Option<Vec<u8>> {
+        let mut len = [0u8; 4];
+        stream.read_exact(&mut len).await.ok()?;
+        let mut body = vec![0u8; u32::from_be_bytes(len) as usize];
+        stream.read_exact(&mut body).await.ok()?;
+        Some(body)
+    }
+
+    while let Some(request) = frame(&mut client).await {
+        let mut out = (request.len() as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(&request);
+        if agent.write_all(&out).await.is_err() {
+            return;
+        }
+        let Some(mut answer) = frame(&mut agent).await else {
+            return;
+        };
+        if request.first() == Some(&11) {
+            answer = sorted_identities(&answer, &order).unwrap_or(answer);
+        }
+        let mut out = (answer.len() as u32).to_be_bytes().to_vec();
+        out.extend(answer);
+        if client.write_all(&out).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// An identities answer (SSH_AGENT_IDENTITIES_ANSWER) with its keys in `order`.
+fn sorted_identities(answer: &[u8], order: &[Vec<u8>]) -> Option<Vec<u8>> {
+    use crate::security_keys::{read_field, ssh_string};
+    if answer.first() != Some(&12) {
+        return None;
+    }
+    let count = u32::from_be_bytes(answer.get(1..5)?.try_into().ok()?);
+    let mut offset = 5;
+    let mut identities = Vec::new();
+    for _ in 0..count {
+        let (blob, next) = read_field(answer, offset)?;
+        let (comment, next) = read_field(answer, next)?;
+        identities.push((blob.to_vec(), comment.to_vec()));
+        offset = next;
+    }
+    identities.sort_by_key(|(blob, _)| {
+        order
+            .iter()
+            .position(|known| known == blob)
+            .unwrap_or(order.len())
+    });
+    let mut sorted = vec![12u8];
+    sorted.extend_from_slice(&count.to_be_bytes());
+    for (blob, comment) in identities {
+        sorted.extend(ssh_string(&blob));
+        sorted.extend(ssh_string(&comment));
+    }
+    Some(sorted)
 }
 
 /// A fresh Ed25519 key.
