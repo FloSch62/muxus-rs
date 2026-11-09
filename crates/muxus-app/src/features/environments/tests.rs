@@ -596,6 +596,38 @@ fn gives_a_copied_openssh_block_the_host_name_its_alias_stood_for() {
 }
 
 #[test]
+fn keeps_the_address_of_an_ad_hoc_host_as_the_copys_host_name() {
+    let hosts = HostDirectory {
+        ssh_hosts: &[],
+        saved_profiles: &[],
+    };
+    let target = EnvironmentTarget::Container {
+        runtime: ContainerRuntime::Docker,
+        container: "db".into(),
+        shell: None,
+    };
+    for (quick_connect, user, port) in [
+        ("10.0.0.5", "", ""),
+        ("admin@10.0.0.5", "admin", ""),
+        ("admin@10.0.0.5:2222", "admin", "2222"),
+    ] {
+        let host = EnvironmentHost {
+            key: format!("target:{quick_connect}"),
+            label: quick_connect.into(),
+            profile: Some(SshProfile::new(quick_connect)),
+            ..EnvironmentHost::default()
+        };
+        for storage in [NewSshHostStorage::Openssh, NewSshHostStorage::Muxus] {
+            let draft = enter_host_draft(&host, hosts, "db", &target, storage).unwrap();
+            assert_eq!(draft.alias_text, "db", "{quick_connect}");
+            assert_eq!(draft.hostname, "10.0.0.5", "{quick_connect}");
+            assert_eq!(draft.user, user, "{quick_connect}");
+            assert_eq!(draft.port, port, "{quick_connect}");
+        }
+    }
+}
+
+#[test]
 fn jumps_through_the_host_to_an_address_only_it_reaches() {
     let saved = [hv_saved()];
     let ssh = [openssh_build()];

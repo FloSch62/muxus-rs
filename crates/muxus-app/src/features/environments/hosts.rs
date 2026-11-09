@@ -10,6 +10,7 @@ use crate::features::host_editor::logic::draft::{
     EnvironmentDiscoveryDraft, HostDraft, RemoteCommandMode, RouteMode, Storage, blank_draft,
     draft_from_entry, draft_from_saved_ssh_profile,
 };
+use crate::features::host_editor::logic::native_draft::parse_host_target;
 use crate::hosts::saved::saved_host_hop;
 use crate::model::{RequestTty, SavedHostProfile, SavedHostSessionProfile, SshHostEntry};
 
@@ -93,7 +94,12 @@ pub fn enter_host_draft(
                 .unwrap_or_else(|| entry.resolved.hostname.clone()),
             ..draft_from_entry(entry, true)
         },
-        Parent::Target(target) => blank_draft(&target, "", storage(new_host_storage)),
+        Parent::Target(target) => HostDraft {
+            // A bare target only fills the alias, which the copy replaces; the
+            // host it stood for has to stay as the HostName.
+            hostname: parse_host_target(&target).host,
+            ..blank_draft(&target, "", storage(new_host_storage))
+        },
     };
     let alias_text = if base.storage == Storage::Openssh {
         alias_for(name)
