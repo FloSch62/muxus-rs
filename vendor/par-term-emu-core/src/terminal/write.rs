@@ -42,9 +42,30 @@ impl Terminal {
             return;
         }
         let run = std::mem::take(&mut self.print_run);
+        self.rep_char = run.last().map(|&b| b as char);
         self.write_ascii_run(&run);
         self.print_run = run;
         self.print_run.clear();
+    }
+
+    /// REP (`CSI Ps b`): print the graphic character printed last `count`
+    /// more times (Muxus patch). Programs whose terminfo lists `rep`
+    /// (xterm-256color does) draw runs with it: htop's meter bars, dialog
+    /// and mc lines. Nothing happens when the sequence does not directly
+    /// follow a printed character, or when that was a zero-width one.
+    pub(crate) fn repeat_last_graphic(&mut self, count: usize) {
+        let Some(c) = self.rep_char else {
+            return;
+        };
+        if !c.is_ascii()
+            && crate::unicode_width_config::char_width(c, &self.unicode_state.width_config) == 0
+        {
+            return;
+        }
+        for _ in 0..count {
+            vte::Perform::print(self, c);
+        }
+        self.flush_print_run();
     }
 
     /// Write a run of printable ASCII (`' '..='~'`) exactly as one

@@ -197,6 +197,10 @@ impl Terminal {
                     self.handle_csi_report(action, params, intermediates);
                 }
             }
+            'b' if intermediates.is_empty() => {
+                // REP - repeat the preceding graphic character
+                self.repeat_last_graphic(count_param(params));
+            }
             'u' => {
                 // u can be SCORC (no params), DECSMBV (with params),
                 // or Kitty keyboard protocol (with =, ?, >, or < intermediates)

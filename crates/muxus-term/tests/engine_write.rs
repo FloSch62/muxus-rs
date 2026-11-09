@@ -93,3 +93,16 @@ fn overwriting_or_deleting_half_a_wide_character_blanks_the_other_half() {
     term.write("a中bc\x1b[1;3H\x1b[K".as_bytes());
     assert_eq!(row(&term, 0), "a");
 }
+
+#[test]
+fn rep_repeats_the_character_printed_last() {
+    let mut term = emulator(20, 3);
+    term.write(b"a\x1b[3b");
+    assert_eq!(row(&term, 0), "aaaa");
+
+    // A meter bar the way htop draws it with xterm-256color's rep.
+    let mut term = emulator(20, 3);
+    term.write(b"[\x1b[32m|\x1b[9b\x1b[m]");
+    assert_eq!(row(&term, 0), "[||||||||||]");
+    assert_eq!(cursor(&term), (12, 0));
+}
