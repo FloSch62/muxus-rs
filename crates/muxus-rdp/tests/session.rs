@@ -35,6 +35,7 @@ enum Received {
     KeyDown(u8, bool),
     KeyUp(u8, bool),
     Sync(u8),
+    Unicode(u16, bool),
     Move(u16, u16),
     Button(u16, u16, &'static str, bool),
     Scroll(i16),
@@ -48,7 +49,8 @@ impl RdpServerInputHandler for Input {
             KeyboardEvent::Pressed { code, extended } => Received::KeyDown(code, extended),
             KeyboardEvent::Released { code, extended } => Received::KeyUp(code, extended),
             KeyboardEvent::Synchronize(flags) => Received::Sync(flags.bits()),
-            _ => return,
+            KeyboardEvent::UnicodePressed(unit) => Received::Unicode(unit, true),
+            KeyboardEvent::UnicodeReleased(unit) => Received::Unicode(unit, false),
         };
         let _ = self.0.send(received);
     }
@@ -505,6 +507,19 @@ async fn draws_types_clicks_resizes_and_shuts_down() {
     assert_eq!(
         received(&mut server, 2).await,
         [Received::KeyDown(0x10, false), Received::KeyUp(0x10, false)]
+    );
+
+    // A character no US key types goes out as a Unicode event.
+    assert!(session.key(&KeyEvent {
+        key: "ö".into(),
+        ..key("", true, Modifiers::default())
+    }));
+    assert_eq!(
+        received(&mut server, 2).await,
+        [
+            Received::Unicode(0xf6, true),
+            Received::Unicode(0xf6, false)
+        ]
     );
 
     // The pane grew: display control asks the server, which deactivates and reactivates.
