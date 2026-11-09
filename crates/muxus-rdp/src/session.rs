@@ -236,6 +236,8 @@ pub struct RdpSession {
     framebuffer: Framebuffer,
     /// Width in the high half, height in the low half.
     desktop_size: Arc<AtomicU32>,
+    /// The size last asked of the server (packed the same way), starting at the size it gave.
+    requested_size: Arc<AtomicU32>,
     closed: Arc<AtomicBool>,
     share_clipboard: bool,
 }
@@ -341,9 +343,13 @@ impl RdpSession {
 
     /// Ask the server for a desktop matching the pane (display control channel). Servers
     /// without display control keep their size; the view scales instead.
+    ///
+    /// Repeats of the size last asked for are skipped. The server's current size is no guide:
+    /// while a request is still on its way, going back to the old size must be asked for too.
     pub fn resize(&self, width: f64, height: f64) {
         let (width, height) = rdp_desktop_size(width, height);
-        if (width, height) == self.desktop_size() {
+        let packed = pack_size(width, height);
+        if self.requested_size.swap(packed, Ordering::Relaxed) == packed {
             return;
         }
         self.send(Command::Resize { width, height });
@@ -398,6 +404,7 @@ pub async fn connect(
         events: events_rx,
         framebuffer: framebuffer.clone(),
         desktop_size: desktop_size.clone(),
+        requested_size: Arc::new(AtomicU32::new(pack_size(size.width, size.height))),
         closed: closed.clone(),
         share_clipboard: options.share_clipboard,
     };
@@ -1293,5 +1300,43 @@ mod tests {
         );
         // Nothing is left held: releasing everything sends no keys.
         assert!(database.release_all().is_empty());
+    }
+
+    fn session(width: u16, height: u16) -> (RdpSession, mpsc::UnboundedReceiver<Command>) {
+        let (commands, received) = mpsc::unbounded_channel();
+        let size = Arc::new(AtomicU32::new(pack_size(width, height)));
+        let session = RdpSession {
+            commands,
+            keyboard: Arc::new(Mutex::new(RdpKeyboard::new())),
+            events: async_channel::unbounded().1,
+            framebuffer: Framebuffer::new(PixelOrder::Rgba),
+            desktop_size: size.clone(),
+            requested_size: Arc::new(AtomicU32::new(size.load(Ordering::Relaxed))),
+            closed: Arc::new(AtomicBool::new(false)),
+            share_clipboard: false,
+        };
+        (session, received)
+    }
+
+    fn resizes(received: &mut mpsc::UnboundedReceiver<Command>) -> Vec<(u16, u16)> {
+        let mut sizes = Vec::new();
+        while let Ok(command) = received.try_recv() {
+            if let Command::Resize { width, height } = command {
+                sizes.push((width, height));
+            }
+        }
+        sizes
+    }
+
+    #[test]
+    fn asks_for_the_previous_size_again_while_a_resize_is_pending() {
+        let (session, mut received) = session(1000, 700);
+        // The size the server already has is not asked for.
+        session.resize(1000.0, 700.0);
+        session.resize(1200.0, 800.0);
+        session.resize(1200.0, 800.0);
+        // The server still reports 1000x700, but 1200x800 is on its way: going back counts.
+        session.resize(1000.0, 700.0);
+        assert_eq!(resizes(&mut received), [(1200, 800), (1000, 700)]);
     }
 }
