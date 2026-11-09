@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use muxus_core::api::{DesktopUpdateState, DesktopUpdateStatus};
-use muxus_core::platform::Platform;
+use muxus_core::platform::{Platform, env_var};
 use muxus_session::Backend;
 use muxus_session::updater::store::{
     DistributionMetadata, running_from_windows_store, store_page_url,
@@ -78,9 +78,9 @@ fn process_env() -> HashMap<String, String> {
     std::env::vars().collect()
 }
 
-fn home_dir(env: &HashMap<String, String>) -> PathBuf {
-    env.get("HOME")
-        .or_else(|| env.get("USERPROFILE"))
+fn home_dir(env: &HashMap<String, String>, platform: Platform) -> PathBuf {
+    env_var(env, "HOME", platform)
+        .or_else(|| env_var(env, "USERPROFILE", platform))
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
@@ -97,8 +97,7 @@ pub fn init_desktop_updates(
     let env = process_env();
     let platform = Platform::current();
     let version = env!("CARGO_PKG_VERSION").to_string();
-    let feed = env
-        .get(FEED_OVERRIDE_VAR)
+    let feed = env_var(&env, FEED_OVERRIDE_VAR, platform)
         .filter(|url| !url.is_empty())
         .map(|base_url| ReleaseFeed::Generic {
             base_url: base_url.clone(),
@@ -112,7 +111,7 @@ pub fn init_desktop_updates(
         version: version.clone(),
         packaged: !cfg!(debug_assertions),
         platform,
-        cache_dir: default_cache_dir(platform, &env, &home_dir(&env)),
+        cache_dir: default_cache_dir(platform, &env, &home_dir(&env, platform)),
         env,
         metadata: metadata.clone(),
         windows_store: running_from_windows_store(),
@@ -311,4 +310,20 @@ pub fn open_store(cx: &mut App) {
     };
     let url = store_page_url(&entity.read(cx).metadata);
     cx.open_url(&url);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_windows_home_under_any_casing() {
+        let env = HashMap::from([("UserProfile".to_string(), r"C:\Users\me".to_string())]);
+        assert_eq!(
+            home_dir(&env, Platform::Windows),
+            PathBuf::from(r"C:\Users\me")
+        );
+        let env = HashMap::from([("HOME".to_string(), "/home/me".to_string())]);
+        assert_eq!(home_dir(&env, Platform::Linux), PathBuf::from("/home/me"));
+    }
 }

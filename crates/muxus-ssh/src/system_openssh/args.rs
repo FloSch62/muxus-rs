@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use muxus_core::api::ForwardType;
 use muxus_core::environments::environment_command_line;
-use muxus_core::platform::Platform;
+use muxus_core::platform::{Platform, env_var};
 use muxus_core::protocol::{RequestTty, SshProfile};
 
 use crate::config::parse_host_spec;
@@ -26,17 +26,7 @@ pub fn find_ssh_binary(env: &HashMap<String, String>, platform: Platform) -> Opt
         format!("{trimmed}{separator}{name}")
     };
     // Windows spells it Path, and a copied environment is case-sensitive.
-    let path = env
-        .iter()
-        .find(|(key, _)| {
-            if windows {
-                key.eq_ignore_ascii_case("PATH")
-            } else {
-                key.as_str() == "PATH"
-            }
-        })
-        .map(|(_, value)| value.as_str())
-        .unwrap_or("");
+    let path = env_var(env, "PATH", platform).map_or("", String::as_str);
     let program = if windows { "ssh.exe" } else { "ssh" };
     let mut candidates: Vec<String> = path
         .split(delimiter)
@@ -44,7 +34,7 @@ pub fn find_ssh_binary(env: &HashMap<String, String>, platform: Platform) -> Opt
         .map(|directory| join(directory, program))
         .collect();
     if windows {
-        if let Some(root) = env.get("SystemRoot") {
+        if let Some(root) = env_var(env, "SystemRoot", platform) {
             candidates.push(join(root, "System32\\OpenSSH\\ssh.exe"));
         }
     } else {

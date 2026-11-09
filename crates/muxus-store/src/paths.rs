@@ -20,6 +20,8 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use muxus_core::platform::env_var;
+
 /// The application name Electron derives the user data folder from.
 pub const APP_NAME: &str = "Muxus";
 /// The application database file name inside the user data folder.
@@ -37,6 +39,16 @@ pub enum Platform {
     Linux,
     MacOs,
     Windows,
+}
+
+impl From<Platform> for muxus_core::platform::Platform {
+    fn from(platform: Platform) -> Self {
+        match platform {
+            Platform::Linux => Self::Linux,
+            Platform::MacOs => Self::MacOs,
+            Platform::Windows => Self::Windows,
+        }
+    }
 }
 
 impl Platform {
@@ -67,15 +79,15 @@ impl Environment {
         let vars: HashMap<String, OsString> = std::env::vars_os()
             .filter_map(|(key, value)| key.into_string().ok().map(|key| (key, value)))
             .collect();
+        let platform = Platform::current();
         let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-        let home = vars
-            .get(home_var)
+        let home = env_var(&vars, home_var, platform.into())
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .or_else(std::env::home_dir)
             .unwrap_or_default();
         Self {
-            platform: Platform::current(),
+            platform,
             home,
             vars,
         }
@@ -96,9 +108,10 @@ impl Environment {
         self
     }
 
-    /// A variable's value; empty values count as unset, like `process.env.X || …`.
+    /// A variable's value; empty values count as unset, like `process.env.X || …`. Windows
+    /// names match in any casing.
     pub fn var(&self, key: &str) -> Option<&OsString> {
-        self.vars.get(key).filter(|value| !value.is_empty())
+        env_var(&self.vars, key, self.platform.into()).filter(|value| !value.is_empty())
     }
 }
 
@@ -285,6 +298,18 @@ mod tests {
             AppPaths::installed(&mac).user_data,
             PathBuf::from("/Users/u/Library/Application Support/Muxus")
         );
+    }
+
+    #[test]
+    fn windows_variables_match_in_any_casing() {
+        let windows = Environment::new(Platform::Windows, r"C:\Users\u")
+            .with_var("AppData", r"C:\Users\u\AppData\Roaming");
+        assert_eq!(
+            app_data_dir(&windows),
+            PathBuf::from(r"C:\Users\u\AppData\Roaming")
+        );
+        let linux = Environment::new(Platform::Linux, "/home/u").with_var("xdg_config_home", "/x");
+        assert_eq!(app_data_dir(&linux), PathBuf::from("/home/u/.config"));
     }
 
     #[test]
