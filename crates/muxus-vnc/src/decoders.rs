@@ -432,7 +432,7 @@ impl Decoders {
                         let mut rgb = vec![0u8; (width * height * 3) as usize];
                         for row in 0..height as usize {
                             for column in 0..width as usize {
-                                let index = if colors == 2 {
+                                let index = if bits_per_pixel == 1 {
                                     let byte = data[row * row_size + column / 8];
                                     usize::from((byte >> (7 - column % 8)) & 1)
                                 } else {
@@ -980,6 +980,19 @@ mod tests {
         .await;
         assert_eq!(fb.lock().rgba_at(0, 7), Some([255, 255, 255, 255]));
         assert_eq!(fb.lock().rgba_at(1, 7), Some([0, 0, 0, 255]));
+
+        // One-colour palette: still one bit per pixel; a 9-pixel row is two bytes.
+        let fb_wide = framebuffer(9, 2);
+        let wire = [0x40, 1, 0, 4, 5, 6, 0, 0, 0, 0];
+        decode(
+            &mut decoders,
+            ENCODING_TIGHT,
+            Rect::new(0, 0, 9, 2),
+            &wire,
+            &fb_wide,
+        )
+        .await;
+        assert_eq!(fb_wide.lock().rgba_at(8, 1), Some([4, 5, 6, 255]));
 
         // Gradient filter: data are differences from the prediction.
         let wire = [0x40, 2, 10, 10, 10, 5, 5, 5];
