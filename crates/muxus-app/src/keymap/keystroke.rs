@@ -83,15 +83,48 @@ pub fn dom_key(keystroke: &Keystroke) -> String {
     }
 }
 
+/// The unshifted key for a character a US keyboard types with Shift.
+fn us_unshifted(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "~" => "`",
+        "!" => "1",
+        "@" => "2",
+        "#" => "3",
+        "$" => "4",
+        "%" => "5",
+        "^" => "6",
+        "&" => "7",
+        "*" => "8",
+        "(" => "9",
+        ")" => "0",
+        "_" => "-",
+        "+" => "=",
+        "{" => "[",
+        "}" => "]",
+        "|" => "\\",
+        ":" => ";",
+        "\"" => "'",
+        "<" => ",",
+        ">" => ".",
+        "?" => "/",
+        _ => return None,
+    })
+}
+
 /// The chord event for a GPUI keystroke; `None` for keys the keymap cannot name.
+///
+/// GPUI drops Shift from symbol and digit keys and reports the shifted
+/// character instead (">" for Shift+Period), so a shifted US symbol is read
+/// back as its key with Shift held.
 pub fn chord_event(keystroke: &Keystroke) -> Option<ChordEvent> {
-    let code = dom_code(&keystroke.key)?;
+    let unshifted = us_unshifted(&keystroke.key);
+    let code = dom_code(unshifted.unwrap_or(&keystroke.key))?;
     Some(ChordEvent {
         key: dom_key(keystroke),
         code,
         ctrl_key: keystroke.modifiers.control,
         alt_key: keystroke.modifiers.alt,
-        shift_key: keystroke.modifiers.shift,
+        shift_key: keystroke.modifiers.shift || unshifted.is_some(),
         meta_key: keystroke.modifiers.platform,
     })
 }
@@ -99,6 +132,8 @@ pub fn chord_event(keystroke: &Keystroke) -> Option<ChordEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keymap::chords::event_signature;
+    use muxus_ui::gpui_kit::Modifiers;
 
     #[test]
     fn maps_keys_to_dom_codes() {
@@ -122,5 +157,43 @@ mod tests {
             ("ArrowLeft", "ArrowLeft")
         );
         assert!(chord_event(&Keystroke::parse("ctrl-é").unwrap()).is_none());
+    }
+
+    /// GPUI reports Shift+Period as ">" with Shift cleared.
+    fn shifted_symbol(key: &str, modifiers: Modifiers) -> Keystroke {
+        Keystroke {
+            modifiers,
+            key: key.into(),
+            key_char: None,
+        }
+    }
+
+    #[test]
+    fn reads_shift_back_from_a_shifted_symbol() {
+        let ctrl = Modifiers {
+            control: true,
+            ..Modifiers::default()
+        };
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        for (key, modifiers, signature) in [
+            (">", ctrl, "CS:Period"),
+            ("<", ctrl, "CS:Comma"),
+            ("?", ctrl, "CS:Slash"),
+            ("{", ctrl, "CS:BracketLeft"),
+            ("}", ctrl, "CS:BracketRight"),
+            ("_", ctrl, "CS:Minus"),
+            ("+", ctrl, "CS:Equal"),
+            (")", ctrl, "CS:Digit0"),
+            ("+", alt, "AS:Equal"),
+            ("_", alt, "AS:Minus"),
+        ] {
+            let chord = chord_event(&shifted_symbol(key, modifiers)).unwrap();
+            assert_eq!(event_signature(&chord), signature, "{key}");
+        }
+        let plain = chord_event(&shifted_symbol(".", ctrl)).unwrap();
+        assert_eq!(event_signature(&plain), "C:Period");
     }
 }
