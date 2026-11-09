@@ -147,7 +147,8 @@ async fn offers_only_the_configured_agent_identity_for_identities_only_hosts() {
         server.port(),
         &[&identity_line, "  IdentitiesOnly yes"],
     );
-    // The server takes the other key too, so offering it would log in with it.
+    // The server takes the other key too, and the agent lists it first, so offering it would
+    // log in with it.
     let sock = start_agent(sandbox.dir.path(), &[other, configured]).await;
     let mut options = sandbox.options();
     with_agent(&mut options, &sock);
