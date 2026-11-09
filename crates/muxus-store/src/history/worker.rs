@@ -76,6 +76,12 @@ struct Writer {
     part: u32,
     file: File,
     partial_path: PathBuf,
+    counters: PartCounters,
+}
+
+/// What one part holds, as `session_parts` records it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct PartCounters {
     raw_bytes: u64,
     normalized_bytes: u64,
     event_count: u64,
@@ -244,7 +250,8 @@ impl Worker {
             return Ok(false);
         }
         if !self.writers.contains_key(session_id) {
-            let writer = self.open_writer(session_id, current_part.max(1) as u32)?;
+            let part = self.resume_part(session_id, current_part.max(1) as u32)?;
+            let writer = self.open_writer(session_id, part)?;
             self.writers.insert(session_id.to_owned(), writer);
         }
         let mut parts = Vec::with_capacity(events.len());
@@ -260,7 +267,11 @@ impl Worker {
             );
             let (count, part_raw, part) = {
                 let writer = &self.writers[session_id];
-                (writer.event_count, writer.raw_bytes, writer.part)
+                (
+                    writer.counters.event_count,
+                    writer.counters.raw_bytes,
+                    writer.part,
+                )
             };
             if count > 0 && part_raw + event.raw.len() as u64 > policy.max_part_bytes {
                 self.finalize_writer(session_id)?;
@@ -270,19 +281,20 @@ impl Worker {
             }
             let writer = self.writers.get_mut(session_id).expect("writer is open");
             writer.file.write_all(&frame)?;
-            writer.raw_bytes += event.raw.len() as u64;
-            writer.event_count += 1;
-            writer.first_sequence.get_or_insert(event.sequence);
-            writer.last_sequence = Some(event.sequence);
+            let counters = &mut writer.counters;
+            counters.raw_bytes += event.raw.len() as u64;
+            counters.event_count += 1;
+            counters.first_sequence.get_or_insert(event.sequence);
+            counters.last_sequence = Some(event.sequence);
             raw_bytes += event.raw.len() as u64;
             let text_bytes = event.text.len() as u64;
-            writer.normalized_bytes += text_bytes;
+            counters.normalized_bytes += text_bytes;
             normalized_bytes += text_bytes;
             parts.push(writer.part);
         }
         let (part, part_bytes) = {
             let writer = &self.writers[session_id];
-            (writer.part, writer.raw_bytes)
+            (writer.part, writer.counters.raw_bytes)
         };
         // One SQLite transaction per recorder batch (normally every 250 ms).
         let tx = self
@@ -777,45 +789,129 @@ impl Worker {
         Ok(true)
     }
 
-    fn open_writer(&mut self, session_id: &str, part: u32) -> Outcome<Writer> {
-        let directory = self.session_directory(session_id);
-        create_private_dir_all(&directory)?;
-        let partial_path = directory.join(format!("{}.muxlog.partial", part_name(part)));
-        let exists = partial_path.exists();
-        let mut file = if exists {
-            fs::OpenOptions::new().append(true).open(&partial_path)?
-        } else {
-            create_private_file(&partial_path)?
-        };
-        if !exists {
-            file.write_all(&SEGMENT_HEADER)?;
-            // A crash must not leave a partial whose header never reached the disk.
-            file.sync_data()?;
+    fn partial_path(&self, session_id: &str, part: u32) -> PathBuf {
+        self.session_directory(session_id)
+            .join(format!("{}.muxlog.partial", part_name(part)))
+    }
+
+    /// The part to write to for a session that has no writer: its current
+    /// part, or the next one when a rotation finished the current part but
+    /// failed before the next one was recorded. Reopening a finished part
+    /// would write over it.
+    fn resume_part(&self, session_id: &str, part: u32) -> Outcome<u32> {
+        if self.partial_path(session_id, part).exists() {
+            return Ok(part);
         }
+        let finished = self
+            .db
+            .query_row(
+                "SELECT 1 FROM session_parts WHERE session_id = ? AND part_number = ?",
+                params![session_id, part],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        Ok(if finished { part + 1 } else { part })
+    }
+
+    /// Open a part for appending. A partial left behind (by a failed
+    /// rotation or finish) is continued, with its counters read back from
+    /// what it holds and any torn final frame cut away.
+    fn open_writer(&mut self, session_id: &str, part: u32) -> Outcome<Writer> {
+        create_private_dir_all(&self.session_directory(session_id))?;
+        let partial_path = self.partial_path(session_id, part);
+        if partial_path.exists() {
+            let raw = fs::read(&partial_path)?;
+            match decode_segment(&raw) {
+                Ok(decoded) => {
+                    // Frames written after a torn one could never be read back.
+                    if decoded.valid_end < raw.len() {
+                        fs::OpenOptions::new()
+                            .write(true)
+                            .open(&partial_path)?
+                            .set_len(decoded.valid_end as u64)?;
+                    }
+                    let counters = self.count_part(session_id, part, &decoded.events)?;
+                    let file = fs::OpenOptions::new().append(true).open(&partial_path)?;
+                    return Ok(Writer {
+                        part,
+                        file,
+                        partial_path,
+                        counters,
+                    });
+                }
+                Err(_) => set_aside_damaged_partial(&partial_path)?,
+            }
+        }
+        let mut file = create_private_file(&partial_path)?;
+        file.write_all(&SEGMENT_HEADER)?;
+        // A crash must not leave a partial whose header never reached the disk.
+        file.sync_data()?;
         Ok(Writer {
             part,
             file,
             partial_path,
-            raw_bytes: 0,
-            normalized_bytes: 0,
-            event_count: 0,
-            first_sequence: None,
-            last_sequence: None,
+            counters: PartCounters::default(),
         })
     }
 
+    /// The counters of a part from its decoded events; the normalized size
+    /// comes from the transcript chunks recorded for it.
+    fn count_part(
+        &self,
+        session_id: &str,
+        part: u32,
+        events: &[HistoryEvent],
+    ) -> Outcome<PartCounters> {
+        let normalized: i64 = self.db.query_row(
+            "
+      SELECT COALESCE(SUM(length(CAST(normalized_text AS BLOB))), 0) AS bytes
+      FROM transcript_chunks WHERE session_id = ? AND part_number = ?
+    ",
+            params![session_id, part],
+            |row| row.get(0),
+        )?;
+        Ok(PartCounters {
+            raw_bytes: events.iter().map(|event| event.raw.len() as u64).sum(),
+            normalized_bytes: normalized.max(0) as u64,
+            event_count: events.len() as u64,
+            first_sequence: events.first().map(|event| event.sequence),
+            last_sequence: events.last().map(|event| event.sequence),
+        })
+    }
+
+    /// Finish a session's active part. Without a writer (a failed rotation
+    /// or reopen dropped it), any partial left in the session's directory
+    /// is finished instead, so none is orphaned once the session ends.
     fn finalize_writer(&mut self, session_id: &str) -> Outcome<()> {
-        let Some(writer) = self.writers.remove(session_id) else {
-            return Ok(());
+        let Some(writer) = self.writers.get(session_id) else {
+            return self.finalize_partials(session_id);
         };
+        // The writer stays open until its frames are on disk.
         writer.file.sync_data()?;
+        let writer = self.writers.remove(session_id).expect("writer is open");
         drop(writer.file);
-        if writer.event_count == 0 {
+        if writer.counters.event_count == 0 {
             remove_file_if_exists(&writer.partial_path)?;
             return Ok(());
         }
+        // From here a failure leaves the partial in place: the next append
+        // reopens it with its counters, and finishing the session finalizes it.
         let relative = self.finalize_partial(session_id, writer.part, &writer.partial_path)?;
-        let stored_bytes = fs::metadata(self.root.join(&relative))?.len();
+        self.record_part(session_id, writer.part, &relative, &writer.counters)?;
+        remove_file_if_exists(&writer.partial_path)?;
+        Ok(())
+    }
+
+    /// Add or update a finished part in `session_parts`.
+    fn record_part(
+        &self,
+        session_id: &str,
+        part: u32,
+        relative: &str,
+        counters: &PartCounters,
+    ) -> Outcome<()> {
+        let stored_bytes = fs::metadata(self.root.join(relative))?.len();
         self.db.execute(
             "
     INSERT INTO session_parts(
@@ -833,22 +929,24 @@ impl Worker {
   ",
             params![
                 session_id,
-                writer.part,
+                part,
                 relative,
-                writer.raw_bytes as i64,
+                counters.raw_bytes as i64,
                 stored_bytes as i64,
-                writer.event_count as i64,
-                writer.normalized_bytes as i64,
-                writer.first_sequence.map(|value| value as i64),
-                writer.last_sequence.map(|value| value as i64)
+                counters.event_count as i64,
+                counters.normalized_bytes as i64,
+                counters.first_sequence.map(|value| value as i64),
+                counters.last_sequence.map(|value| value as i64)
             ],
         )?;
         Ok(())
     }
 
-    /// Cut a partial segment back to its last complete frame, compress it to
-    /// `NNNNNN.muxlog.zst` (written aside and renamed into place) and remove
-    /// the partial file. Returns the part's path relative to the root.
+    /// Cut a partial segment back to its last complete frame and compress
+    /// it to `NNNNNN.muxlog.zst` (written aside and renamed into place).
+    /// Returns the part's path relative to the root. The caller removes the
+    /// partial once the part is recorded, so a failure in between never
+    /// loses the part.
     fn finalize_partial(
         &self,
         session_id: &str,
@@ -876,7 +974,6 @@ impl Worker {
             file.sync_all()?;
         }
         fs::rename(&temporary, &final_path)?;
-        remove_file_if_exists(partial_path)?;
         Ok(self.relative(&final_path))
     }
 
@@ -1092,15 +1189,7 @@ impl Worker {
     /// cannot be recovered is still closed, so it never stops the store from
     /// opening.
     fn recover_interrupted_sessions(&mut self) -> Outcome<()> {
-        let active: Vec<String> = {
-            let mut statement = self
-                .db
-                .prepare("SELECT id FROM session_logs WHERE status = 'active'")?;
-            statement
-                .query_map([], |row| row.get(0))?
-                .collect::<rusqlite::Result<_>>()?
-        };
-        for id in active {
+        for id in self.active_session_ids()? {
             if let Err(Failure(error)) = self.finalize_partials(&id) {
                 tracing::warn!(session = %id, %error, "could not recover an interrupted session log");
             }
@@ -1117,6 +1206,16 @@ impl Worker {
             )?;
         }
         Ok(())
+    }
+
+    fn active_session_ids(&self) -> Outcome<Vec<String>> {
+        let mut statement = self
+            .db
+            .prepare("SELECT id FROM session_logs WHERE status = 'active'")?;
+        let ids = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
     }
 
     /// Finalize every partial segment in a session's directory. A partial
@@ -1146,40 +1245,10 @@ impl Worker {
                 remove_file_if_exists(&partial)?;
                 continue;
             }
+            let counters = self.count_part(id, part, &decoded.events)?;
             let relative = self.finalize_partial(id, part, &partial)?;
-            let raw_bytes: u64 = decoded
-                .events
-                .iter()
-                .map(|event| event.raw.len() as u64)
-                .sum();
-            let normalized: i64 = self.db.query_row(
-                "
-          SELECT COALESCE(SUM(length(CAST(normalized_text AS BLOB))), 0) AS bytes
-          FROM transcript_chunks WHERE session_id = ? AND part_number = ?
-        ",
-                params![id, part],
-                |row| row.get(0),
-            )?;
-            let stored_bytes = fs::metadata(self.root.join(&relative))?.len();
-            self.db.execute(
-                "
-          INSERT OR REPLACE INTO session_parts(
-            session_id, part_number, filename, raw_bytes, stored_bytes,
-            event_count, normalized_bytes, first_sequence, last_sequence
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ",
-                params![
-                    id,
-                    part,
-                    relative,
-                    raw_bytes as i64,
-                    stored_bytes as i64,
-                    decoded.events.len() as i64,
-                    normalized,
-                    decoded.events.first().map(|event| event.sequence as i64),
-                    decoded.events.last().map(|event| event.sequence as i64)
-                ],
-            )?;
+            self.record_part(id, part, &relative, &counters)?;
+            remove_file_if_exists(&partial)?;
         }
         Ok(())
     }
@@ -1456,6 +1525,7 @@ impl Worker {
                 counters.last_sequence
             ],
         )?;
+        remove_file_if_exists(partial)?;
         Ok(())
     }
 
@@ -1478,8 +1548,20 @@ impl Worker {
             return Ok(());
         }
         self.closed = true;
-        let ids: Vec<String> = self.writers.keys().cloned().collect();
+        let mut ids: Vec<String> = self.writers.keys().cloned().collect();
         let mut first_error = None;
+        // An active session whose writer a failed rotation dropped still
+        // has its part on disk; nothing would finish it after this.
+        match self.active_session_ids() {
+            Ok(active) => ids.extend(
+                active
+                    .into_iter()
+                    .filter(|id| !self.writers.contains_key(id)),
+            ),
+            Err(error) => {
+                first_error = Some(error);
+            }
+        }
         for id in ids {
             if let Err(error) = self.finalize_writer(&id) {
                 first_error.get_or_insert(error);
@@ -1660,5 +1742,182 @@ pub(crate) fn remove_dir_all_if_exists(path: &Path) -> io::Result<()> {
     match fs::remove_dir_all(path) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const POLICY: PartPolicy = PartPolicy {
+        max_part_bytes: 1024 * 1024,
+        max_parts: 10,
+    };
+
+    fn open_worker(root: &Path) -> Worker {
+        let settings = SessionHistorySettings {
+            storage_location: None,
+            max_total_bytes: 5 * 1024 * 1024 * 1024,
+            min_free_bytes: 0,
+            min_free_percent: 0.0,
+            max_age_days: None,
+        };
+        Worker::open(root.to_path_buf(), settings, None).expect("worker opens")
+    }
+
+    fn begin(worker: &mut Worker, id: &str) {
+        let input = SessionLogCreateInput {
+            profile_key: "local".into(),
+            title: "Shell".into(),
+            kind: muxus_core::protocol::ProfileKind::parse("local").expect("kind"),
+            host: "local".into(),
+            started_at: "2026-02-01T10:00:00.000Z".into(),
+            capture_input: false,
+        };
+        assert!(worker.begin_session(id, &input, POLICY).unwrap());
+    }
+
+    fn event(sequence: u64, raw: &str) -> HistoryEvent {
+        HistoryEvent {
+            sequence,
+            recorded_at: "2026-02-01T10:00:01.000Z".into(),
+            elapsed_ms: sequence,
+            direction: SessionLogDirection::Output,
+            raw: raw.as_bytes().to_vec(),
+            text: format!("{raw}\n"),
+            line_timestamps: None,
+        }
+    }
+
+    fn raw(worker: &mut Worker, id: &str) -> Vec<String> {
+        worker
+            .raw_events(id)
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .map(|event| String::from_utf8(event.raw).unwrap())
+            .collect()
+    }
+
+    /// (part, event count, raw bytes, normalized bytes, first, last) per recorded part.
+    fn parts(worker: &Worker, id: &str) -> Vec<(i64, i64, i64, i64, i64, i64)> {
+        let mut statement = worker
+            .db
+            .prepare(
+                "SELECT part_number, event_count, raw_bytes, normalized_bytes,
+                        first_sequence, last_sequence
+                 FROM session_parts WHERE session_id = ? ORDER BY part_number",
+            )
+            .unwrap();
+        statement
+            .query_map([id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn partials(worker: &Worker, id: &str) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(worker.session_directory(id))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".partial"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_reopened_partial_continues_with_its_counters_after_a_torn_frame() {
+        let root = tempfile::tempdir().unwrap();
+        let mut worker = open_worker(root.path());
+        begin(&mut worker, "s");
+        assert!(
+            worker
+                .append("s", &[event(1, "one"), event(2, "two")], POLICY)
+                .unwrap()
+        );
+        // A failed rotation or finish drops the writer; a crash mid-write tore a frame.
+        let dropped = worker.writers.remove("s").unwrap();
+        let partial = dropped.partial_path.clone();
+        drop(dropped);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&partial)
+            .unwrap()
+            .write_all(&[0, 0, 0, 100, 1, 2])
+            .unwrap();
+
+        assert!(worker.append("s", &[event(3, "three")], POLICY).unwrap());
+        assert_eq!(
+            worker.writers["s"].counters,
+            PartCounters {
+                raw_bytes: 11,
+                normalized_bytes: 14,
+                event_count: 3,
+                first_sequence: Some(1),
+                last_sequence: Some(3),
+            }
+        );
+        assert_eq!(raw(&mut worker, "s"), ["one", "two", "three"]);
+        worker
+            .finish_session("s", SessionEndStatus::Completed, "2026-02-01T10:01:00.000Z")
+            .unwrap();
+        assert_eq!(parts(&worker, "s"), [(1, 3, 11, 14, 1, 3)]);
+        assert_eq!(raw(&mut worker, "s"), ["one", "two", "three"]);
+    }
+
+    #[test]
+    fn a_part_without_a_writer_is_finished_with_its_session_or_at_close() {
+        let root = tempfile::tempdir().unwrap();
+        let mut worker = open_worker(root.path());
+        for id in ["finished", "closed"] {
+            begin(&mut worker, id);
+            assert!(worker.append(id, &[event(1, id)], POLICY).unwrap());
+            worker.writers.remove(id);
+        }
+        worker
+            .finish_session(
+                "finished",
+                SessionEndStatus::Completed,
+                "2026-02-01T10:01:00.000Z",
+            )
+            .unwrap();
+        worker.close().unwrap();
+        for id in ["finished", "closed"] {
+            assert!(partials(&worker, id).is_empty(), "{id}");
+            let length = id.len() as i64;
+            assert_eq!(parts(&worker, id), [(1, 1, length, length + 1, 1, 1)]);
+            assert_eq!(raw(&mut worker, id), [id]);
+        }
+    }
+
+    #[test]
+    fn a_rotation_that_failed_after_finishing_a_part_continues_in_the_next() {
+        let root = tempfile::tempdir().unwrap();
+        let mut worker = open_worker(root.path());
+        begin(&mut worker, "s");
+        assert!(worker.append("s", &[event(1, "one")], POLICY).unwrap());
+        // Part 1 finished, then opening part 2 failed.
+        worker.finalize_writer("s").unwrap();
+
+        assert!(worker.append("s", &[event(2, "two")], POLICY).unwrap());
+        assert_eq!(worker.writers["s"].part, 2);
+        worker
+            .finish_session("s", SessionEndStatus::Completed, "2026-02-01T10:01:00.000Z")
+            .unwrap();
+        assert_eq!(
+            parts(&worker, "s"),
+            [(1, 1, 3, 4, 1, 1), (2, 1, 3, 4, 2, 2)]
+        );
+        assert_eq!(raw(&mut worker, "s"), ["one", "two"]);
     }
 }
