@@ -25,7 +25,7 @@ use muxus_ui::gpui_kit::{
 use muxus_ui::theme::{ActiveTheme, Status};
 
 use super::fields::Fields;
-use super::ui::Ui;
+use super::ui::{MAX_NOTIFICATIONS, Ui, notification_open_after_arrival};
 
 pub type Controller = WorkbenchController<ManagementConnection>;
 
@@ -519,8 +519,11 @@ impl ManagementView {
                             received_at,
                         },
                     );
-                    state.notifications.truncate(500);
+                    state.notifications.truncate(MAX_NOTIFICATIONS);
                 });
+                // The open one is kept by its row, which just moved down.
+                self.ui.notification_open =
+                    notification_open_after_arrival(self.ui.notification_open);
             }
             ConnectionEvent::Closed { exit } => self.on_closed(exit, window, cx),
         }
