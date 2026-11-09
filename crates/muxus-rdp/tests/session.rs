@@ -464,7 +464,8 @@ async fn draws_types_clicks_resizes_and_shuts_down() {
     assert_eq!(
         received(&mut server, 5).await,
         [
-            Received::Sync(0),
+            // Num Lock is unknown locally: the server is told it is on.
+            Received::Sync(2),
             Received::KeyDown(0x2a, false),
             Received::KeyDown(0x1e, false),
             Received::KeyUp(0x1e, false),

@@ -12,7 +12,9 @@
 //! - Shift is dropped from a keystroke whose key is a symbol (`shift-1` arrives as `!`), so the
 //!   flags of every event come from the window's live modifier state instead. Without this the
 //!   RDP client would release Shift before the key and type `1` for `!`;
-//! - Caps Lock state is known, Num Lock and Scroll Lock are not (reported off).
+//! - Caps Lock state is known, Num Lock and Scroll Lock are not. Num Lock is reported as
+//!   unknown, so the clients leave the remote one alone instead of switching it off; Scroll
+//!   Lock is reported off.
 
 use muxus_session::desktop::{KeyEvent, Modifiers};
 use muxus_ui::gpui_kit::{Keystroke, Modifiers as GpuiModifiers};
@@ -187,7 +189,7 @@ pub fn dom_modifiers(modifiers: &GpuiModifiers, caps_lock: bool) -> Modifiers {
         meta: modifiers.platform,
         alt_graph: false,
         caps_lock,
-        num_lock: false,
+        num_lock: None,
         scroll_lock: false,
     }
 }
@@ -455,7 +457,8 @@ mod tests {
                 // the server, so it comes before Shift goes down).
                 InputOp::SynchronizeLocks {
                     scroll_lock: false,
-                    num_lock: false,
+                    // Unknown locally: the RDP client assumes it on rather than forcing it off.
+                    num_lock: true,
                     caps_lock: false
                 },
                 InputOp::KeyPressed(scancode::SHIFT_LEFT),
