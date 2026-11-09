@@ -72,6 +72,10 @@ pub struct FolderDialog {
     keys: Option<SshKeysResponse>,
     inputs: InputCache,
     menus: Menus,
+    /// The hosts and folder settings have arrived. A submit before then would
+    /// plan against no hosts: a rename would move the folder but leave its
+    /// hosts behind.
+    loaded: bool,
     busy: bool,
     focus: FocusHandle,
     _tasks: Vec<Task<()>>,
@@ -120,6 +124,7 @@ pub fn open_folder_dialog(
             keys: None,
             inputs: InputCache::default(),
             menus: Menus::default(),
+            loaded: false,
             busy: false,
             focus,
             _tasks: Vec::new(),
@@ -145,6 +150,7 @@ pub fn open_folder_dialog(
                 this.vault = data.vault.clone();
                 this.keys = keys;
                 this.data = data;
+                this.loaded = true;
                 cx.notify();
             });
         });
@@ -185,7 +191,7 @@ impl FolderDialog {
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
-        if self.busy {
+        if self.busy || !self.loaded {
             return;
         }
         let hosts = self.hosts();
@@ -657,7 +663,9 @@ impl Render for FolderDialog {
                 p.text.secondary,
             )))
             .child(fields);
-        let blocked = submit_blocked(&self.state, &self.draft, self.vault_state()) || self.busy;
+        let blocked = submit_blocked(&self.state, &self.draft, self.vault_state())
+            || self.busy
+            || !self.loaded;
         let entity = cx.entity().downgrade();
         let (cancel, save, close) = (entity.clone(), entity.clone(), entity);
         let actions = vec![
