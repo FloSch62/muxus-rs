@@ -306,11 +306,34 @@ pub fn parse_host_target(target: &str) -> HostTarget {
         }
         _ => (None, trimmed),
     };
-    // /^(.+):(\d{1,5})$/ — greedy, so the last colon splits.
+    // An IPv6 address carries its own colons, so a port only follows one in
+    // brackets: [2001:db8::1]:2222. The brackets are not part of the host.
+    if let Some((host, rest)) = stripped
+        .strip_prefix('[')
+        .and_then(|inner| inner.split_once(']'))
+        && !host.is_empty()
+    {
+        let port = match rest {
+            "" => Some(None),
+            _ => rest
+                .strip_prefix(':')
+                .filter(|port| is_port(port))
+                .map(Some),
+        };
+        if let Some(port) = port {
+            return HostTarget {
+                host: host.to_owned(),
+                port: port.map(str::to_owned),
+                user,
+            };
+        }
+    }
+    // host:port, where the host has no colon of its own; a bare IPv6 address
+    // such as 2001:db8::10 is all host.
     if let Some((host, port)) = stripped.rsplit_once(':')
         && !host.is_empty()
-        && (1..=5).contains(&port.len())
-        && port.chars().all(|c| c.is_ascii_digit())
+        && !host.contains(':')
+        && is_port(port)
     {
         return HostTarget {
             host: host.to_owned(),
@@ -323,6 +346,11 @@ pub fn parse_host_target(target: &str) -> HostTarget {
         port: None,
         user,
     }
+}
+
+/// One to five digits.
+fn is_port(port: &str) -> bool {
+    (1..=5).contains(&port.len()) && port.chars().all(|c| c.is_ascii_digit())
 }
 
 /// `COMMON_BAUD_RATES`: the baud rate field's suggestions.
@@ -921,8 +949,38 @@ mod tests {
                 user: Some("ops".into())
             }
         );
-        assert_eq!(parse_host_target("a:b:22").host, "a:b");
         assert_eq!(parse_host_target("host:123456").port, None);
         assert_eq!(parse_host_target("@host").user, None);
+    }
+
+    #[test]
+    fn keeps_an_ipv6_address_whole_and_takes_its_port_after_brackets() {
+        assert_eq!(
+            parse_host_target("2001:db8::10"),
+            HostTarget {
+                host: "2001:db8::10".into(),
+                port: None,
+                user: None
+            }
+        );
+        assert_eq!(
+            parse_host_target("ops@[2001:db8::1]:2222"),
+            HostTarget {
+                host: "2001:db8::1".into(),
+                port: Some("2222".into()),
+                user: Some("ops".into())
+            }
+        );
+        assert_eq!(
+            parse_host_target("[2001:db8::1]"),
+            HostTarget {
+                host: "2001:db8::1".into(),
+                port: None,
+                user: None
+            }
+        );
+        assert_eq!(parse_host_target("::1").host, "::1");
+        assert_eq!(parse_host_target("a:b:22").host, "a:b:22");
+        assert_eq!(parse_host_target("a:b:22").port, None);
     }
 }
