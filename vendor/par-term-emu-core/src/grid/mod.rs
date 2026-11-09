@@ -451,6 +451,17 @@ impl Grid {
         }
     }
 
+    /// Muxus patch: fill every screen cell with `cell` and clear the
+    /// screen rows' wrap flags (DECALN).
+    pub(crate) fn fill_screen(&mut self, cell: &Cell) {
+        for row in &mut self.screen {
+            row.fill(cell.clone());
+        }
+        self.wrapped.fill(false);
+        self.row_used.fill(self.cols);
+        self.mark_rows_content(0, self.rows.saturating_sub(1));
+    }
+
     /// Get a row as a slice
     pub fn row(&self, row: usize) -> Option<&[Cell]> {
         if row < self.rows {

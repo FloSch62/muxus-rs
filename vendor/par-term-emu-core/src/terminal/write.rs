@@ -68,6 +68,31 @@ impl Terminal {
         self.flush_print_run();
     }
 
+    /// DECALN (`ESC # 8`, Muxus patch): fill the screen with `E` in the
+    /// pen's colors, reset the margins and home the cursor, as xterm does.
+    /// Used to check a screen's alignment, and by vttest.
+    pub(crate) fn screen_alignment_pattern(&mut self) {
+        let (cols, rows) = self.size();
+        let cell = Cell {
+            c: 'E',
+            combining: None,
+            fg: PackedColor::pack(self.attrs.fg),
+            bg: PackedColor::pack(self.attrs.bg),
+            underline_color: PackedOptionColor::pack(None),
+            flags: Default::default(),
+        };
+        self.active_grid_mut().fill_screen(&cell);
+        self.margins.scroll_region_top = 0;
+        self.margins.scroll_region_bottom = rows.saturating_sub(1);
+        self.margins.left_margin = 0;
+        self.margins.right_margin = cols.saturating_sub(1);
+        self.cursor.goto(0, 0);
+        self.pending_wrap = false;
+        for row in 0..rows {
+            self.triggers.mark_written(row);
+        }
+    }
+
     /// Write a run of printable ASCII (`' '..='~'`) exactly as one
     /// `write_char` per byte would, but a screen row at a time: the pen is
     /// packed once, and each row segment is marked damaged once and written
@@ -1111,6 +1136,27 @@ mod tests {
             term.active_grid().get(1, 0).unwrap().bg(),
             crate::color::Color::Named(crate::color::NamedColor::Blue)
         );
+    }
+
+    #[test]
+    fn decaln_fills_the_screen_with_e_and_resets_the_margins() {
+        let mut term = Terminal::new(4, 3);
+        term.process(b"abcdef\x1b[2;3r\x1b[?69h\x1b[2;3s\x1b[3;3H\x1b[44m\x1b#8");
+        for row in 0..3 {
+            assert_eq!(term.active_grid().row_text(row), "EEEE");
+            assert!(!term.active_grid().is_line_wrapped(row));
+        }
+        let cell = term.active_grid().get(3, 2).unwrap();
+        assert_eq!(cell.bg(), Color::Named(crate::color::NamedColor::Blue));
+        assert!(!cell.flags.wide_char());
+        assert_eq!((term.cursor.col, term.cursor.row), (0, 0));
+        assert_eq!(term.margins.scroll_region_top, 0);
+        assert_eq!(term.margins.scroll_region_bottom, 2);
+        assert_eq!(
+            (term.margins.left_margin, term.margins.right_margin),
+            (0, 3)
+        );
+        assert!(term.active_grid().blank_past_written_part());
     }
 
     #[test]

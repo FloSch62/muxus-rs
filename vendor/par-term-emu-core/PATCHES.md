@@ -174,7 +174,7 @@ vte splits an OSC at every `;`, and the hyperlink handler took the third piece a
 The two-byte escape sequences (DECSC, DECRC, HTS, RI, IND, NEL, RIS, SPA, EPA, DECPAM, DECPNM)
 matched any intermediates, so `ESC # 8` (DECALN) ran DECRC and `ESC ( =` (a character set
 designation) turned on the application keypad. They now match only without intermediates.
-DECALN itself is still not implemented and does nothing.
+DECALN itself is below.
 
 | File | Change |
 |---|---|
@@ -272,6 +272,19 @@ A zero-width character is not repeated.
 | `src/terminal/write.rs` | `flush_print_run` sets it to the run's last byte (once per run, not per byte); `Terminal::repeat_last_graphic`. |
 | `src/terminal/sequences/csi/mod.rs` | The `b` arm without intermediates. |
 | `src/terminal/sequences/csi/tests.rs`, `crates/muxus-term/tests/engine_write.rs` | `rep_repeats_the_character_printed_last` (both), `rep_does_nothing_without_a_character_right_before_it`. |
+
+## DECALN (`ESC # 8`)
+
+The engine had no screen alignment pattern (and until the change above ran DECRC for it). As in
+xterm, DECALN now fills the screen with `E` (in the pen's colors, as xterm.js does), resets the
+top/bottom and left/right margins and homes the cursor; the rows lose their wrap flags.
+
+| File | Change |
+|---|---|
+| `src/terminal/sequences/esc.rs` | The `ESC # 8` arm. |
+| `src/terminal/write.rs` | `Terminal::screen_alignment_pattern`. |
+| `src/grid/mod.rs` | `Grid::fill_screen`. |
+| `src/terminal/write.rs` (tests), `crates/muxus-term/src/terminal.rs` | `decaln_fills_the_screen_with_e_and_resets_the_margins`; `escape_sequences_with_intermediates_are_not_their_plain_forms` expects the pattern and the cursor at home. |
 
 ## Kept as upstream has it
 
