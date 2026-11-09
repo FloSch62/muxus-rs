@@ -1275,6 +1275,21 @@ mod tests {
     }
 
     #[test]
+    fn escape_sequences_with_intermediates_are_not_their_plain_forms() {
+        let mut term = emulator(10, 4);
+        // DECSC at the top left, then DECALN must not restore it.
+        term.write(b"\x1b7\x1b[3;5H\x1b#8");
+        assert_eq!((term.cursor().line, term.cursor().col), (2, 4));
+        // A character set designation ending in `=` is not DECPAM.
+        term.write(b"\x1b(=");
+        assert!(!term.core.application_keypad());
+        term.write(b"\x1b=");
+        assert!(term.core.application_keypad());
+        term.write(b"\x1b(>");
+        assert!(term.core.application_keypad());
+    }
+
+    #[test]
     fn soft_wraps_long_lines() {
         let mut term = emulator(4, 3);
         term.write(b"abcdef");
