@@ -608,13 +608,14 @@ impl ResolvedTarget {
     }
 }
 
+/// A flag that is on: `yes` or `true`, any case.
 fn yes(v: Option<&String>) -> bool {
-    v.is_some_and(|v| v.eq_ignore_ascii_case("yes"))
+    flag(v) == Some(true)
 }
 
-/// OpenSSH reads IdentitiesOnly as a flag, where `true` (any case) also means yes.
-fn yes_or_true(v: Option<&String>) -> bool {
-    v.is_some_and(|v| v.eq_ignore_ascii_case("yes") || v.eq_ignore_ascii_case("true"))
+/// A flag that is off: `no` or `false`, any case.
+fn no(v: Option<&String>) -> bool {
+    flag(v) == Some(false)
 }
 
 const RESOLVED_KEYS: &[&str] = &[
@@ -809,15 +810,13 @@ pub fn resolve_host(
             .iter()
             .map(|f| expand_identity_path(f, &identity_tokens, env))
             .collect(),
-        identities_only: yes_or_true(first.get("identitiesonly")),
+        identities_only: yes(first.get("identitiesonly")),
         forward_agent: yes(first.get("forwardagent")),
         forward_x11: flag(first.get("forwardx11")),
         proxy_jump: parse_proxy_jump_list(first.get("proxyjump").map(String::as_str)),
         proxy_command: parse_proxy_command(first.get("proxycommand").map(String::as_str)),
         forwards,
-        password_only: first
-            .get("pubkeyauthentication")
-            .is_some_and(|v| v.eq_ignore_ascii_case("no"))
+        password_only: no(first.get("pubkeyauthentication"))
             || preferred
                 .is_some_and(|p| !p.to_ascii_lowercase().split(',').any(|m| m == "publickey")),
         connect_timeout: parse_number(first.get("connecttimeout")),
@@ -855,11 +854,12 @@ pub fn resolve_host(
     }
 }
 
-/// yes/no → bool; anything else (including unset) → `None`.
+/// yes/no → bool, with OpenSSH's `true`/`false` spellings in any case; anything else (including
+/// unset) → `None`.
 fn flag(value: Option<&String>) -> Option<bool> {
     match value.map(|v| v.to_ascii_lowercase()).as_deref() {
-        Some("yes") => Some(true),
-        Some("no") => Some(false),
+        Some("yes" | "true") => Some(true),
+        Some("no" | "false") => Some(false),
         _ => None,
     }
 }
@@ -1261,7 +1261,7 @@ pub fn block_to_options(block: &HostBlock) -> HostBlockOptions {
                 if out.identities_only.is_none()
                     && let Some(value) = opt.args.first().filter(|v| !v.is_empty())
                 {
-                    out.identities_only = Some(yes_or_true(Some(value)));
+                    out.identities_only = Some(yes(Some(value)));
                 }
             }
             "identityagent" => match opt.args.first().filter(|a| !a.is_empty()) {
@@ -1301,11 +1301,7 @@ pub fn block_to_options(block: &HostBlock) -> HostBlockOptions {
                 }
             }
             "pubkeyauthentication" => {
-                if opt
-                    .args
-                    .first()
-                    .is_some_and(|a| a.eq_ignore_ascii_case("no"))
-                {
+                if no(opt.args.first()) {
                     out.password_only = Some(true);
                 } else {
                     extras.push(extra());
