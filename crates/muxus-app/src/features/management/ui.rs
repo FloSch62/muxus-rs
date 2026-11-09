@@ -314,6 +314,16 @@ impl Ui {
     }
 }
 
+/// How many NETCONF notifications the navigator keeps, newest first.
+pub const MAX_NOTIFICATIONS: usize = 500;
+
+/// The expanded notification once another arrives at the top of the list:
+/// the same one, a row further down, or none once it falls off the end.
+pub fn notification_open_after_arrival(open: Option<usize>) -> Option<usize> {
+    open.map(|index| index + 1)
+        .filter(|&index| index < MAX_NOTIFICATIONS)
+}
+
 /// `clampNavigator`: at least the minimum, at most 60% of the pane and 640 px.
 pub fn clamp_navigator(width: f32, container: f32) -> f32 {
     let upper = (container * 0.6).clamp(NAVIGATOR_MIN_WIDTH, 640.);
@@ -331,5 +341,16 @@ mod tests {
         assert_eq!(clamp_navigator(900., 800.), 480.);
         assert_eq!(clamp_navigator(300., 300.), 220.);
         assert_eq!(clamp_navigator(333.4, 1200.), 333.);
+    }
+
+    #[test]
+    fn keeps_the_same_notification_open_as_new_ones_arrive() {
+        assert_eq!(notification_open_after_arrival(None), None);
+        assert_eq!(notification_open_after_arrival(Some(0)), Some(1));
+        assert_eq!(notification_open_after_arrival(Some(41)), Some(42));
+        assert_eq!(
+            notification_open_after_arrival(Some(MAX_NOTIFICATIONS - 1)),
+            None
+        );
     }
 }
