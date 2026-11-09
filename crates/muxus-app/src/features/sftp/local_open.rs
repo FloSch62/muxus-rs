@@ -1073,7 +1073,8 @@ mod tests {
         fs::remove_file(&file).unwrap();
         assert!(!check_copy(&file, &mut signature));
         assert!(!check_copy(&file, &mut signature));
-        fs::write(&file, "two").unwrap();
+        // A different size, since both writes can land on the same mtime.
+        fs::write(&file, "two!").unwrap();
         assert!(check_copy(&file, &mut signature));
         assert!(!check_copy(&file, &mut signature));
     }
