@@ -397,9 +397,11 @@ impl ManagementView {
         self.toast(Status::Success, format!("Copied {what}."), cx);
     }
 
-    /// Ask where to save `text`, then write it (`saveTextFile`).
+    /// Ask where to save `text`, then write it (`saveTextFile`). The name can
+    /// carry a device's module name, so it is cleaned like a download's.
     pub(super) fn save_file(&mut self, name: String, text: String, cx: &mut Context<Self>) {
         let directory = dirs_downloads();
+        let name = crate::features::sftp::download::local_file_name(&name);
         let chosen = crate::util::file_dialog::ask_save_path(&directory, &name, cx);
         cx.spawn(async move |this, cx| {
             let Some(path) = chosen.await.path().map(std::path::Path::to_path_buf) else {

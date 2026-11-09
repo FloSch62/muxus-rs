@@ -32,6 +32,7 @@ use super::super::widgets::MONO;
 use super::super::workbench::ListenerForApp;
 use super::kit::{body_text, caption_text, error_alert, error_of, message_error};
 use super::{ToolAction, section, tool_header};
+use crate::features::sftp::download::local_file_name;
 use crate::features::sftp::format::format_size;
 use crate::features::sftp::icons::file_type_icon;
 use muxus_ui::widgets::button::Button;
@@ -856,9 +857,11 @@ impl ManagementView {
         cx.notify();
     }
 
-    /// Ask where to save a download, then write it.
+    /// Ask where to save a download, then write it. The device's file name
+    /// is cleaned first, so a `../` in it cannot lead out of the folder.
     fn save_bytes(&mut self, name: String, data: Vec<u8>, cx: &mut Context<Self>) {
         let directory = dirs_downloads();
+        let name = local_file_name(&name);
         let chosen = crate::util::file_dialog::ask_save_path(&directory, &name, cx);
         cx.spawn(async move |this, cx| {
             let Some(path) = chosen.await.path().map(std::path::Path::to_path_buf) else {
@@ -1246,6 +1249,22 @@ mod tests {
         sort_entries(&mut entries);
         let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b", "B", "C"]);
+    }
+
+    #[test]
+    fn keeps_a_downloaded_device_file_inside_the_downloads_folder() {
+        let folder = dirs_downloads();
+        for name in [
+            "../../.bashrc",
+            "/etc/passwd",
+            "..",
+            "..\\..\\evil.dll",
+            "C:evil",
+        ] {
+            let saved = folder.join(local_file_name(name));
+            assert_eq!(saved.parent(), Some(folder.as_path()), "{name}");
+        }
+        assert_eq!(local_file_name("config.json"), "config.json");
     }
 
     #[test]
