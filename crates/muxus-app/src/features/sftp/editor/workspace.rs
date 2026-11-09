@@ -164,6 +164,13 @@ fn savable(loaded: bool, loading: bool, error: Option<&str>) -> bool {
     loaded && !loading && error.is_none()
 }
 
+/// The text as it goes to the file: the editor inserts `\n` for Enter and pastes, so every
+/// line ends the way the document's line-ending setting says (Monaco's end-of-line sequence).
+fn with_line_endings(text: &str, crlf: bool) -> String {
+    let lf = text.replace("\r\n", "\n");
+    if crlf { lf.replace('\n', "\r\n") } else { lf }
+}
+
 /// Go to Line, open over the editor (Monaco's quick input).
 struct GotoLine {
     path: String,
@@ -664,7 +671,7 @@ impl RemoteEditorWorkspace {
         document.saving = true;
         document.conflict = false;
         let request = EditorFileSaveRequest {
-            content: content.clone(),
+            content: with_line_endings(&content, document.crlf),
             expected_mtime_ms: document.mtime_ms,
             force: Some(force),
         };
@@ -2395,5 +2402,17 @@ mod tests {
         // A reload that failed keeps the old text, which may no longer match the file.
         assert!(!savable(true, false, Some("No such file")));
         assert!(!savable(true, true, None));
+    }
+
+    #[test]
+    fn saving_applies_the_documents_line_ending_to_every_line() {
+        // Enter in a CRLF file inserts a bare newline.
+        assert_eq!(with_line_endings("a\r\nb\nc\r\n", true), "a\r\nb\r\nc\r\n");
+        assert_eq!(with_line_endings("a\r\nb", true), "a\r\nb");
+        assert_eq!(with_line_endings("a\r\nb\r\nc\n", false), "a\nb\nc\n");
+        assert_eq!(with_line_endings("a\nb", false), "a\nb");
+        // A lone carriage return is not a line ending the setting covers.
+        assert_eq!(with_line_endings("a\rb\n", true), "a\rb\r\n");
+        assert_eq!(with_line_endings("a\rb\n", false), "a\rb\n");
     }
 }
