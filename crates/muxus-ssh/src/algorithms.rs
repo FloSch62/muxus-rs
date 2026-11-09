@@ -311,6 +311,26 @@ pub fn host_key_algorithms_preferring(key_type: &str) -> String {
         .join(",")
 }
 
+/// A HostKeyAlgorithms value that asks first for the key types known_hosts already holds for a
+/// host, the way ssh(1) orders its default list: the algorithms of those types in their usual
+/// order, then the rest. Without it a server holding several keys answers with its ed25519 key
+/// and a host recorded only with ECDSA or RSA looks new. `None` when no default algorithm
+/// signs with a recorded type.
+pub fn host_key_algorithms_preferring_known(key_types: &[String]) -> Option<String> {
+    let (known, rest): (Vec<&str>, Vec<&str>) =
+        DEFAULT_SERVER_HOST_KEY
+            .iter()
+            .copied()
+            .partition(|algorithm| {
+                let key_type = match *algorithm {
+                    "rsa-sha2-512" | "rsa-sha2-256" => "ssh-rsa",
+                    other => other,
+                };
+                key_types.iter().any(|t| t == key_type)
+            });
+    (!known.is_empty()).then(|| known.into_iter().chain(rest).collect::<Vec<_>>().join(","))
+}
+
 /// The raw ssh_config algorithm settings of one host.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AlgorithmSettings {
@@ -666,5 +686,19 @@ mod tests {
             host_key_algorithms_preferring("ecdsa-sha2-nistp384")
                 .starts_with("ecdsa-sha2-nistp384,ssh-ed25519,")
         );
+    }
+
+    #[test]
+    fn asks_first_for_the_key_types_known_hosts_holds() {
+        assert_eq!(
+            host_key_algorithms_preferring_known(&v(&["ssh-rsa", "ecdsa-sha2-nistp256"]))
+                .as_deref(),
+            Some(
+                "ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256,ssh-rsa,ssh-ed25519,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521"
+            )
+        );
+        assert_eq!(host_key_algorithms_preferring_known(&[]), None);
+        // A type the default list never offers changes nothing.
+        assert_eq!(host_key_algorithms_preferring_known(&v(&["ssh-dss"])), None);
     }
 }

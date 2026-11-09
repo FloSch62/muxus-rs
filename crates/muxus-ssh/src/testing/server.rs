@@ -23,6 +23,8 @@ pub struct KbdRound {
 #[derive(Clone)]
 pub struct ServerSpec {
     pub host_key: PrivateKey,
+    /// More host keys of other types, offered after `host_key`.
+    pub extra_host_keys: Vec<PrivateKey>,
     pub preferred: Preferred,
     pub methods: Vec<MethodKind>,
     pub password: Option<String>,
@@ -76,6 +78,7 @@ impl ServerSpec {
                 russh::keys::Algorithm::Ed25519,
             )
             .unwrap(),
+            extra_host_keys: Vec::new(),
             preferred: Preferred::default(),
             methods: vec![
                 MethodKind::Password,
@@ -188,7 +191,10 @@ pub async fn start(spec: ServerSpec) -> TestServer {
     let log = Arc::new(Mutex::new(ServerLog::default()));
     let host_key = spec.host_key.public_key().clone();
     let config = Arc::new(russh::server::Config {
-        keys: vec![spec.host_key.clone()],
+        keys: std::iter::once(&spec.host_key)
+            .chain(&spec.extra_host_keys)
+            .cloned()
+            .collect(),
         preferred: spec.preferred.clone(),
         methods: MethodSet::from(spec.methods.as_slice()),
         auth_rejection_time: std::time::Duration::from_millis(0),
