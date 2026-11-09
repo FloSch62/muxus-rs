@@ -388,14 +388,15 @@ impl Terminal {
             // Spacer is on same row, already marked dirty above
         }
 
-        // Handle delayed autowrap for width-1 characters
-        if self.modes.auto_wrap && char_width == 1 && self.cursor.col >= cols {
-            // Stay at last column and set wrap-pending; do not move yet
+        // Delayed autowrap: a character (narrow or wide) that ends in the
+        // last column leaves the cursor there with the wrap pending, so the
+        // next character starts the next row instead of overwriting it (a
+        // wide character's spacer included).
+        if self.cursor.col >= cols {
             self.cursor.col = cols - 1;
-            self.pending_wrap = true;
-        } else if self.cursor.col >= cols {
-            // Fallback: if auto-wrap is disabled or some edge case, clamp to last column
-            self.cursor.col = cols - 1;
+            if self.modes.auto_wrap {
+                self.pending_wrap = true;
+            }
         }
     }
 
@@ -974,6 +975,29 @@ mod tests {
 
         // First row should be marked as wrapped
         assert!(term.active_grid().is_line_wrapped(0));
+    }
+
+    #[test]
+    fn a_wide_character_ending_in_the_last_column_leaves_the_wrap_pending() {
+        let mut term = Terminal::new(6, 3);
+        term.process("abcd中".as_bytes());
+        assert_eq!(term.cursor.col, 5);
+        assert!(term.pending_wrap);
+
+        // The next character starts the next row; the spacer stays.
+        term.process(b"x");
+        let grid = term.active_grid();
+        assert_eq!(grid.get(4, 0).unwrap().c, '中');
+        assert!(grid.get(5, 0).unwrap().flags.wide_char_spacer());
+        assert_eq!(grid.get(0, 1).unwrap().c, 'x');
+        assert!(grid.is_line_wrapped(0));
+        assert_eq!((term.cursor.col, term.cursor.row), (1, 1));
+
+        // Without autowrap the cursor stays in the last column.
+        let mut term = Terminal::new(6, 3);
+        term.process("\x1b[?7labcd中".as_bytes());
+        assert_eq!(term.cursor.col, 5);
+        assert!(!term.pending_wrap);
     }
 
     #[test]

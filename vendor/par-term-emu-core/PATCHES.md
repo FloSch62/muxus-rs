@@ -191,6 +191,19 @@ xterm and xterm.js take SGR 21 as doubly underlined (ECMA-48); the engine ignore
 OSC 4, 104 and 110–112 no longer reach the engine: Muxus answers and applies them itself
 (`crates/muxus-term/src/filter.rs`, `muxus_term::terminal::Emulator`), on top of the theme.
 
+## A wide character in the last column
+
+A character that ends in the last column leaves the cursor there with the wrap pending (DECAWM),
+so the next character starts the next row. The engine did this for narrow characters only: after
+a wide character it clamped the cursor onto the spacer without the pending wrap, and the next
+character overwrote the spacer (6 columns, `abcd中x`: the `x` landed in the sixth column and was
+lost from copies). xterm and xterm.js wrap there.
+
+| File | Change |
+|---|---|
+| `src/terminal/write.rs` | The pending wrap is set whenever a character ends at the last column, whatever its width. |
+| `src/terminal/write.rs` (tests), `crates/muxus-term/tests/engine_write.rs` | `a_wide_character_ending_in_the_last_column_leaves_the_wrap_pending`, `a_wide_character_in_the_last_column_wraps_the_next_character`. |
+
 ## Kept as upstream has it
 
 **OpenTelemetry (`src/otel.rs`, `src/otel/`, 0.80.0).** Always compiled, but without the
