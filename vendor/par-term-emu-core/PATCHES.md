@@ -137,6 +137,16 @@ stayed on, every key then reaching the shell as a kitty key report.
 | `src/terminal/sequences/csi/keyboard.rs` | A count of 0 pops one entry. |
 | `src/terminal/tests/terminal_tests.rs` | `test_kitty_keyboard_pop_without_a_count_pops_one`. |
 
+## The underline color in the semicolon form (SGR 58)
+
+SGR 58 read the colon form only (`58:5:n`, `58:2::r:g:b`). In the semicolon form its arguments
+were taken as SGR codes: `CSI 4;58;5;7 m` turned on blink and inverse, and `58;2;255;0;0`
+ended in an SGR 0. It now goes through `parse_extended_color` as 38 and 48 do.
+
+| File | Change |
+|---|---|
+| `src/terminal/sequences/csi/style.rs` | SGR 58 parses both forms. The test is Muxus's `reads_the_semicolon_form_of_the_underline_color` (`crates/muxus-term/src/terminal.rs`). |
+
 ## Kept as upstream has it
 
 **OpenTelemetry (`src/otel.rs`, `src/otel/`, 0.80.0).** Always compiled, but without the
