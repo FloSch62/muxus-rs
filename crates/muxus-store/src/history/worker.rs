@@ -789,6 +789,8 @@ impl Worker {
         };
         if !exists {
             file.write_all(&SEGMENT_HEADER)?;
+            // A crash must not leave a partial whose header never reached the disk.
+            file.sync_data()?;
         }
         Ok(Writer {
             part,
@@ -1086,69 +1088,21 @@ impl Worker {
     }
 
     /// Close sessions a crash left active: finalize every partial segment
-    /// they left behind and mark them disconnected.
+    /// they left behind and mark them disconnected. A session whose parts
+    /// cannot be recovered is still closed, so it never stops the store from
+    /// opening.
     fn recover_interrupted_sessions(&mut self) -> Outcome<()> {
         let active: Vec<String> = {
             let mut statement = self
                 .db
-                .prepare("SELECT id, current_part FROM session_logs WHERE status = 'active'")?;
+                .prepare("SELECT id FROM session_logs WHERE status = 'active'")?;
             statement
                 .query_map([], |row| row.get(0))?
                 .collect::<rusqlite::Result<_>>()?
         };
         for id in active {
-            let directory = self.session_directory(&id);
-            if directory.exists() {
-                let mut entries: Vec<(u32, PathBuf)> = Vec::new();
-                for entry in fs::read_dir(&directory)? {
-                    let entry = entry?;
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    if let Some(part) = partial_part_number(&name) {
-                        entries.push((part, entry.path()));
-                    }
-                }
-                entries.sort();
-                for (part, partial) in entries {
-                    let decoded = decode_segment(&fs::read(&partial)?)?;
-                    if decoded.events.is_empty() {
-                        remove_file_if_exists(&partial)?;
-                        continue;
-                    }
-                    let relative = self.finalize_partial(&id, part, &partial)?;
-                    let raw_bytes: u64 = decoded
-                        .events
-                        .iter()
-                        .map(|event| event.raw.len() as u64)
-                        .sum();
-                    let normalized: i64 = self.db.query_row(
-                        "
-          SELECT COALESCE(SUM(length(CAST(normalized_text AS BLOB))), 0) AS bytes
-          FROM transcript_chunks WHERE session_id = ? AND part_number = ?
-        ",
-                        params![id, part],
-                        |row| row.get(0),
-                    )?;
-                    let stored_bytes = fs::metadata(self.root.join(&relative))?.len();
-                    self.db.execute(
-                        "
-          INSERT OR REPLACE INTO session_parts(
-            session_id, part_number, filename, raw_bytes, stored_bytes,
-            event_count, normalized_bytes, first_sequence, last_sequence
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ",
-                        params![
-                            id,
-                            part,
-                            relative,
-                            raw_bytes as i64,
-                            stored_bytes as i64,
-                            decoded.events.len() as i64,
-                            normalized,
-                            decoded.events.first().map(|event| event.sequence as i64),
-                            decoded.events.last().map(|event| event.sequence as i64)
-                        ],
-                    )?;
-                }
+            if let Err(Failure(error)) = self.finalize_partials(&id) {
+                tracing::warn!(session = %id, %error, "could not recover an interrupted session log");
             }
             self.db.execute(
                 "
@@ -1160,6 +1114,71 @@ impl Worker {
       WHERE id = ?
     ",
                 [&id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Finalize every partial segment in a session's directory. A partial
+    /// without a readable header (a crash before it reached the disk) holds
+    /// no events: it is removed, or set aside when it holds more than a
+    /// header could.
+    fn finalize_partials(&mut self, id: &str) -> Outcome<()> {
+        let directory = self.session_directory(id);
+        if !directory.exists() {
+            return Ok(());
+        }
+        let mut entries: Vec<(u32, PathBuf)> = Vec::new();
+        for entry in fs::read_dir(&directory)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Some(part) = partial_part_number(&name) {
+                entries.push((part, entry.path()));
+            }
+        }
+        entries.sort();
+        for (part, partial) in entries {
+            let Ok(decoded) = decode_segment(&fs::read(&partial)?) else {
+                set_aside_damaged_partial(&partial)?;
+                continue;
+            };
+            if decoded.events.is_empty() {
+                remove_file_if_exists(&partial)?;
+                continue;
+            }
+            let relative = self.finalize_partial(id, part, &partial)?;
+            let raw_bytes: u64 = decoded
+                .events
+                .iter()
+                .map(|event| event.raw.len() as u64)
+                .sum();
+            let normalized: i64 = self.db.query_row(
+                "
+          SELECT COALESCE(SUM(length(CAST(normalized_text AS BLOB))), 0) AS bytes
+          FROM transcript_chunks WHERE session_id = ? AND part_number = ?
+        ",
+                params![id, part],
+                |row| row.get(0),
+            )?;
+            let stored_bytes = fs::metadata(self.root.join(&relative))?.len();
+            self.db.execute(
+                "
+          INSERT OR REPLACE INTO session_parts(
+            session_id, part_number, filename, raw_bytes, stored_bytes,
+            event_count, normalized_bytes, first_sequence, last_sequence
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ",
+                params![
+                    id,
+                    part,
+                    relative,
+                    raw_bytes as i64,
+                    stored_bytes as i64,
+                    decoded.events.len() as i64,
+                    normalized,
+                    decoded.events.first().map(|event| event.sequence as i64),
+                    decoded.events.last().map(|event| event.sequence as i64)
+                ],
             )?;
         }
         Ok(())
@@ -1609,6 +1628,23 @@ fn set_private_file(path: &Path) -> io::Result<()> {
     #[cfg(not(unix))]
     let _ = path;
     Ok(())
+}
+
+/// Get a partial segment with an unreadable header out of the way. One no
+/// longer than a header is a crash before the header reached the disk and
+/// is removed; anything longer is kept beside it as `….muxlog.partial.damaged`.
+fn set_aside_damaged_partial(path: &Path) -> io::Result<()> {
+    let length = match fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if length <= SEGMENT_HEADER.len() as u64 {
+        return remove_file_if_exists(path);
+    }
+    let mut damaged = path.as_os_str().to_owned();
+    damaged.push(".damaged");
+    fs::rename(path, damaged)
 }
 
 /// `rmSync(path, { force: true })`.
