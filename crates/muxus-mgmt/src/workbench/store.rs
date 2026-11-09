@@ -227,13 +227,16 @@ impl WorkbenchState {
         let hidden = run.hidden;
         let id = run.id.clone();
         self.runs.insert(0, run);
-        // Drop the oldest finished runs; live subscriptions stay.
+        // Drop the oldest finished runs, failed and cancelled ones included;
+        // running requests and live subscriptions stay.
         while self.runs.len() > MAX_RUNS {
-            let index = self
+            let Some(index) = self
                 .runs
                 .iter()
-                .rposition(|candidate| candidate.status == RunStatus::Ok)
-                .unwrap_or(self.runs.len() - 1);
+                .rposition(|candidate| !candidate.is_active())
+            else {
+                break;
+            };
             self.runs.remove(index);
         }
         if !hidden {
@@ -364,6 +367,22 @@ mod tests {
             assert_eq!(state.selected_run_id, None);
         });
         assert!(store.revision() >= 2);
+        // Failed runs age out too, and never push a live one out.
+        store.update(|state| {
+            state.add_run(run("subscription", RunStatus::Streaming));
+            state.add_run(run("ok", RunStatus::Ok));
+            for index in 0..MAX_RUNS + 5 {
+                state.add_run(run(&format!("e{index}"), RunStatus::Error));
+            }
+        });
+        store.read(|state| {
+            assert_eq!(state.runs.len(), MAX_RUNS);
+            assert!(state.run("live").is_some());
+            assert!(state.run("subscription").is_some());
+            assert!(state.run("ok").is_none());
+            assert!(state.run("e6").is_none());
+            assert!(state.run("e7").is_some());
+        });
         let generation = store.read(|state| state.explorer.generation);
         store.update(|state| state.reset_explorer(Some(ExplorerScope::Config)));
         store.read(|state| {
