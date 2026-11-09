@@ -26,7 +26,8 @@ pub struct Modifiers {
     pub meta: bool,
     pub alt_graph: bool,
     pub caps_lock: bool,
-    pub num_lock: bool,
+    /// `None` when the local state is unknown: the remote Num Lock is then left alone.
+    pub num_lock: Option<bool>,
     pub scroll_lock: bool,
 }
 
@@ -426,7 +427,7 @@ impl VncKeyboard {
         let mut keysym = keysym_for(event, self.platform);
         let caps_lock = Some(event.modifiers.caps_lock);
         // NumLock state is not available on macOS: unknown rather than off.
-        let num_lock = (!self.is_mac()).then_some(event.modifiers.num_lock);
+        let num_lock = event.modifiers.num_lock.filter(|_| !self.is_mac());
         let locks = Some((num_lock, caps_lock));
 
         // Windows doesn't have a proper AltGr, but handles it using fake Ctrl+Alt. The remote
@@ -732,7 +733,7 @@ mod tests {
         let now = Instant::now();
         let mut shifted = event("KeyA", "A", true);
         shifted.modifiers.caps_lock = true;
-        shifted.modifiers.num_lock = true;
+        shifted.modifiers.num_lock = Some(true);
         let out = keyboard.key(&shifted, now);
         assert_eq!(
             sent(&out),
@@ -740,9 +741,26 @@ mod tests {
         );
         // The fix is not repeated before the server reports its LEDs again.
         let mut next = event("KeyB", "B", true);
-        next.modifiers.num_lock = true;
+        next.modifiers.num_lock = Some(true);
         let out = keyboard.key(&next, now);
         assert_eq!(sent(&out), ["down 42 KeyB"]);
+    }
+
+    #[test]
+    fn leaves_the_remote_num_lock_alone_when_the_local_state_is_unknown() {
+        let mut keyboard = VncKeyboard::new(Platform::Other);
+        keyboard.set_remote_locks(false, true);
+        let now = Instant::now();
+        let out = keyboard.key(&event("KeyA", "a", true), now);
+        assert_eq!(sent(&out), ["down 61 KeyA"]);
+        // A known local state still brings the remote one in line.
+        let mut known = event("KeyB", "b", true);
+        known.modifiers.num_lock = Some(false);
+        let out = keyboard.key(&known, now);
+        assert_eq!(
+            sent(&out),
+            ["down ff7f NumLock", "up ff7f NumLock", "down 62 KeyB"]
+        );
     }
 
     #[test]

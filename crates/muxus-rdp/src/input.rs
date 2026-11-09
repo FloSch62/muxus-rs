@@ -21,7 +21,9 @@ pub struct Modifiers {
     /// and `alt` false.
     pub alt_graph: bool,
     pub caps_lock: bool,
-    pub num_lock: bool,
+    /// `None` when the local state is unknown (GPUI does not report it): the server's Num Lock
+    /// is then left as this client last set it.
+    pub num_lock: Option<bool>,
     pub scroll_lock: bool,
 }
 
@@ -167,6 +169,13 @@ pub struct RdpKeyboard {
     lock_state: Option<(bool, bool, bool)>,
 }
 
+/// The Num Lock state a synchronize event carries when the local state is unknown and the
+/// server has not been told one yet. A synchronize event sets every lock, so some value has to
+/// go out; with Num Lock on, the keypad keys this client sends as keypad scancodes (the
+/// operators and the decimal key) type what they type locally, where off would turn the
+/// decimal key into Delete.
+const ASSUMED_NUM_LOCK: bool = true;
+
 impl RdpKeyboard {
     pub fn new() -> Self {
         Self::default()
@@ -183,6 +192,14 @@ impl RdpKeyboard {
             // held Caps Lock over and over; modifiers have nothing to repeat.
             if event.repeat && (modifier || is_lock_code(&event.code)) {
                 return Some(ops);
+            }
+            // Pressing Num Lock toggles the server's lock; when the local state is unknown,
+            // remember that so the next synchronize event does not undo it.
+            if event.code == "NumLock"
+                && event.modifiers.num_lock.is_none()
+                && let Some(state) = &mut self.lock_state
+            {
+                state.1 = !state.1;
             }
             // A lock key toggles the server's lock itself; syncing first could undo that.
             if !is_lock_code(&event.code) && self.sync_lock_keys(event, &mut ops) {
@@ -246,11 +263,16 @@ impl RdpKeyboard {
     /// Tell the server the lock-key state when it differs from what it was last told (first
     /// key, or a lock toggled while focus was elsewhere). Returns whether a synchronize event
     /// went out. Windows releases every key on one, so sending it before each key dropped Shift
-    /// from every letter typed.
+    /// from every letter typed. An unknown Num Lock state never triggers one and keeps the
+    /// value the server was last given.
     fn sync_lock_keys(&mut self, event: &KeyEvent, ops: &mut Vec<InputOp>) -> bool {
+        let num_lock = event.modifiers.num_lock.unwrap_or_else(|| {
+            self.lock_state
+                .map_or(ASSUMED_NUM_LOCK, |(_, num_lock, _)| num_lock)
+        });
         let state = (
             event.modifiers.scroll_lock,
-            event.modifiers.num_lock,
+            num_lock,
             event.modifiers.caps_lock,
         );
         if self.lock_state == Some(state) {
@@ -482,7 +504,7 @@ mod tests {
         // A synchronize event releases every key on Windows; only the first key may send one.
         assert_eq!(
             rdp.sent,
-            ["sync 000", "down 2a", "down 1e", "up 1e", "down 30"]
+            ["sync 010", "down 2a", "down 1e", "up 1e", "down 30"]
         );
     }
 
@@ -498,7 +520,53 @@ mod tests {
                 ..SHIFT
             },
         ));
-        assert_eq!(rdp.sent, ["sync 001", "down 2a", "down 1e"]);
+        assert_eq!(rdp.sent, ["sync 011", "down 2a", "down 1e"]);
+    }
+
+    #[test]
+    fn leaves_num_lock_as_last_set_when_the_local_state_is_unknown() {
+        let mut rdp = Recorder::new();
+        // Unknown on the first key: the assumed state goes out once.
+        rdp.key(down("KeyA", KeyState::default()));
+        // Num Lock pressed here toggles the server's lock, and the client follows it.
+        rdp.key(down("NumLock", KeyState::default()));
+        rdp.key(up("NumLock", KeyState::default()));
+        rdp.key(down("KeyB", KeyState::default()));
+        // A Caps Lock change syncs again, keeping the toggled Num Lock.
+        rdp.key(down(
+            "KeyC",
+            KeyState {
+                caps: true,
+                ..KeyState::default()
+            },
+        ));
+        assert_eq!(
+            rdp.sent,
+            [
+                "sync 010",
+                "down 1e",
+                "down e045",
+                "up e045",
+                "down 30",
+                "sync 001",
+                "down 2e"
+            ]
+        );
+    }
+
+    #[test]
+    fn syncs_a_known_num_lock_state() {
+        let mut rdp = Recorder::new();
+        let mut event = down("KeyA", KeyState::default());
+        event.modifiers.num_lock = Some(false);
+        rdp.key(event.clone());
+        rdp.key(down("KeyB", KeyState::default()));
+        event.modifiers.num_lock = Some(true);
+        rdp.key(event);
+        assert_eq!(
+            rdp.sent,
+            ["sync 000", "down 1e", "down 30", "sync 010", "down 1e"]
+        );
     }
 
     #[test]
@@ -582,7 +650,7 @@ mod tests {
                 ..KeyState::default()
             },
         ));
-        assert_eq!(rdp.sent, ["sync 000", "down e038", "down 10", "down 11"]);
+        assert_eq!(rdp.sent, ["sync 010", "down e038", "down 10", "down 11"]);
     }
 
     #[test]
