@@ -8,6 +8,12 @@ use super::utf8::Utf8Stream;
 /// clamped, so a hostile `ESC[999999999B` cannot allocate rows without end.
 const MAX_CSI_PARAM: i64 = 65_535;
 
+/// How far past the text already there an escape sequence may move the
+/// cursor (or insert blanks). No real screen is this tall or wide, and it
+/// keeps a repeated `ESC[65535B`, or `ESC[65535C` before each character,
+/// from growing the rows without end within one write.
+const MAX_SCREEN_EXTENT: usize = 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Text,
@@ -201,6 +207,7 @@ impl TerminalTextNormalizer {
             '7' => self.saved_cursor = (self.cursor_row, self.cursor_col),
             '8' => {
                 (self.cursor_row, self.cursor_col) = self.saved_cursor;
+                self.clamp_cursor();
                 self.ensure_row(self.cursor_row);
             }
             'D' => {
@@ -279,7 +286,10 @@ impl TerminalTextNormalizer {
                 let col = self.cursor_col;
                 let row = self.ensure_row(self.cursor_row);
                 let at = col.min(row.len());
-                row.splice(at..at, std::iter::repeat_n(' ', amount));
+                // Blanks push the text right but never past the screen edge.
+                let limit = row.len().max(MAX_SCREEN_EXTENT);
+                row.splice(at..at, std::iter::repeat_n(' ', amount.min(limit - at)));
+                row.truncate(limit);
             }
             'X' => {
                 self.set_row_time(self.cursor_row);
@@ -293,7 +303,17 @@ impl TerminalTextNormalizer {
             'u' => (self.cursor_row, self.cursor_col) = self.saved_cursor,
             _ => {}
         }
+        self.clamp_cursor();
         self.ensure_row(self.cursor_row);
+    }
+
+    /// Keep an escape-driven cursor within the rows and columns already
+    /// written, or within a screen's extent from the top-left corner.
+    fn clamp_cursor(&mut self) {
+        let last_row = self.rows.len().max(MAX_SCREEN_EXTENT) - 1;
+        self.cursor_row = self.cursor_row.min(last_row);
+        let row_len = self.rows.get(self.cursor_row).map_or(0, Vec::len);
+        self.cursor_col = self.cursor_col.min(row_len.max(MAX_SCREEN_EXTENT - 1));
     }
 
     fn erase_display(&mut self, mode: i64) {

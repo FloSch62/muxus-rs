@@ -446,8 +446,29 @@ fn applies_cursor_and_erase_operations() {
     // Absurd cursor moves are clamped instead of allocating without end.
     let mut huge = TerminalTextNormalizer::default();
     let committed = huge.write(b"x\x1b[999999999999B", now);
-    assert_eq!(committed.matches('\n').count(), 65_535 - 4);
+    assert_eq!(committed.matches('\n').count(), 1_023 - 4);
     assert_eq!(huge.finish(), "");
+}
+
+#[test]
+fn repeated_huge_cursor_moves_stay_within_one_screen() {
+    let now = "2026-01-01T00:00:00.000Z";
+    // Moving down again and again within one write stops at the screen edge.
+    let mut down = TerminalTextNormalizer::default();
+    let committed = down.write("\x1b[65535B".repeat(100).as_bytes(), now);
+    assert_eq!(committed.matches('\n').count(), 1_023 - 4);
+    // So does moving right before every character.
+    let mut right = TerminalTextNormalizer::default();
+    right.write("\x1b[65535Cx".repeat(100).as_bytes(), now);
+    let line = right.finish();
+    assert_eq!(line.chars().count(), 1_024 + 99);
+    assert_eq!(line.trim_start(), "x".repeat(100));
+    // Inserted blanks push text off the screen edge instead of widening the
+    // line.
+    let mut insert = TerminalTextNormalizer::default();
+    insert.write("ab\x1b[1G\x1b[65535@".repeat(100).as_bytes(), now);
+    insert.write(b"cd", now);
+    assert_eq!(insert.finish(), "cd");
 }
 
 #[test]
