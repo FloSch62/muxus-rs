@@ -1240,6 +1240,28 @@ mod tests {
     }
 
     #[test]
+    fn reads_colon_truecolor_with_and_without_the_color_space() {
+        let mut term = emulator(10, 2);
+        term.write(b"\x1b[38:2::10:20:30;48:2::40:50:60;4;58:2::70:80:90mA");
+        term.write(b"\x1b[0;38:2:11:21:31;4;58:2:71:81:91mB");
+        let cells = term.styled_line(term.scrollback_len()).unwrap();
+        let style = cells[0].style;
+        assert_eq!(
+            (style.fg, style.bg, style.underline_color),
+            (
+                CellColor::Rgb(10, 20, 30),
+                CellColor::Rgb(40, 50, 60),
+                Some(CellColor::Rgb(70, 80, 90))
+            )
+        );
+        let style = cells[1].style;
+        assert_eq!(
+            (style.fg, style.underline_color),
+            (CellColor::Rgb(11, 21, 31), Some(CellColor::Rgb(71, 81, 91)))
+        );
+    }
+
+    #[test]
     fn soft_wraps_long_lines() {
         let mut term = emulator(4, 3);
         term.write(b"abcdef");

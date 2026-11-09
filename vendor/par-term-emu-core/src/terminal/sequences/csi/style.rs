@@ -207,13 +207,19 @@ fn parse_extended_color(param_slice: &[u16], iter: &mut ParamsIter) -> Option<Co
 
 /// Parse the colon sub-parameter color form (`38:2:r:g:b` / `38:5:n`);
 /// missing RGB components default to 0.
+///
+/// Muxus patch: ITU T.416 puts a color-space id before the components
+/// (`38:2:cs:r:g:b`, usually written `38:2::r:g:b`); with six or more
+/// sub-parameters the components follow that slot, as in xterm.
 fn parse_extended_color_subparams(param_slice: &[u16]) -> Option<Color> {
     match param_slice.get(1).copied() {
-        Some(2) => Some(Color::Rgb(
-            param_slice.get(2).copied().unwrap_or(0) as u8,
-            param_slice.get(3).copied().unwrap_or(0) as u8,
-            param_slice.get(4).copied().unwrap_or(0) as u8,
-        )),
+        Some(2) => {
+            let first = if param_slice.len() >= 6 { 3 } else { 2 };
+            let component = |offset: usize| {
+                param_slice.get(first + offset).copied().unwrap_or(0) as u8
+            };
+            Some(Color::Rgb(component(0), component(1), component(2)))
+        }
         Some(5) => param_slice
             .get(2)
             .map(|&idx| Color::from_ansi_code(idx as u8)),

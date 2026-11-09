@@ -524,12 +524,13 @@ mod tests {
     #[test]
     fn round_trips_through_a_replay() {
         let source = replay(
-            "\x1b[32mgreen\x1b[0m\r\nab  cd\r\n\x1b[7minverse\x1b[0m\r\nlong line wrapping",
+            "\x1b[32mgreen\x1b[0m\r\nab  cd\r\n\x1b[7minverse\x1b[0m\r\nlong line wrapping\r\n\
+             \x1b[4:3;58;2;10;20;30mcurly\x1b[0;4;58;5;7m under\x1b[0m",
             10,
-            6,
+            8,
         );
         let data = serialize_buffer(&source, None);
-        let copy = replay(&data, 10, 6);
+        let copy = replay(&data, 10, 8);
         for line in 0..source.length() {
             assert_eq!(
                 line_text(&copy, line),
