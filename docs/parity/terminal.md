@@ -29,7 +29,9 @@ splits the output at the sequences Muxus handles itself:
 - **ED 2** scrolls the screen into the scrollback (`scrollOnEraseInDisplay`) instead of blanking it.
 - **OSC 7/133/633** feed the ported `CwdTracker`/`CommandTracker`; **OSC 52** is write-only
   (queries answered empty on the same transport); **OSC 10/11/12** are answered from the theme and
-  set overrides, **OSC 4/104** the palette on top of the theme; **XTPUSHCOLORS/XTPOPCOLORS/
+  set overrides, **OSC 4/104** the palette on top of the theme, **OSC 5/105** (and OSC 4
+  256–260) xterm's special colors (bold, underline, blink, reverse, italic: answered and saved,
+  not painted, as in xterm with its `colorBDMode`-style switches off); **XTPUSHCOLORS/XTPOPCOLORS/
   XTREPORTCOLORS** (`CSI # P/Q/R`) save and restore those colors on xterm's ten-slot stack (RIS
   empties it); **XTWINOPS** answers only 14/16/18 t like xterm with Muxus's `windowOptions`;
   **DECSET 9/1000/1002/1003/1006/1016** drive xterm's mouse protocols; **DECSCUSR** overrides the

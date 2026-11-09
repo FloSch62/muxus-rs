@@ -95,6 +95,10 @@ pub struct StyledCell {
     pub hyperlink: Option<u32>,
 }
 
+/// xterm's special colors after the 256 palette entries: bold, underline, blink, reverse and
+/// italic (OSC 4 256–260, OSC 5 0–4).
+pub const SPECIAL_COLORS: usize = 5;
+
 /// Color overrides programs set with OSC 10/11/12 and OSC 4 (xterm applies them on top of the
 /// theme).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -104,6 +108,10 @@ pub struct ColorOverrides {
     pub cursor: Option<Rgba>,
     /// Palette entries by index.
     pub palette: BTreeMap<u8, Rgba>,
+    /// The special colors ([`SPECIAL_COLORS`]). They are kept, reported and saved with the
+    /// others but not painted with: xterm paints them only while its `colorBDMode`-style
+    /// switches are on, which they are not by default, and Muxus has no such switches.
+    pub special: [Option<Rgba>; SPECIAL_COLORS],
 }
 
 /// The theme colors in effect: the resolved palette with program overrides applied.
