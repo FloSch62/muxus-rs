@@ -20,21 +20,23 @@ impl Terminal {
         byte: u8,
     ) {
         debug::log_esc_dispatch(intermediates, byte as char);
+        // Muxus patch: the two-byte sequences match only without intermediates. With a
+        // wildcard, `ESC # 8` (DECALN) ran DECRC and `ESC ( =` (a character set) DECPAM.
         match (byte, intermediates) {
-            (b'7', _) => {
+            (b'7', []) => {
                 // Save cursor (DECSC)
                 self.save_cursor();
             }
-            (b'8', _) => {
+            (b'8', []) => {
                 // Restore cursor (DECRC)
                 self.restore_cursor();
             }
-            (b'H', _)
+            (b'H', [])
                 // Set tab stop at current column (HTS)
                 if self.cursor.col < self.tab_stops.len() => {
                     self.tab_stops[self.cursor.col] = true;
                 }
-            (b'M', _) => {
+            (b'M', []) => {
                 // Reverse index (RI) - move cursor up one line, scroll if at top
                 self.pending_wrap = false;
                 if self.cursor.row > self.margins.scroll_region_top {
@@ -46,7 +48,7 @@ impl Terminal {
                     self.scroll_region_down_tracked(1, scroll_top, scroll_bottom);
                 }
             }
-            (b'D', _) => {
+            (b'D', []) => {
                 // Index (IND): move cursor down one line; if at bottom of scroll region, scroll the region.
                 // If outside left/right margins (DECLRMM), ignore scroll-at-bottom to match iTerm2.
                 self.pending_wrap = false;
@@ -66,7 +68,7 @@ impl Terminal {
                     self.scroll_region_up_tracked(1, scroll_top, scroll_bottom);
                 }
             }
-            (b'E', _) => {
+            (b'E', []) => {
                 // Next line (NEL): move to first column of next line; if at bottom of scroll region, scroll the region.
                 self.pending_wrap = false;
                 self.cursor.col = if self.margins.use_lr_margins {
@@ -90,21 +92,21 @@ impl Terminal {
                     self.scroll_region_up_tracked(1, scroll_top, scroll_bottom);
                 }
             }
-            (b'c', _) => {
+            (b'c', []) => {
                 // Reset to initial state (RIS)
                 self.reset();
             }
-            (b'V', _) => {
+            (b'V', []) => {
                 // SPA - Start of Protected Area (DECSCA)
                 // Enable character protection for subsequent characters
                 self.modes.char_protected = true;
             }
-            (b'W', _) => {
+            (b'W', []) => {
                 // EPA - End of Protected Area (DECSCA)
                 // Disable character protection
                 self.modes.char_protected = false;
             }
-            (b'=', _) => {
+            (b'=', []) => {
                 // DECPAM - Application keypad mode
                 if !self.modes.application_keypad {
                     self.modes.application_keypad = true;
@@ -114,7 +116,7 @@ impl Terminal {
                         ));
                 }
             }
-            (b'>', _) => {
+            (b'>', []) => {
                 // DECPNM - Numeric keypad mode
                 if self.modes.application_keypad {
                     self.modes.application_keypad = false;

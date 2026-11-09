@@ -169,6 +169,17 @@ vte splits an OSC at every `;`, and the hyperlink handler took the third piece a
 |---|---|
 | `src/terminal/sequences/osc/mod.rs` | `handle_osc_hyperlink` joins the pieces after the parameters with `;`. The test is Muxus's `keeps_semicolons_in_hyperlink_urls` (`crates/muxus-term/src/terminal.rs`). |
 
+## Escape sequences with intermediates
+
+The two-byte escape sequences (DECSC, DECRC, HTS, RI, IND, NEL, RIS, SPA, EPA, DECPAM, DECPNM)
+matched any intermediates, so `ESC # 8` (DECALN) ran DECRC and `ESC ( =` (a character set
+designation) turned on the application keypad. They now match only without intermediates.
+DECALN itself is still not implemented and does nothing.
+
+| File | Change |
+|---|---|
+| `src/terminal/sequences/esc.rs` | Those arms match `[]` instead of `_`. The test is Muxus's `escape_sequences_with_intermediates_are_not_their_plain_forms` (`crates/muxus-term/src/terminal.rs`). |
+
 ## Kept as upstream has it
 
 **OpenTelemetry (`src/otel.rs`, `src/otel/`, 0.80.0).** Always compiled, but without the
