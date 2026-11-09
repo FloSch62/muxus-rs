@@ -74,13 +74,19 @@ struct DiffieHellman {
 }
 
 impl DiffieHellman {
-    /// A private key as long as the prime, like noVNC's `DHCipher`.
-    fn new(prime: &[u8]) -> Self {
-        Self {
-            private: BigUint::from_bytes_be(&random_bytes(prime.len())),
-            prime: BigUint::from_bytes_be(prime),
-            len: prime.len(),
+    /// A private key as long as the prime, like noVNC's `DHCipher`. `None` when the server
+    /// sent no usable modulus (empty, zero or one): modular arithmetic on it would panic or
+    /// yield a constant.
+    fn new(prime: &[u8]) -> Option<Self> {
+        let modulus = BigUint::from_bytes_be(prime);
+        if modulus <= BigUint::from(1u8) {
+            return None;
         }
+        Some(Self {
+            private: BigUint::from_bytes_be(&random_bytes(prime.len())),
+            prime: modulus,
+            len: prime.len(),
+        })
     }
 
     fn public_key(&self, generator: &[u8]) -> Vec<u8> {
@@ -111,15 +117,15 @@ pub struct ArdResponse {
 
 /// Apple Remote Desktop (security type 30): Diffie-Hellman with the server's parameters, the
 /// MD5 of the shared secret as an AES-128 key, user name and password (63 bytes each at most)
-/// in a 128-byte block encrypted in ECB mode.
+/// in a 128-byte block encrypted in ECB mode. `None` when the server's prime is unusable.
 pub fn ard_response(
     generator: &[u8],
     prime: &[u8],
     server_public_key: &[u8],
     username: &str,
     password: &str,
-) -> ArdResponse {
-    let dh = DiffieHellman::new(prime);
+) -> Option<ArdResponse> {
+    let dh = DiffieHellman::new(prime)?;
     let public_key = dh.public_key(generator);
     let key = Md5::digest(dh.shared_secret(server_public_key));
     let mut plain = padded_field(username, 63, 64);
@@ -132,10 +138,10 @@ pub fn ard_response(
         cipher.encrypt_block(&mut block);
         out.copy_from_slice(&block);
     }
-    ArdResponse {
+    Some(ArdResponse {
         credentials,
         public_key,
-    }
+    })
 }
 
 /// What an UltraVNC MSLogonII sign-in sends: our public key and the encrypted user name and
@@ -159,15 +165,15 @@ fn des_cbc(key: [u8; 8], data: &mut [u8]) {
 }
 
 /// UltraVNC MSLogonII (security type 113): 64-bit Diffie-Hellman; the shared secret is both
-/// the DES-CBC key and its IV.
+/// the DES-CBC key and its IV. `None` when the server's modulus is unusable.
 pub fn ms_logon_response(
     generator: &[u8; 8],
     prime: &[u8; 8],
     server_public_key: &[u8; 8],
     username: &str,
     password: &str,
-) -> MsLogonResponse {
-    let dh = DiffieHellman::new(prime);
+) -> Option<MsLogonResponse> {
+    let dh = DiffieHellman::new(prime)?;
     let mut public_key = [0u8; 8];
     public_key.copy_from_slice(&dh.public_key(generator));
     let mut secret = [0u8; 8];
@@ -178,11 +184,11 @@ pub fn ms_logon_response(
     pass.copy_from_slice(&padded_field(password, 63, 64));
     des_cbc(secret, &mut user);
     des_cbc(secret, &mut pass);
-    MsLogonResponse {
+    Some(MsLogonResponse {
         public_key,
         username: user,
         password: pass,
-    }
+    })
 }
 
 /// One direction of an RSA-AES session: AES-128-EAX with a little-endian message counter as
@@ -341,13 +347,26 @@ mod tests {
     fn agrees_on_a_diffie_hellman_secret() {
         let prime = 0xffff_ffff_ffff_ffc5u64.to_be_bytes();
         let generator = [2u8];
-        let ours = DiffieHellman::new(&prime);
-        let theirs = DiffieHellman::new(&prime);
+        let ours = DiffieHellman::new(&prime).unwrap();
+        let theirs = DiffieHellman::new(&prime).unwrap();
         assert_eq!(
             ours.shared_secret(&theirs.public_key(&generator)),
             theirs.shared_secret(&ours.public_key(&generator))
         );
         assert_eq!(ours.public_key(&generator).len(), 8);
+    }
+
+    #[test]
+    fn rejects_an_unusable_diffie_hellman_modulus() {
+        // An ARD key length of 0 sends an empty prime; a hostile server can send zero or one.
+        for prime in [&[][..], &[0, 0][..], &[0, 1][..]] {
+            assert!(DiffieHellman::new(prime).is_none(), "{prime:?}");
+            assert!(ard_response(&[2], prime, prime, "user", "pass").is_none());
+        }
+        assert!(ms_logon_response(&[0, 0, 0, 0, 0, 0, 0, 2], &[0; 8], &[0; 8], "u", "p").is_none());
+        let prime = 0xffff_ffff_ffff_ffc5u64.to_be_bytes();
+        assert!(ms_logon_response(&[0, 0, 0, 0, 0, 0, 0, 2], &prime, &prime, "u", "p").is_some());
+        assert!(ard_response(&[2], &prime, &prime, "u", "p").is_some());
     }
 
     #[test]

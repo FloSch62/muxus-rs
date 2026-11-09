@@ -760,7 +760,8 @@ impl Handshake<'_> {
             &server_key,
             &credentials.username.unwrap_or_default(),
             &credentials.password.unwrap_or_default(),
-        );
+        )
+        .ok_or_else(|| failure("ARD: the server sent an invalid Diffie-Hellman prime"))?;
         let mut message = response.credentials.to_vec();
         message.extend(response.public_key);
         self.send(&message).await
@@ -781,7 +782,8 @@ impl Handshake<'_> {
             &take8(16),
             &credentials.username.unwrap_or_default(),
             &credentials.password.unwrap_or_default(),
-        );
+        )
+        .ok_or_else(|| failure("MSLogonII: the server sent an invalid Diffie-Hellman modulus"))?;
         let mut message = response.public_key.to_vec();
         message.extend(response.username);
         message.extend(response.password);
