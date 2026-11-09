@@ -139,6 +139,9 @@ pub enum InputOp {
     },
     /// A character typed as a Unicode keyboard event (IronRDP's `UnicodeKeyPressed`).
     UnicodePressed(char),
+    /// Auto-repeat of a character held down: another press without a release in between, as
+    /// a keyboard repeats a key (IronRDP's input database would release it first).
+    UnicodeRepeated(char),
     UnicodeReleased(char),
     /// Let go of every key and button the input database holds.
     ReleaseAll,
@@ -234,6 +237,10 @@ pub struct RdpKeyboard {
     lock_state: Option<(bool, bool, bool)>,
     /// Other keys pressed as scancodes and not yet released.
     held_keys: BTreeSet<u16>,
+    /// Keys pressed as Unicode characters and not yet released: the key's `code` and the
+    /// character it went down with, so its release lets go of that character whatever the
+    /// modifiers are by then.
+    held_text: Vec<(String, char)>,
 }
 
 /// The Num Lock state a synchronize event carries when the local state is unknown and the
@@ -255,6 +262,11 @@ impl RdpKeyboard {
         // which the table has.
         if event.code == "Pause" && !event.modifiers.ctrl {
             return Some(self.pause(event));
+        }
+        if !event.pressed
+            && let Some(typed) = self.release_text(event)
+        {
+            return Some(vec![InputOp::UnicodeReleased(typed)]);
         }
         if let Some(typed) = typed_char(event) {
             return Some(self.text(event, typed));
@@ -300,11 +312,27 @@ impl RdpKeyboard {
         Some(ops)
     }
 
-    /// A typed character: pressed and released at once on the key's press (and on each
-    /// auto-repeat), since its release may carry another character once Shift or AltGr
-    /// changed. Ctrl, Alt and Meta held on the server are let go first: Windows would deliver
-    /// the character with Alt down as a menu shortcut. The release sends nothing, unless the
-    /// key went down as a scancode (Ctrl+A with Ctrl let go first).
+    /// The character a held Unicode key went down with, when `event` releases it (the
+    /// caller names the released key by the `code` and `key` it went down with).
+    fn release_text(&mut self, event: &KeyEvent) -> Option<char> {
+        let mut chars = event.key.chars();
+        let (Some(typed), None) = (chars.next(), chars.next()) else {
+            return None;
+        };
+        let index = self
+            .held_text
+            .iter()
+            .position(|(code, held)| *code == event.code && *held == typed)?;
+        self.held_text.remove(index);
+        Some(typed)
+    }
+
+    /// A typed character: pressed on the key's press and released on its release (see
+    /// `release_text`), so the server sees the key held for as long as it is; auto-repeat
+    /// presses it again without a release, as a keyboard does. Ctrl, Alt and Meta held on
+    /// the server are let go first: Windows would deliver the character with Alt down as a
+    /// menu shortcut. A release that finds no held character sends nothing, unless the key
+    /// went down as a scancode (Ctrl+A with Ctrl let go first).
     fn text(&mut self, event: &KeyEvent, typed: char) -> Vec<InputOp> {
         let mut ops = Vec::new();
         if !event.pressed {
@@ -314,6 +342,10 @@ impl RdpKeyboard {
                 ops.push(InputOp::KeyReleased(scancode));
             }
             return ops;
+        }
+        let held = (event.code.clone(), typed);
+        if event.repeat && self.held_text.contains(&held) {
+            return vec![InputOp::UnicodeRepeated(typed)];
         }
         if self.sync_lock_keys(event, &mut ops) {
             self.forget_held();
@@ -328,8 +360,10 @@ impl RdpKeyboard {
             self.held_modifiers.remove(&code);
             ops.push(InputOp::KeyReleased(code));
         }
+        if !self.held_text.contains(&held) {
+            self.held_text.push(held);
+        }
         ops.push(InputOp::UnicodePressed(typed));
-        ops.push(InputOp::UnicodeReleased(typed));
         ops
     }
 
@@ -337,6 +371,7 @@ impl RdpKeyboard {
     fn forget_held(&mut self) {
         self.held_modifiers.clear();
         self.held_keys.clear();
+        self.held_text.clear();
     }
 
     /// Pause goes out whole on the press; auto-repeat and the release send nothing.
@@ -833,13 +868,11 @@ mod tests {
         rdp.key(typing(true, "ShiftLeft", "Shift", shift));
         // Shift+7 types `/`; Shift stays held on the server.
         rdp.key(typing(true, "Slash", "/", shift));
-        rdp.key(typing(false, "Digit7", "7", none));
         rdp.key(typing(false, "ShiftLeft", "Shift", none));
+        // The key comes up after Shift: the view names it as it went down.
+        rdp.key(typing(false, "Slash", "/", none));
         // No US key types these: they used to be dropped.
         rdp.key(typing(true, "", "ö", none));
-        let mut repeat = typing(true, "", "ö", none);
-        repeat.repeat = true;
-        rdp.key(repeat);
         assert!(rdp.key(typing(false, "", "ö", none)));
         assert_eq!(
             rdp.sent,
@@ -849,14 +882,49 @@ mod tests {
                 "UnicodeReleased('z')",
                 "down 2a",
                 "UnicodePressed('/')",
-                "UnicodeReleased('/')",
                 "up 2a",
-                "UnicodePressed('ö')",
-                "UnicodeReleased('ö')",
+                "UnicodeReleased('/')",
                 "UnicodePressed('ö')",
                 "UnicodeReleased('ö')",
             ]
         );
+    }
+
+    /// A held key is held on the server too: one press, repeated presses while it repeats,
+    /// one release when it comes up, even when a modifier went down in between.
+    #[test]
+    fn holds_a_typed_character_until_its_key_comes_up() {
+        let mut rdp = Recorder::new();
+        let none = Modifiers::default();
+        rdp.key(typing(true, "KeyW", "w", none));
+        for _ in 0..2 {
+            let mut repeat = typing(true, "KeyW", "w", none);
+            repeat.repeat = true;
+            rdp.key(repeat);
+        }
+        // Ctrl goes down while W is held, and W comes up first.
+        let ctrl = Modifiers { ctrl: true, ..none };
+        rdp.key(typing(true, "ControlLeft", "Control", ctrl));
+        rdp.key(typing(false, "KeyW", "w", ctrl));
+        // Its second release (nothing held any more) sends nothing.
+        rdp.key(typing(false, "KeyW", "w", none));
+        assert_eq!(
+            rdp.sent,
+            [
+                "sync 010",
+                "UnicodePressed('w')",
+                "UnicodeRepeated('w')",
+                "UnicodeRepeated('w')",
+                "down 1d",
+                "UnicodeReleased('w')",
+            ]
+        );
+        // Letting go of everything forgets the character as well.
+        rdp.sent.clear();
+        rdp.key(typing(true, "KeyQ", "q", none));
+        rdp.keyboard.release_all();
+        rdp.key(typing(false, "KeyQ", "q", none));
+        assert_eq!(rdp.sent, ["up 1d", "UnicodePressed('q')"]);
     }
 
     #[test]
@@ -898,6 +966,7 @@ mod tests {
         let none = Modifiers::default();
         let ctrl = Modifiers { ctrl: true, ..none };
         rdp.key(typing(true, "KeyA", "a", none));
+        rdp.key(typing(false, "KeyA", "a", none));
         rdp.sent.clear();
         // Ctrl+A goes as the key; let go of Ctrl first and the key still comes back up.
         rdp.key(typing(true, "KeyA", "a", ctrl));

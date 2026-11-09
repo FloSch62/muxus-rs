@@ -698,6 +698,18 @@ fn pause_events() -> [FastPathInputEvent; 4] {
     ]
 }
 
+/// Another press of a held character, without the release IronRDP's input database puts
+/// before a press of a key it holds: a keyboard's auto-repeat.
+fn unicode_repeat_events(typed: char) -> Vec<FastPathInputEvent> {
+    use ironrdp::pdu::input::fast_path::KeyboardFlags;
+    let mut units = [0u16; 2];
+    typed
+        .encode_utf16(&mut units)
+        .iter()
+        .map(|&unit| FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), unit))
+        .collect()
+}
+
 /// The fast-path events for a batch of device events, tracked through the input database.
 fn fastpath_events(database: &mut Database, ops: &[InputOp]) -> Vec<FastPathInputEvent> {
     let mut events = Vec::new();
@@ -706,6 +718,11 @@ fn fastpath_events(database: &mut Database, ops: &[InputOp]) -> Vec<FastPathInpu
             InputOp::KeyPressed(code) => Operation::KeyPressed(Scancode::from_u16(code)),
             InputOp::KeyReleased(code) => Operation::KeyReleased(Scancode::from_u16(code)),
             InputOp::UnicodePressed(typed) => Operation::UnicodeKeyPressed(typed),
+            InputOp::UnicodeRepeated(typed) if database.is_unicode_key_pressed(typed) => {
+                events.extend(unicode_repeat_events(typed));
+                continue;
+            }
+            InputOp::UnicodeRepeated(typed) => Operation::UnicodeKeyPressed(typed),
             InputOp::UnicodeReleased(typed) => Operation::UnicodeKeyReleased(typed),
             InputOp::MouseMove { x, y } => Operation::MouseMove(MousePosition { x, y }),
             InputOp::MouseButton { button, pressed } => {
@@ -1302,6 +1319,35 @@ mod tests {
         );
         // Nothing is left held: releasing everything sends no keys.
         assert!(database.release_all().is_empty());
+    }
+
+    #[test]
+    fn repeats_a_held_character_without_releasing_it() {
+        let mut database = Database::new();
+        let press = |flags| FastPathInputEvent::UnicodeKeyboardEvent(flags, u16::from(b'w'));
+        assert_eq!(
+            fastpath_events(
+                &mut database,
+                &[
+                    InputOp::UnicodePressed('w'),
+                    InputOp::UnicodeRepeated('w'),
+                    InputOp::UnicodeRepeated('w'),
+                    InputOp::UnicodeReleased('w'),
+                ]
+            ),
+            [
+                press(KeyboardFlags::empty()),
+                press(KeyboardFlags::empty()),
+                press(KeyboardFlags::empty()),
+                press(KeyboardFlags::RELEASE),
+            ]
+        );
+        // A repeat of a character the server no longer holds presses it again, once.
+        assert_eq!(
+            fastpath_events(&mut database, &[InputOp::UnicodeRepeated('😀')]).len(),
+            2
+        );
+        assert_eq!(database.release_all().len(), 2);
     }
 
     fn session(width: u16, height: u16) -> (RdpSession, mpsc::UnboundedReceiver<Command>) {

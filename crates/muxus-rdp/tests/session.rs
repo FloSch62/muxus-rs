@@ -509,14 +509,25 @@ async fn draws_types_clicks_resizes_and_shuts_down() {
         [Received::KeyDown(0x10, false), Received::KeyUp(0x10, false)]
     );
 
-    // A character no US key types goes out as a Unicode event.
-    assert!(session.key(&KeyEvent {
+    // A character no US key types goes out as a Unicode event, held while its key is: the
+    // repeat presses it again, the release lets go.
+    let typed = KeyEvent {
         key: "ö".into(),
         ..key("", true, Modifiers::default())
+    };
+    assert!(session.key(&typed));
+    assert!(session.key(&KeyEvent {
+        repeat: true,
+        ..typed.clone()
+    }));
+    assert!(session.key(&KeyEvent {
+        pressed: false,
+        ..typed
     }));
     assert_eq!(
-        received(&mut server, 2).await,
+        received(&mut server, 3).await,
         [
+            Received::Unicode(0xf6, true),
             Received::Unicode(0xf6, true),
             Received::Unicode(0xf6, false)
         ]

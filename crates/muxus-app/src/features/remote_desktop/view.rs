@@ -819,6 +819,7 @@ impl RemoteDesktopView {
 
     fn release_all(&mut self) {
         self.pressed.clear();
+        self.keys.release_all();
         if let Some(connection) = &self.connection {
             connection.release_all();
         }
