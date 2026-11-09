@@ -2511,3 +2511,6 @@ impl Render for SftpPanel {
         root
     }
 }
+
+#[cfg(test)]
+mod tests;
