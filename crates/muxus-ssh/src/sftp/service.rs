@@ -784,6 +784,9 @@ async fn atomic_text_save(
             .open(&temp, write_exclusive(), mode.map(|mode| mode & 0o7777))
             .await?;
         let written = fs.write_from(&handle, &mut &bytes[..], &mut |_| {}).await;
+        if written.is_ok() {
+            restore_mode(fs, &handle, &temp, mode).await;
+        }
         let closed = fs.close(&handle).await;
         written?;
         closed?;
@@ -794,6 +797,18 @@ async fn atomic_text_save(
         let _ = fs.remove(&temp).await;
     }
     result
+}
+
+/// Gives a temporary file the exact mode it was created with. The mode passed to `open` goes
+/// through the server's umask, which would turn a 0664 file into 0644 on save. A server that
+/// refuses keeps the umask result, as `sftp put -p` does after its warning.
+async fn restore_mode(fs: &RemoteFs, handle: &str, temp: &str, mode: Option<u32>) {
+    let Some(mode) = mode.map(|mode| mode & 0o7777) else {
+        return;
+    };
+    if let Err(err) = fs.set_mode(handle, mode).await {
+        tracing::warn!(path = temp, mode = %format!("{mode:o}"), %err, "could not set the mode of a saved file");
+    }
 }
 
 /// `wx`: create a new file for writing, failing if it exists.
@@ -852,6 +867,9 @@ impl StreamUpload<'_> {
                     }
                 })
                 .await;
+            if written.is_ok() {
+                restore_mode(self.fs, &handle, &temp, self.mode).await;
+            }
             let closed = self.fs.close(&handle).await;
             let written = written?;
             closed?;
