@@ -18,6 +18,7 @@ use par_term_emu_core_rust::terminal::Terminal as Core;
 
 use crate::buffer::{CellText, TextBuffer};
 use crate::color::{Rgba, parse_css_color};
+use crate::color_stack::ColorStack;
 use crate::filter::{
     ANSI_BLACK_BG_SENTINEL, ANSI_WHITE_FG_SENTINEL, DEFAULT_FG_SENTINEL, Segment, StreamFilter,
 };
@@ -254,6 +255,8 @@ pub struct Emulator {
     cursor_shape: Option<CursorShape>,
     cursor_blink: Option<bool>,
     overrides: ColorOverrides,
+    /// What XTPUSHCOLORS saved of `overrides`.
+    color_stack: ColorStack,
     palette: ResolvedPalette,
     theme: TerminalTheme,
     allow_osc52_write: bool,
@@ -313,6 +316,7 @@ impl Emulator {
             cursor_shape: None,
             cursor_blink: None,
             overrides: ColorOverrides::default(),
+            color_stack: ColorStack::default(),
             palette: ResolvedPalette::new(theme),
             theme: theme.clone(),
             allow_osc52_write: true,
@@ -586,6 +590,7 @@ impl Emulator {
                         self.cursor_shape = None;
                         self.cursor_blink = None;
                         self.overrides = ColorOverrides::default();
+                        self.color_stack = ColorStack::default();
                         self.apply_palette();
                     }
                     self.init_pen();
@@ -593,6 +598,9 @@ impl Emulator {
                 Segment::PrivateModes { modes, set } => self.private_modes(&modes, set),
                 Segment::CursorStyle(style) => self.cursor_style(style),
                 Segment::WindowOp(params) => self.window_op(&params),
+                Segment::PushColors(params) => self.push_colors(&params),
+                Segment::PopColors(params) => self.pop_colors(&params),
+                Segment::ReportColors => self.reply(self.color_stack.report()),
             }
         }
         self.collect_core_events();
@@ -758,6 +766,23 @@ impl Emulator {
         } else {
             for index in data.split(';').filter_map(palette_index) {
                 self.overrides.palette.remove(&index);
+            }
+        }
+        self.apply_palette();
+    }
+
+    /// XTPUSHCOLORS: save the OSC 4 and OSC 10/11/12 colors, once per parameter, as xterm does.
+    fn push_colors(&mut self, params: &[u16]) {
+        for &slot in params.iter().chain(params.is_empty().then_some(&0)) {
+            self.color_stack.push(slot, &self.overrides);
+        }
+    }
+
+    /// XTPOPCOLORS: bring back saved colors, once per parameter.
+    fn pop_colors(&mut self, params: &[u16]) {
+        for &slot in params.iter().chain(params.is_empty().then_some(&0)) {
+            if let Some(colors) = self.color_stack.pop(slot) {
+                self.overrides = colors;
             }
         }
         self.apply_palette();
@@ -1495,6 +1520,41 @@ mod tests {
         // A full reset drops them too.
         term.write(b"\x1b]4;2;#123456\x07\x1bc");
         assert_eq!(term.colors(), theme);
+    }
+
+    #[test]
+    fn the_color_stack_saves_and_restores_palette_and_dynamic_colors() {
+        let mut term = emulator(10, 2);
+        let theme = term.colors();
+        let set = b"\x1b]4;1;#ff0000\x07\x1b]10;#00ff00\x07\x1b]11;#0000ff\x07\x1b]12;#ffff00\x07";
+        term.write(set);
+        let first = term.colors();
+        // CSI # P saves them; changes after it, and an OSC 104/110 reset, are undone by CSI # Q.
+        term.write(b"\x1b[#P\x1b]4;1;#123456;2;#654321\x07\x1b]10;#111111\x07\x1b]111\x07");
+        assert_ne!(term.colors(), first);
+        term.write(b"\x1b[#Q");
+        assert_eq!(term.colors(), first);
+        assert_eq!(term.colors().palette.ansi[2], theme.palette.ansi[2]);
+        // The theme's own colors were saved as such: popping an entry pushed before any
+        // change brings the theme back.
+        term.write(b"\x1b]104\x07\x1b]110\x07\x1b]111\x07\x1b]112\x07\x1b[#P");
+        term.write(set);
+        term.write(b"\x1b[#Q");
+        assert_eq!(term.colors(), theme);
+        // The report counts entries and the most unnumbered pushes reached.
+        term.write(b"\x1b[#P\x1b[#P\x1b[#R");
+        assert_eq!(replies(&mut term), "\x1b[?2;2#Q");
+        // Numbered slots: store into slot 5, restore it later.
+        term.write(set);
+        term.write(b"\x1b[5#P\x1b]104\x07\x1b]110;\x07\x1b]111\x07\x1b]112\x07");
+        assert_eq!(term.colors(), theme);
+        term.write(b"\x1b[5#Q\x1b[#R");
+        assert_eq!(term.colors(), first);
+        assert_eq!(replies(&mut term), "\x1b[?4;2#Q");
+        // RIS empties the stack.
+        term.write(b"\x1bc\x1b[#Q\x1b[#R");
+        assert_eq!(term.colors(), theme);
+        assert_eq!(replies(&mut term), "\x1b[?0;0#Q");
     }
 
     #[test]

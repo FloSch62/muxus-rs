@@ -29,7 +29,9 @@ splits the output at the sequences Muxus handles itself:
 - **ED 2** scrolls the screen into the scrollback (`scrollOnEraseInDisplay`) instead of blanking it.
 - **OSC 7/133/633** feed the ported `CwdTracker`/`CommandTracker`; **OSC 52** is write-only
   (queries answered empty on the same transport); **OSC 10/11/12** are answered from the theme and
-  set overrides; **XTWINOPS** answers only 14/16/18 t like xterm with Muxus's `windowOptions`;
+  set overrides, **OSC 4/104** the palette on top of the theme; **XTPUSHCOLORS/XTPOPCOLORS/
+  XTREPORTCOLORS** (`CSI # P/Q/R`) save and restore those colors on xterm's ten-slot stack (RIS
+  empties it); **XTWINOPS** answers only 14/16/18 t like xterm with Muxus's `windowOptions`;
   **DECSET 9/1000/1002/1003/1006/1016** drive xterm's mouse protocols; **DECSCUSR** overrides the
   cursor preference; **OSC 7501** (program status) is parsed and passed on as
   `EmulatorEvent::ProgramStatus`, its support query answered inline. An OSC reply first flushes

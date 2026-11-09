@@ -1,6 +1,6 @@
 //! A streaming pre-parser in front of the emulator. It finds the few sequences Muxus handles itself
 //! — OSC 4, 7, 10, 11, 12, 52, 104, 110, 111, 112, 133, 633 and 7501, the mouse modes,
-//! erase-in-display and resets — and
+//! erase-in-display, resets and the color stack (XTPUSHCOLORS, XTPOPCOLORS, XTREPORTCOLORS) — and
 //! rewrites the two SGR colors the emulator cannot tell apart from the default colors (ANSI white
 //! foreground and ANSI black background). Everything else passes through unchanged, split at the
 //! points where a handled sequence sits so the terminal state is right when it is handled.
@@ -35,6 +35,13 @@ pub enum Segment {
     /// XTWINOPS (`CSI Ps ; … t`): answered here, never passed on (window reports are off in
     /// xterm except the size queries).
     WindowOp(Vec<u16>),
+    /// XTPUSHCOLORS (`CSI Pm # P`): its parameters, none for `CSI # P`. Handled here with the
+    /// colors Muxus keeps, never passed on.
+    PushColors(Vec<u16>),
+    /// XTPOPCOLORS (`CSI Pm # Q`), as `PushColors`.
+    PopColors(Vec<u16>),
+    /// XTREPORTCOLORS (`CSI # R`), never passed on.
+    ReportColors,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -388,6 +395,32 @@ impl StreamFilter {
                     .collect();
                 self.push(Segment::WindowOp(params));
             }
+            (None, true, b'P' | b'Q' | b'R')
+                if body.last() == Some(&b'#')
+                    && !body[..body.len() - 1]
+                        .iter()
+                        .any(|b| (0x20..=0x2f).contains(b)) =>
+            {
+                let params = &body[..body.len() - 1];
+                let params: Vec<u16> = if params.is_empty() {
+                    Vec::new()
+                } else {
+                    params
+                        .split(|b| *b == b';')
+                        .map(|p| {
+                            std::str::from_utf8(p)
+                                .ok()
+                                .and_then(|p| p.parse::<u32>().ok())
+                                .map_or(0, |p| p.min(u32::from(u16::MAX)) as u16)
+                        })
+                        .collect()
+                };
+                self.push(match final_byte {
+                    b'P' => Segment::PushColors(params),
+                    b'Q' => Segment::PopColors(params),
+                    _ => Segment::ReportColors,
+                });
+            }
             (None, true, b'p') if body == b"!" => {
                 self.bytes.extend_from_slice(sequence);
                 self.push(Segment::Reset { hard: false });
@@ -679,6 +712,17 @@ mod tests {
         assert_eq!(
             run(&[b"\x1b[14t\x1b[21t"]),
             [Segment::WindowOp(vec![14]), Segment::WindowOp(vec![21])]
+        );
+        // The color stack is handled here and never reaches the engine; `CSI P` (DCH) and
+        // other `#` sequences (XTPUSHSGR) pass on.
+        assert_eq!(
+            run(&[b"\x1b[#P\x1b[2;3#Q\x1b[#R\x1b[2P\x1b[#{"]),
+            [
+                Segment::PushColors(vec![]),
+                Segment::PopColors(vec![2, 3]),
+                Segment::ReportColors,
+                bytes("\x1b[2P\x1b[#{"),
+            ]
         );
         assert_eq!(
             run(&[b"\x1b[?1000;1006h"]),
