@@ -51,6 +51,7 @@ use muxus_ui::zoom::{css, layout_px, px};
 use gpui_kit::base::input::{InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder;
 use muxus_ui::color::alpha;
+use muxus_ui::composition::Composition;
 use muxus_ui::label::label;
 use muxus_ui::theme::ActiveTheme;
 use muxus_ui::widgets::button::elevation;
@@ -178,7 +179,7 @@ pub struct TerminalView {
     /// once no painted frame shows them.
     retired_images: Vec<Arc<RenderImage>>,
     scale_factor: f32,
-    preedit: Option<String>,
+    preedit: Composition,
     /// Bumped with every settings change, for the rows cache.
     settings_version: u64,
     rows_cache: Option<RowsCache>,
@@ -342,7 +343,7 @@ impl TerminalView {
             images: HashMap::new(),
             retired_images: Vec::new(),
             scale_factor: 1.0,
-            preedit: None,
+            preedit: Composition::default(),
             settings_version: 0,
             rows_cache: None,
             tick_task: None,
@@ -1992,7 +1993,7 @@ impl TerminalView {
     /// The composition at the cursor, while the cursor's line is in view (xterm's
     /// `updateCompositionElements`).
     fn frame_preedit(&self) -> Option<FramePreedit> {
-        let text = self.preedit.clone()?;
+        let text = self.preedit.text()?.to_owned();
         let cursor = self.emulator.cursor();
         let top = self.emulator.viewport_top();
         let rows = self.emulator.rows();
@@ -2509,7 +2510,8 @@ impl Render for TerminalView {
 }
 
 /// The IME sees what xterm's hidden textarea holds while composing: the composition, with the
-/// caret at its end. Committed text goes to the session and leaves nothing behind.
+/// caret at its end (see [`Composition`]). Committed text goes to the session and leaves
+/// nothing behind.
 impl EntityInputHandler for TerminalView {
     fn text_for_range(
         &mut self,
@@ -2518,11 +2520,7 @@ impl EntityInputHandler for TerminalView {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<String> {
-        let units: Vec<u16> = self.preedit.as_ref()?.encode_utf16().collect();
-        let start = range.start.min(units.len());
-        let end = range.end.clamp(start, units.len());
-        *adjusted = Some(start..end);
-        Some(String::from_utf16_lossy(&units[start..end]))
+        self.preedit.text_for_range(range, adjusted)
     }
 
     fn selected_text_range(
@@ -2531,14 +2529,7 @@ impl EntityInputHandler for TerminalView {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let end = self
-            .preedit
-            .as_ref()
-            .map_or(0, |text| text.encode_utf16().count());
-        Some(UTF16Selection {
-            range: end..end,
-            reversed: false,
-        })
+        Some(self.preedit.selection())
     }
 
     fn marked_text_range(
@@ -2546,13 +2537,11 @@ impl EntityInputHandler for TerminalView {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<std::ops::Range<usize>> {
-        self.preedit
-            .as_ref()
-            .map(|text| 0..text.encode_utf16().count())
+        self.preedit.marked_range()
     }
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.preedit = None;
+        self.preedit.clear();
         cx.notify();
     }
 
@@ -2563,7 +2552,7 @@ impl EntityInputHandler for TerminalView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.preedit = None;
+        self.preedit.clear();
         self.user_input(text.as_bytes().to_vec(), cx);
     }
 
@@ -2575,7 +2564,7 @@ impl EntityInputHandler for TerminalView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.preedit = (!new_text.is_empty()).then(|| new_text.to_string());
+        self.preedit.set(new_text);
         cx.notify();
     }
 
