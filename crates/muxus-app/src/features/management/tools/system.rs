@@ -140,6 +140,15 @@ impl RebootState {
     }
 }
 
+/// The longest delay a Reboot request can carry: it travels as nanoseconds in
+/// a `uint64`.
+const MAX_REBOOT_DELAY_SECONDS: u64 = u64::MAX / 1_000_000_000;
+
+/// The Delay field's seconds, held to what the request can carry.
+pub fn reboot_delay_seconds(text: &str) -> u64 {
+    digits_number(text, 0.).min(MAX_REBOOT_DELAY_SECONDS as f64) as u64
+}
+
 /// The Reboot request for this state.
 pub fn reboot_request(state: &RebootState) -> Value {
     let mut request = Map::new();
@@ -1412,7 +1421,7 @@ impl ManagementView {
         match name {
             "health.path" => self.update_tool::<HealthState>("health", |state| state.path = value),
             "reboot.delay" => self.update_tool::<RebootState>("reboot", |state| {
-                state.delay_seconds = digits_number(&value, 0.) as u64;
+                state.delay_seconds = reboot_delay_seconds(&value);
             }),
             "reboot.message" => {
                 self.update_tool::<RebootState>("reboot", |state| state.message = value)
@@ -1462,6 +1471,19 @@ mod tests {
             ..RebootState::default()
         };
         assert_eq!(reboot_request(&plain), json!({"method": "COLD"}));
+    }
+
+    #[test]
+    fn holds_the_reboot_delay_to_what_the_request_can_carry() {
+        assert_eq!(reboot_delay_seconds("45"), 45);
+        assert_eq!(reboot_delay_seconds(""), 0);
+        assert_eq!(reboot_delay_seconds("18446744074"), 18_446_744_073);
+        assert_eq!(reboot_delay_seconds(&"9".repeat(400)), 18_446_744_073);
+        let longest = RebootState {
+            delay_seconds: reboot_delay_seconds("18446744074"),
+            ..RebootState::default()
+        };
+        assert_eq!(reboot_request(&longest)["delay"], "18446744073000000000");
     }
 
     #[test]

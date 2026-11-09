@@ -51,7 +51,22 @@ fn js_to_number(value: &Value) -> f64 {
     }
 }
 
-fn integer(field: &FieldDescriptor, value: &Value) -> Result<i128, ProtoJsonError> {
+/// An integer field's value, refused when it does not fit the field's type
+/// instead of wrapping (a huge delay must not turn into a tiny one).
+fn integer<T: TryFrom<i128>>(field: &FieldDescriptor, value: &Value) -> Result<T, ProtoJsonError> {
+    let wide = wide_integer(field, value)?;
+    T::try_from(wide).map_err(|_| out_of_range(field, value))
+}
+
+fn out_of_range(field: &FieldDescriptor, value: &Value) -> ProtoJsonError {
+    error(format!(
+        "{}: {} is out of range",
+        field.name(),
+        shown(value)
+    ))
+}
+
+fn wide_integer(field: &FieldDescriptor, value: &Value) -> Result<i128, ProtoJsonError> {
     let not_integer = || {
         error(format!(
             "{}: {} is not an integer",
@@ -122,14 +137,12 @@ fn scalar_to_proto(
             _ => return Err(error(format!("{name} must be base64 text"))),
         },
         Kind::Bool => ProtoValue::Bool(value == &Value::Bool(true)),
-        Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 => {
-            ProtoValue::I64(integer(field, value)? as i64)
-        }
-        Kind::Uint64 | Kind::Fixed64 => ProtoValue::U64(integer(field, value)? as u64),
+        Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 => ProtoValue::I64(integer(field, value)?),
+        Kind::Uint64 | Kind::Fixed64 => ProtoValue::U64(integer(field, value)?),
         Kind::Enum(descriptor) => {
             let number = match value {
-                Value::Number(number) if number.is_i64() => {
-                    number.as_i64().map(|value| value as i32)
+                Value::Number(number) => {
+                    number.as_i64().and_then(|value| i32::try_from(value).ok())
                 }
                 Value::String(text) => descriptor
                     .get_value_by_name(text)
@@ -153,11 +166,16 @@ fn scalar_to_proto(
             if !number.is_finite() {
                 return Err(error(format!("{name} must be a number")));
             }
+            let whole = || number.trunc() as i128;
             match kind {
                 Kind::Double => ProtoValue::F64(number),
                 Kind::Float => ProtoValue::F32(number as f32),
-                Kind::Uint32 | Kind::Fixed32 => ProtoValue::U32(number.trunc() as i64 as u32),
-                _ => ProtoValue::I32(number.trunc() as i64 as i32),
+                Kind::Uint32 | Kind::Fixed32 => {
+                    ProtoValue::U32(u32::try_from(whole()).map_err(|_| out_of_range(field, value))?)
+                }
+                _ => {
+                    ProtoValue::I32(i32::try_from(whole()).map_err(|_| out_of_range(field, value))?)
+                }
             }
         }
         Kind::Message(_) => unreachable!("messages are converted by json_to_proto"),
@@ -387,6 +405,44 @@ mod tests {
         );
         assert!(json_to_proto(&ping.request, &json!([1])).is_err());
         assert!(json_to_proto(&ping.request, &Value::Null).is_ok());
+    }
+
+    #[test]
+    fn refuses_integers_outside_the_fields_range_instead_of_wrapping() {
+        let out_of_range = |method: &str, request: Value| {
+            let def = method_def(method).unwrap();
+            json_to_proto(&def.request, &request)
+                .unwrap_err()
+                .0
+                .contains("out of range")
+        };
+        // 18446744074 s in nanoseconds would wrap to about 0.29 s.
+        let reboot = method_def(grpc_methods::REBOOT).unwrap();
+        assert!(out_of_range(
+            grpc_methods::REBOOT,
+            json!({"delay": "18446744074000000000"})
+        ));
+        assert!(out_of_range(grpc_methods::REBOOT, json!({"delay": -1})));
+        let largest =
+            json_to_proto(&reboot.request, &json!({"delay": "18446744073709551615"})).unwrap();
+        assert_eq!(
+            largest.get_field_by_name("delay").unwrap().as_ref(),
+            &ProtoValue::U64(u64::MAX)
+        );
+        assert!(out_of_range(
+            grpc_methods::PING,
+            json!({"interval": "9223372036854775808"})
+        ));
+        assert!(out_of_range(
+            grpc_methods::PING,
+            json!({"count": 4_294_967_297_u64})
+        ));
+        assert!(out_of_range(
+            grpc_methods::TRACEROUTE,
+            json!({"initial_ttl": -1})
+        ));
+        let ping = method_def(grpc_methods::PING).unwrap();
+        assert!(json_to_proto(&ping.request, &json!({"l3protocol": 4_294_967_297_u64})).is_err());
     }
 
     #[test]

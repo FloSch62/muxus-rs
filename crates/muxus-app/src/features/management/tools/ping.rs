@@ -89,6 +89,16 @@ impl Default for PingState {
     }
 }
 
+/// The longest interval a Ping request can carry: it travels as nanoseconds
+/// in an `int64`.
+const MAX_PING_INTERVAL_MS: u64 = i64::MAX as u64 / 1_000_000;
+
+/// The Interval field's milliseconds: at least 10, at most what the request
+/// can carry.
+pub fn ping_interval_ms(text: &str) -> u64 {
+    digits_number(text, 1000.).clamp(10., MAX_PING_INTERVAL_MS as f64) as u64
+}
+
 /// The Ping request for this state.
 pub fn ping_request(state: &PingState) -> Value {
     let trim = |text: &str| muxus_core::js::js_trim(text).to_owned();
@@ -97,7 +107,7 @@ pub fn ping_request(state: &PingState) -> Value {
     request.insert("count".into(), json!(state.count));
     request.insert(
         "interval".into(),
-        json!((state.interval_ms * 1_000_000).to_string()),
+        json!((u128::from(state.interval_ms) * 1_000_000).to_string()),
     );
     request.insert("size".into(), json!(state.size));
     if !trim(&state.network_instance).is_empty() {
@@ -569,7 +579,7 @@ impl ManagementView {
             "ping.destination" => state.destination = value,
             "ping.instance" => state.network_instance = value,
             "ping.count" => state.count = digits_number(&value, 1.).clamp(1., 1000.) as u64,
-            "ping.interval" => state.interval_ms = digits_number(&value, 1000.).max(10.) as u64,
+            "ping.interval" => state.interval_ms = ping_interval_ms(&value),
             "ping.size" => state.size = digits_number(&value, 0.).clamp(0., 65_000.) as u64,
             "ping.source" => state.source = value,
             _ => {}
@@ -1078,6 +1088,29 @@ mod tests {
 
     fn message(value: Value) -> GrpcJson {
         value.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn holds_the_ping_interval_to_what_the_request_can_carry() {
+        assert_eq!(ping_interval_ms("250"), 250);
+        assert_eq!(ping_interval_ms("1"), 10);
+        assert_eq!(ping_interval_ms(""), 1000);
+        assert_eq!(ping_interval_ms(&"9".repeat(400)), 9_223_372_036_854);
+        let longest = PingState {
+            interval_ms: ping_interval_ms(&"9".repeat(400)),
+            ..PingState::default()
+        };
+        assert_eq!(ping_request(&longest)["interval"], "9223372036854000000");
+        // A saved state past that is sent as is, for the request to refuse,
+        // instead of overflowing here.
+        let saved = PingState {
+            interval_ms: u64::MAX,
+            ..PingState::default()
+        };
+        assert_eq!(
+            ping_request(&saved)["interval"],
+            "18446744073709551615000000"
+        );
     }
 
     #[test]
