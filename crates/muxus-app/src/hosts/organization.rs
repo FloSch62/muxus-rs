@@ -3,6 +3,8 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+use muxus_core::folder_paths::folder_path_segments;
+
 use crate::hosts::search::{matches_tokens, search_tokens, searchable_text};
 use crate::model::SshHostEntry;
 use crate::util::locale_compare;
@@ -151,7 +153,8 @@ pub fn group_hosts<'a>(
             .as_ref()
             .and_then(|m| m.group.as_deref())
             .map(str::trim)
-            .filter(|group| !group.is_empty());
+            // A group of only separators (`/`) names no folder: the host is ungrouped.
+            .filter(|group| !folder_path_segments(group).is_empty());
         if let Some(group) = group {
             let key = group.to_lowercase();
             let index = *custom_index.entry(key.clone()).or_insert_with(|| {

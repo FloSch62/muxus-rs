@@ -4,7 +4,7 @@ use muxus_core::api::{OpenSshMetadataPatch, SavedHostProfile, SavedHostProfileIn
 use muxus_core::js::js_trim;
 use muxus_core::protocol::{SavedHostSessionProfile, SshGateway, WebProfile};
 
-use super::native_draft::{optional_patch, text_patch};
+use super::native_draft::{group_patch, optional_patch};
 
 /// Form state for a saved web page.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -111,7 +111,7 @@ pub fn web_draft_to_input(
 /// `webDraftMetadataPatch`: Muxus-only metadata written right after the page saves.
 pub fn web_draft_metadata_patch(draft: &WebHostDraft) -> OpenSshMetadataPatch {
     OpenSshMetadataPatch {
-        group: text_patch(&draft.group),
+        group: group_patch(&draft.group),
         color: optional_patch(&draft.color),
         ..OpenSshMetadataPatch::default()
     }

@@ -6,6 +6,7 @@ use muxus_core::anti_idle::{
 use muxus_core::api::{
     HostKeywordHighlightConfig, OpenSshMetadataPatch, SavedHostProfile, SavedHostProfileInput,
 };
+use muxus_core::folder_paths::normalize_folder_path;
 use muxus_core::input_modes::{
     TerminalInputModes, apply_terminal_input_modes_patch, host_terminal_input_modes,
 };
@@ -107,6 +108,15 @@ pub fn text_patch(text: &str) -> Patch<String> {
         Patch::Clear
     } else {
         Patch::Set(trimmed.to_owned())
+    }
+}
+
+/// A host's folder as stored: separators collapse and segments are trimmed, so a
+/// folder of only separators (`/`) is no folder and clears the group.
+pub fn group_patch(group: &str) -> Patch<String> {
+    match normalize_folder_path(group) {
+        path if path.is_empty() => Patch::Clear,
+        path => Patch::Set(path),
     }
 }
 
@@ -266,7 +276,7 @@ pub fn native_draft_to_input(
 /// Muxus-only metadata written right after the host itself saves.
 pub fn native_draft_metadata_patch(draft: &NativeHostDraft) -> OpenSshMetadataPatch {
     let mut patch = OpenSshMetadataPatch {
-        group: text_patch(&draft.group),
+        group: group_patch(&draft.group),
         color: optional_patch(&draft.color),
         terminal_scheme: optional_patch(&draft.terminal_scheme),
         terminal_font_color: optional_patch(&draft.terminal_font_color),
@@ -937,6 +947,13 @@ mod tests {
                 .as_deref(),
             Some("#ef5350")
         );
+    }
+
+    #[test]
+    fn stores_a_folder_in_its_normal_form_and_a_bare_separator_as_none() {
+        assert_eq!(group_patch(" Prod // EU /"), Patch::Set("Prod/EU".into()));
+        assert_eq!(group_patch("/"), Patch::Clear);
+        assert_eq!(group_patch("  "), Patch::Clear);
     }
 
     #[test]

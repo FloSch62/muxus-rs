@@ -35,7 +35,7 @@ pub fn saved_gateway_fallbacks(
 pub fn port_in_range(port: f64) -> bool {
     port.is_finite() && port.fract() == 0. && (1. ..=65_535.).contains(&port)
 }
-use super::native_draft::{optional_patch, parse_host_target, text_patch};
+use super::native_draft::{group_patch, optional_patch, parse_host_target};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DesktopKind {
@@ -220,7 +220,7 @@ pub fn desktop_draft_to_input(
 /// Muxus-only metadata written right after the host itself saves.
 pub fn desktop_draft_metadata_patch(draft: &DesktopHostDraft) -> OpenSshMetadataPatch {
     OpenSshMetadataPatch {
-        group: text_patch(&draft.group),
+        group: group_patch(&draft.group),
         color: optional_patch(&draft.color),
         ..OpenSshMetadataPatch::default()
     }

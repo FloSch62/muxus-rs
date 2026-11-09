@@ -114,7 +114,7 @@ fn group_managed_hosts<'a>(
             .metadata
             .group
             .as_deref()
-            .is_some_and(|group| !js::js_trim(group).is_empty())
+            .is_some_and(|group| !folder_segments(group).is_empty())
     });
 
     let mut groups = group_ssh_hosts(ssh_hosts, files, root_file, has_saved_custom_groups);
@@ -133,7 +133,8 @@ fn group_managed_hosts<'a>(
             .as_deref()
             .map(js::js_trim)
             .unwrap_or("");
-        if label.is_empty() {
+        // A group of only separators (`/`) names no folder: the host is ungrouped.
+        if folder_segments(label).is_empty() {
             ungrouped.push(profile);
             continue;
         }
@@ -219,7 +220,7 @@ fn group_ssh_hosts<'a>(
             .and_then(|metadata| metadata.group.as_deref())
             .map(js::js_trim)
             .unwrap_or("");
-        if !group.is_empty() {
+        if !folder_segments(group).is_empty() {
             let key = group.to_lowercase();
             let index = *custom_index.entry(key.clone()).or_insert_with(|| {
                 custom.push(ManagedHostGroup {
