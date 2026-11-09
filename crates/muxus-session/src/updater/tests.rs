@@ -1010,6 +1010,19 @@ fn keeps_pending_downloads_in_the_user_cache() {
     );
 }
 
+#[test]
+fn reads_the_windows_cache_folder_in_any_casing() {
+    let env: HashMap<String, String> = [(
+        "LocalAppData".to_string(),
+        r"C:\Users\me\AppData\Local".to_string(),
+    )]
+    .into();
+    assert_eq!(
+        default_cache_dir(Platform::Windows, &env, Path::new(r"C:\Users\me")),
+        Path::new(r"C:\Users\me\AppData\Local").join("muxus-rs-updater")
+    );
+}
+
 #[tokio::test]
 async fn gives_each_installation_its_updater() {
     let base =

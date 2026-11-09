@@ -264,6 +264,24 @@ fn finds_ssh_on_path() {
     assert_eq!(find_ssh_binary(&env, platform), Some(program));
 }
 
+/// Windows keeps `SystemRoot` as set, and a launcher such as MSYS hands it on in capitals.
+#[cfg(unix)]
+#[test]
+fn finds_the_windows_openssh_under_system_root_in_any_casing() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    // Joined with backslashes, the Windows path is one file name here.
+    let root = dir.path().join("Windows");
+    let program = PathBuf::from(format!(r"{}\System32\OpenSSH\ssh.exe", root.display()));
+    std::fs::write(&program, "").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let env = HashMap::from([(
+        "SYSTEMROOT".to_string(),
+        root.to_string_lossy().into_owned(),
+    )]);
+    assert_eq!(find_ssh_binary(&env, Platform::Windows), Some(program));
+}
+
 #[test]
 fn reports_nothing_when_there_is_no_program() {
     let env = HashMap::from([("SystemRoot".to_string(), "/nonexistent".to_string())]);

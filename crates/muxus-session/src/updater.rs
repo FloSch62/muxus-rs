@@ -528,7 +528,7 @@ pub fn default_cache_dir(
     home: &std::path::Path,
 ) -> PathBuf {
     let var = |key: &str| {
-        env.get(key)
+        muxus_core::platform::env_var(env, key, platform)
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
     };
