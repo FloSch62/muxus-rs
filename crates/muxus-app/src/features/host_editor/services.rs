@@ -314,8 +314,9 @@ pub fn delete_question(host: &ManagedHost) -> (String, String) {
         ManagedHost::Ssh(entry) => (
             format!("Delete “{}”?", entry.alias),
             format!(
-                "The Host block is removed from {}. A backup of the previous file is kept next to it as config.muxus.bak.",
-                shorten_ssh_path(&entry.file)
+                "The Host block is removed from {}. A backup of the previous file is kept next to it as .{}.muxus.bak.",
+                shorten_ssh_path(&entry.file),
+                entry.file.rsplit(['/', '\\']).next().unwrap_or(&entry.file)
             ),
         ),
         ManagedHost::Profile(entry) => (
@@ -367,13 +368,13 @@ pub fn delete_hosts_question(hosts: &[ManagedHost]) -> (String, String, String) 
         sentences.push(if files.len() == 1 {
             let name = file.rsplit(['/', '\\']).next().unwrap_or(file);
             format!(
-                "{blocks} Host block{} removed from {}, and a backup of the previous file is kept next to it as {name}.muxus.bak.",
+                "{blocks} Host block{} removed from {}, and a backup of the previous file is kept next to it as .{name}.muxus.bak.",
                 if blocks == 1 { " is" } else { "s are" },
                 shorten_ssh_path(file)
             )
         } else {
             format!(
-                "{blocks} Host blocks are removed from {} config files, and a backup of each previous file is kept next to it with a .muxus.bak suffix.",
+                "{blocks} Host blocks are removed from {} config files, and a backup of each previous file is kept next to it as a hidden .muxus.bak file.",
                 files.len()
             )
         });
@@ -725,7 +726,7 @@ mod tests {
             crate::hosts::managed::managed_host_display_name(&profile)
         )));
         assert!(description.contains(
-            "2 Host blocks are removed from ~/.ssh/config, and a backup of the previous file is kept next to it as config.muxus.bak."
+            "2 Host blocks are removed from ~/.ssh/config, and a backup of the previous file is kept next to it as .config.muxus.bak."
         ));
         assert!(description.ends_with(
             "1 host saved in Muxus is removed. No remote device or serial port changes."
@@ -856,6 +857,11 @@ mod tests {
                 .all(|h| h.alias != "cache-01")
         );
         assert_eq!(delete_question(&ssh).0, "Delete “cache-01”?");
+        assert!(
+            delete_question(&ssh)
+                .1
+                .ends_with("kept next to it as .config.muxus.bak.")
+        );
     }
 
     #[test]

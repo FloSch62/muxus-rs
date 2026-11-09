@@ -1,7 +1,7 @@
 //! Editing side of the ssh_config engine: serialize a Host block from the editor's DTO and splice
 //! it into the user's config files, touching nothing but the edited block's lines. Every write is
-//! atomic (tmp + rename), keeps the file's mode, and leaves a `.muxus.bak` copy of the previous
-//! content.
+//! atomic (tmp + rename), keeps the file's mode, and leaves a hidden `.{name}.muxus.bak` copy of
+//! the previous content next to it, where no `Include` glob picks it up.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -801,7 +801,17 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     builder.create(dir)
 }
 
-/// Atomically replaces `file_path` with `lines`, keeping its mode and a `.muxus.bak` copy.
+/// `dir/.{name}{suffix}` for `dir/{name}`. Like glob(3), `Include` patterns skip dotfiles unless
+/// they start with a dot, so neither OpenSSH nor Muxus reads backups or temporary files as config.
+pub(crate) fn hidden_sibling(path: &Path, suffix: &str) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    path.with_file_name(format!(".{name}{suffix}"))
+}
+
+/// Atomically replaces `file_path` with `lines`, keeping its mode and a hidden `.muxus.bak` copy.
 pub(crate) fn write_config_file(file_path: &Path, lines: &[String]) -> Result<(), Problem> {
     if let Some(dir) = file_path.parent() {
         create_private_dir(dir)?;
@@ -812,7 +822,7 @@ pub(crate) fn write_config_file(file_path: &Path, lines: &[String]) -> Result<()
     }
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut mode = 0o600;
-    let backup = PathBuf::from(format!("{}.muxus.bak", path_string(file_path)));
+    let backup = hidden_sibling(file_path, ".muxus.bak");
     if let Ok(meta) = std::fs::metadata(&write_target) {
         #[cfg(unix)]
         {
@@ -823,9 +833,12 @@ pub(crate) fn write_config_file(file_path: &Path, lines: &[String]) -> Result<()
         let _ = meta;
         if std::fs::copy(&write_target, &backup).is_ok() {
             set_mode(&backup, 0o600);
+            // Earlier versions kept the backup as `{name}.muxus.bak`, which `Include` globs read
+            // as config; the hidden copy replaces it.
+            let _ = std::fs::remove_file(format!("{}.muxus.bak", path_string(file_path)));
         }
     }
-    let tmp = PathBuf::from(format!("{}.muxus.tmp", path_string(&write_target)));
+    let tmp = hidden_sibling(&write_target, ".muxus.tmp");
     let text = if lines.is_empty() {
         String::new()
     } else {

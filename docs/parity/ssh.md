@@ -11,7 +11,7 @@ in-process ssh-agent; nothing touches the real `~/.ssh`, the real agent or a rea
 | Feature | TypeScript source | State | Notes |
 |---|---|---|---|
 | ssh_config parse, Include, first-obtained-wins resolution, tokens, listing | `ssh/ssh-config.ts` | done | Match blocks skipped and Include inside Host kept verbatim, as in the TS. Indexed resolution (4000 hosts < 1 s). All of `ssh-config.test.ts` ported. |
-| Line-preserving Host block editor (upsert, bulk patch, delete, preview, atomic write, `.muxus.bak`, symlinks) | `ssh/ssh-config-edit.ts` | done | All of `ssh-config-edit.test.ts` ported. Errors carry the TS HTTP status (`Problem`). |
+| Line-preserving Host block editor (upsert, bulk patch, delete, preview, atomic write, hidden `.{name}.muxus.bak` that `Include` globs skip, symlinks) | `ssh/ssh-config-edit.ts` | done | All of `ssh-config-edit.test.ts` ported. Errors carry the TS HTTP status (`Problem`). |
 | Folder credentials as the lowest-priority config layer | `ssh/folder-auth.ts` | done | `folder-auth.test.ts` and the resolver case of `folder-settings.test.ts` ported. Vault account/label encoding matches `password-vault.ts` byte for byte. |
 | Folder path helpers | `util/folder-paths.ts` | done | `folder_paths` re-exports `muxus_core::folder_paths`. |
 | Server config (`resolveConfig`) | `config.ts` | n/a | HTTP server binding/token; the native app has no server. |
