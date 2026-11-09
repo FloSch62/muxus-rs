@@ -2057,7 +2057,10 @@ impl AppShell {
             pacing.line_delay_ms = delay;
         }
         let enter_key = self.input_modes(tab_id).enter_key;
-        if !pacing.is_paced() {
+        let too_long = text.encode_utf16().count() > MAX_PACED_PASTE_LENGTH;
+        // A paste the host takes at once still queues behind a paced paste that is running,
+        // so it never lands between that paste's lines (unless the pacer could not take it).
+        if !pacing.is_paced() && (too_long || !self.paste_pending(tab_id)) {
             let sent = view.update(cx, |view, cx| view.send_paste(text, cx));
             if !sent && source {
                 self.reconnect_tab(tab_id, cx);
@@ -2066,7 +2069,7 @@ impl AppShell {
             }
             return;
         }
-        if text.encode_utf16().count() > MAX_PACED_PASTE_LENGTH {
+        if too_long {
             if source {
                 self.show_toast(
                     Status::Error,
