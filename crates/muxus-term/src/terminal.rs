@@ -677,6 +677,10 @@ impl Emulator {
                 }
             }
             10..=12 => self.dynamic_colors(code, data),
+            // Back to the theme's colors; the engine's own reset would set fixed ones.
+            110 => self.overrides.foreground = None,
+            111 => self.overrides.background = None,
+            112 => self.overrides.cursor = None,
             PROGRAM_STATUS_OSC if self.program_status => match parse_program_status(data) {
                 Some(ProgramStatusReport::Query) => self.reply(PROGRAM_STATUS_QUERY_REPLY),
                 Some(report) => {
@@ -1373,6 +1377,28 @@ mod tests {
         assert_eq!(term.colors().foreground, Rgba::rgb(255, 0, 0));
         term.write(b"\x1bc");
         assert_eq!(term.colors().foreground, Rgba::rgb(0xcc, 0xcc, 0xcc));
+    }
+
+    #[test]
+    fn resets_dynamic_colors_to_the_theme() {
+        let mut term = emulator(10, 2);
+        let theme = term.colors();
+        term.write(b"\x1b]10;#ff0000\x07\x1b]11;#00ff00\x07\x1b]12;#0000ff\x07");
+        term.write(b"\x1b]110\x07");
+        let colors = term.colors();
+        assert_eq!(colors.foreground, theme.foreground);
+        assert_eq!(colors.background, Rgba::rgb(0, 255, 0));
+        term.write(b"\x1b]111\x1b\\\x1b]112;\x07");
+        assert_eq!(term.colors(), theme);
+        // The pen keeps the default colors, not fixed ones from the engine.
+        term.write(b"\x1b[0mx\x1b[31;42;39;49my");
+        let cells = term.styled_line(term.scrollback_len()).unwrap();
+        for cell in &cells[..2] {
+            assert_eq!(
+                (cell.style.fg, cell.style.bg),
+                (CellColor::Default, CellColor::Default)
+            );
+        }
     }
 
     #[test]
