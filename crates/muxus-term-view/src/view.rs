@@ -1592,10 +1592,11 @@ impl TerminalView {
             && self.emulator.mouse_protocol() != muxus_term::mouse::MouseProtocol::X10
         {
             for _ in 0..amount.unsigned_abs() {
+                // xterm's wheel up is button 4 (code 64), wheel down button 5 (code 65).
                 let action = if up {
-                    MouseAction::Down
-                } else {
                     MouseAction::Up
+                } else {
+                    MouseAction::Down
                 };
                 self.report_mouse(
                     event.position,

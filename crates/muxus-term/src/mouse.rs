@@ -35,9 +35,9 @@ pub enum MouseButton {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAction {
-    /// Button released (or wheel down).
+    /// Button released (or wheel up).
     Up = 0,
-    /// Button pressed (or wheel up).
+    /// Button pressed (or wheel down).
     Down = 1,
     /// Horizontal wheel left.
     Left = 2,
@@ -262,6 +262,14 @@ mod tests {
             24,
         );
         assert_eq!(wheel.as_deref(), Some(&b"\x1b[<65;5;3M"[..]));
+        let wheel_up = reporter.report(
+            MouseProtocol::Vt200,
+            MouseEncoding::Sgr,
+            event(MouseButton::Wheel, MouseAction::Up),
+            80,
+            24,
+        );
+        assert_eq!(wheel_up.as_deref(), Some(&b"\x1b[<64;5;3M"[..]));
         let pixels = reporter.report(
             MouseProtocol::Any,
             MouseEncoding::SgrPixels,
