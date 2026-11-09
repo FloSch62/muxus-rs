@@ -1038,12 +1038,18 @@ impl SftpPanel {
         .detach();
     }
 
-    /// `run`: one remote operation, then a fresh listing.
+    /// `run`: one remote operation, then a fresh listing. Refused while another operation
+    /// runs: its end would clear `busy` under a transfer still going, and the next transfer
+    /// would replace (and so cancel) that one.
     fn run(
         &mut self,
         operation: impl std::future::Future<Output = Result<(), ApiError>> + 'static,
         cx: &mut Context<Self>,
     ) {
+        if self.busy {
+            Self::warn_busy(cx);
+            return;
+        }
         self.busy = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -1069,6 +1075,10 @@ impl SftpPanel {
     }
 
     fn mkdir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            Self::warn_busy(cx);
+            return;
+        }
         let current = self.current_path();
         let answer = self.dialogs.prompt(
             PromptOptions {
@@ -1102,6 +1112,10 @@ impl SftpPanel {
     }
 
     fn rename(&mut self, entry: SftpEntry, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            Self::warn_busy(cx);
+            return;
+        }
         let current = self.current_path();
         let from = self.remote_path(&entry);
         let answer = self.dialogs.prompt(
@@ -1143,6 +1157,10 @@ impl SftpPanel {
         let Some(entry) = targets.first().cloned() else {
             return;
         };
+        if self.busy {
+            Self::warn_busy(cx);
+            return;
+        }
         let files: Vec<String> = targets
             .iter()
             .map(|target| self.remote_path(target))
@@ -1188,7 +1206,9 @@ impl SftpPanel {
                 return;
             }
             let _ = this.update(cx, |this, cx| {
-                this.selection = SftpSelection::default();
+                if !this.busy {
+                    this.selection = SftpSelection::default();
+                }
                 this.run(
                     async move {
                         // One at a time: the SFTP channel is shared, and a failure stops the
