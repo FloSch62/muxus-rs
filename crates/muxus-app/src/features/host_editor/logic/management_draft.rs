@@ -7,7 +7,7 @@ use muxus_core::protocol::{GnmiProfile, NetconfProfile, SavedHostSessionProfile,
 
 use super::desktop_draft::{port_in_range, saved_gateway_fallbacks};
 use super::js::{has_space, js_number, non_empty};
-use super::native_draft::{optional_patch, parse_host_target, text_patch};
+use super::native_draft::{group_patch, optional_patch, parse_host_target};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ManagementKind {
@@ -206,7 +206,7 @@ pub fn management_draft_to_input(
 /// Muxus-only metadata written right after the host itself saves.
 pub fn management_draft_metadata_patch(draft: &ManagementHostDraft) -> OpenSshMetadataPatch {
     OpenSshMetadataPatch {
-        group: text_patch(&draft.group),
+        group: group_patch(&draft.group),
         color: optional_patch(&draft.color),
         ..OpenSshMetadataPatch::default()
     }

@@ -5,6 +5,8 @@ use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
+use muxus_core::folder_paths::folder_path_segments;
+
 use crate::hosts::organization::{
     GroupKind, compare_sort_order, group_hosts, host_address, host_display_name, host_search_text,
 };
@@ -128,7 +130,7 @@ pub fn group_managed_hosts(
             .metadata
             .group
             .as_deref()
-            .is_some_and(|g| !g.trim().is_empty())
+            .is_some_and(|g| !folder_path_segments(g).is_empty())
     });
     let mut groups: Vec<ManagedHostGroup> =
         group_hosts(ssh_hosts, files, root_file, filter, has_saved_custom_groups)
@@ -160,7 +162,8 @@ pub fn group_managed_hosts(
             .as_deref()
             .map(str::trim)
             .unwrap_or("");
-        if label.is_empty() {
+        // A group of only separators (`/`) names no folder: the host is ungrouped.
+        if folder_path_segments(label).is_empty() {
             ungrouped.push(profile);
             continue;
         }
@@ -719,6 +722,22 @@ pub(crate) mod tests {
             kinds(&groups[0]),
             ["profile:telnet", "profile:serial", "ssh:ssh"]
         );
+    }
+
+    #[test]
+    fn puts_a_profile_whose_folder_is_only_separators_with_the_ungrouped_hosts() {
+        let groups = group_managed_hosts(
+            &[ssh_host("router", None)],
+            &[telnet_host("console", Some("/"))],
+            &[ROOT.into()],
+            Some(ROOT),
+            "",
+        );
+        assert_eq!(
+            groups.iter().map(|g| g.label.as_str()).collect::<Vec<_>>(),
+            ["Hosts"]
+        );
+        assert_eq!(kinds(&groups[0]), ["profile:telnet", "ssh:ssh"]);
     }
 
     #[test]

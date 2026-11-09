@@ -27,7 +27,8 @@ use muxus_term::keywords::keyword_highlight_rules_problem;
 
 use super::js::{non_empty, port_ok, split_words, to_port};
 use super::native_draft::{
-    default_highlights, highlights_patch, optional_patch, parse_host_target, text_patch,
+    default_highlights, group_patch, highlights_patch, optional_patch, parse_host_target,
+    text_patch,
 };
 use super::session_logging::{HostSessionLoggingDraft, blank_host_session_logging_draft};
 
@@ -675,7 +676,7 @@ pub fn draft_to_request(draft: &HostDraft, previous_alias: Option<&str>) -> Host
 pub fn draft_metadata_patch(draft: &HostDraft) -> OpenSshMetadataPatch {
     let mut patch = OpenSshMetadataPatch {
         display_name: text_patch(&draft.display_name),
-        group: text_patch(&draft.group),
+        group: group_patch(&draft.group),
         color: optional_patch(&draft.color),
         terminal_scheme: optional_patch(&draft.terminal_scheme),
         terminal_font_color: optional_patch(&draft.terminal_font_color),

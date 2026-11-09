@@ -203,6 +203,25 @@ fn ungrouped_saved_hosts_join_the_root_file_group() {
 }
 
 #[test]
+fn hosts_whose_folder_is_only_separators_launch_with_the_ungrouped_ones() {
+    let hosts = [
+        ssh_host("plain", None, ROOT, None),
+        ssh_host("slash", Some("/"), ROOT, None),
+    ];
+    let saved = [saved_host("Loose", Some(" // "), None)];
+    let files = [ROOT.to_owned()];
+    let TargetResolution::Found(group) =
+        resolve_command_line_folder("hosts", &hosts, &saved, &files, Some(ROOT))
+    else {
+        panic!("not found");
+    };
+    assert_eq!(
+        group.hosts.iter().map(ManagedHost::key).collect::<Vec<_>>(),
+        ["profile:saved-loose", "ssh:plain", "ssh:slash"]
+    );
+}
+
+#[test]
 fn matches_ids_before_names_and_detects_duplicate_names() {
     let workspaces = [
         workspace("production-id", "Production"),

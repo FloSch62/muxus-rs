@@ -14,7 +14,7 @@ use muxus_ui::icon::icon;
 use muxus_ui::theme::{ActiveTheme, Status};
 use muxus_ui::widgets::dialog::modal;
 
-use crate::features::host_editor::logic::native_draft::{optional_patch, text_patch};
+use crate::features::host_editor::logic::native_draft::{group_patch, optional_patch, text_patch};
 use crate::features::host_editor::services::{self, EditorData};
 use crate::features::host_editor::view::form::{self, Form};
 use crate::features::host_editor::widgets::inputs::{InputCache, Menus};
@@ -122,7 +122,7 @@ impl OrganizeDialog {
         self.busy = true;
         let patch = OpenSshMetadataPatch {
             display_name: text_patch(&self.display_name),
-            group: text_patch(&self.group),
+            group: group_patch(&self.group),
             color: optional_patch(&self.color),
             ..OpenSshMetadataPatch::default()
         };

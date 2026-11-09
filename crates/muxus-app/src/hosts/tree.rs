@@ -867,6 +867,18 @@ mod tests {
     }
 
     #[test]
+    fn keeps_a_host_whose_folder_is_only_separators_as_ungrouped() {
+        let tree = tree_of(&[
+            ssh_host("slash", Some("/")),
+            ssh_host("slashes", Some(" // ")),
+            ssh_host("web", Some("Prod")),
+        ]);
+        assert_eq!(root_labels(&tree), ["Prod", "Ungrouped"]);
+        assert_eq!(tree.file_groups[0].children.len(), 2);
+        assert_eq!(tree.hosts.len(), 3);
+    }
+
+    #[test]
     fn keeps_a_folder_name_to_one_segment() {
         assert_eq!(sanitize_folder_name("k8s/prod"), "k8s prod");
         assert_eq!(sanitize_folder_name("  spaced  out  "), "spaced out");
