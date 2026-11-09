@@ -3,7 +3,8 @@ name: Lint
 # `cargo xtask ci` in two sizes. On main: rustfmt, clippy with warnings as errors, and the
 # layering and style checks, with clippy on every desktop, since much of the code is behind
 # `#[cfg(unix)]` / `#[cfg(windows)]` / `#[cfg(target_os = …)]`. On a pull request: Linux
-# only, plus the tests of the crates the pull request changes.
+# only, plus the tests of the crates the pull request changes (the vendored terminal
+# engine's own suite too when it changes).
 on:
   push:
     branches: [main]
@@ -69,9 +70,12 @@ jobs:
           for crate in $(printf '%s\n' "$changed" | sed -n 's|^crates/\([^/]*\)/.*|\1|p' | sort -u); do
             packages+=(-p "$crate")
           done
-          # The terminal engine is vendored outside the workspace; muxus-term wraps it.
+          # The terminal engine is vendored outside the workspace; muxus-term wraps it, and
+          # the engine has its own tests, run with the features Muxus builds it with (none).
+          engine=false
           if printf '%s\n' "$changed" | grep -q '^vendor/par-term-emu-core/'; then
             packages+=(-p muxus-term)
+            engine=true
           fi
           if [ ${#packages[@]} -eq 0 ]; then
             echo "No crate changed."
@@ -79,3 +83,8 @@ jobs:
           fi
           echo "cargo test --locked ${packages[*]}"
           cargo test --locked "${packages[@]}"
+          if [ "$engine" = true ]; then
+            # Its own workspace and lockfile; the shared target dir reuses the cached builds.
+            echo "cargo test --locked --manifest-path vendor/par-term-emu-core/Cargo.toml"
+            cargo test --locked --manifest-path vendor/par-term-emu-core/Cargo.toml --target-dir target
+          fi
