@@ -1568,9 +1568,20 @@ impl TerminalView {
     }
 
     fn on_scroll(&mut self, event: &ScrollEvent, cx: &mut Context<Self>) {
+        // GPUI turns Shift+wheel into a horizontal scroll. The terminal has none, so Shift+wheel
+        // scrolls vertically like the plain wheel (and still bypasses mouse reporting).
+        let vertical = |x: f32, y: f32| {
+            if event.modifiers.shift && y == 0.0 {
+                x
+            } else {
+                y
+            }
+        };
         let lines = match event.delta {
-            ScrollDelta::Lines(delta) => delta.y,
-            ScrollDelta::Pixels(delta) => f32::from(delta.y) / self.cell.height,
+            ScrollDelta::Lines(delta) => vertical(delta.x, delta.y),
+            ScrollDelta::Pixels(delta) => {
+                vertical(f32::from(delta.x), f32::from(delta.y)) / self.cell.height
+            }
         };
         if event.modifiers.control {
             // Ctrl+wheel zoom, the convention every terminal user tries first.
@@ -2871,6 +2882,40 @@ mod tests {
             view.on_mouse_up(&up(at, MouseButton::Right, Modifiers::default()), cx)
         });
         assert_eq!(sent(&ends, cx), "\x1b[<2;3;2M\x1b[<2;3;2m");
+    }
+
+    #[gpui::test]
+    fn shift_wheel_scrolls_although_it_arrives_horizontal(cx: &mut TestAppContext) {
+        let (view, ends, cx) = terminal(cx, TerminalSettings::default(), 40, 10);
+        let lines: String = (0..100).map(|i| format!("line {i}\r\n")).collect();
+        write(&view, cx, &lines);
+        place(&view, cx, 40, 10);
+        let top = |view: &Entity<TerminalView>, cx: &mut VisualTestContext| {
+            view.read_with(cx, |view, _| view.emulator.viewport_top())
+        };
+        assert_eq!(top(&view, cx), 91);
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        let wheel = |view: &Entity<TerminalView>, cx: &mut VisualTestContext, x: f32| {
+            let event = ScrollEvent {
+                position: cell(view, cx, 2, 2),
+                delta: ScrollDelta::Lines(point(x, 0.0)),
+                modifiers: shift,
+                ..ScrollEvent::default()
+            };
+            view.update(cx, |view, cx| view.on_scroll(&event, cx));
+        };
+        // GPUI hands Shift+wheel up over as a horizontal delta.
+        wheel(&view, cx, 3.0);
+        assert_eq!(top(&view, cx), 88);
+        // Shift still bypasses a program reading the mouse: the wheel scrolls the scrollback.
+        write(&view, cx, "\x1b[?1000h\x1b[?1006h");
+        sent(&ends, cx);
+        wheel(&view, cx, 2.0);
+        assert_eq!(top(&view, cx), 86);
+        assert_eq!(sent(&ends, cx), "");
     }
 
     #[gpui::test]
