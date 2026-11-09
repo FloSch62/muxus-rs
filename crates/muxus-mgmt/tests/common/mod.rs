@@ -190,12 +190,21 @@ where
     F: Fn(Call) -> Fut + Clone + Send + Sync + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
+    listen_at("127.0.0.1:0", handle).await.unwrap()
+}
+
+/// [`listen`] on `address`, which may be unavailable (no IPv6 loopback).
+pub async fn listen_at<F, Fut>(address: &str, handle: F) -> std::io::Result<u16>
+where
+    F: Fn(Call) -> Fut + Clone + Send + Sync + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let listener = TcpListener::bind(address).await?;
+    let port = listener.local_addr()?.port();
     tokio::spawn(async move {
         while let Ok((socket, _)) = listener.accept().await {
             tokio::spawn(serve(socket, handle.clone()));
         }
     });
-    port
+    Ok(port)
 }

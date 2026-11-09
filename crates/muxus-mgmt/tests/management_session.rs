@@ -128,7 +128,11 @@ fn header(call: &common::Call, name: &str) -> Option<String> {
 
 /// A gNMI target that wants admin/secret and serves a little data.
 async fn gnmi_target() -> u16 {
-    common::listen(|mut call| async move {
+    gnmi_target_at("127.0.0.1:0").await.unwrap()
+}
+
+async fn gnmi_target_at(address: &str) -> std::io::Result<u16> {
+    common::listen_at(address, |mut call| async move {
         let path = call.path.clone();
         if path.contains("ServerReflection") {
             call.reply(&[], code::UNIMPLEMENTED, None);
@@ -234,9 +238,13 @@ async fn gnmi_target() -> u16 {
 }
 
 async fn login(session: &Session, port: u16) {
+    login_to(session, "127.0.0.1", port).await;
+}
+
+async fn login_to(session: &Session, host: &str, port: u16) {
     session
         .send(json!({"op": "connect", "profile": {
-            "kind": "gnmi", "host": "127.0.0.1", "port": port, "username": "admin", "tls": "plaintext"
+            "kind": "gnmi", "host": host, "port": port, "username": "admin", "tls": "plaintext"
         }}))
         .await;
     let ManagementServerMessage::AuthPrompt(prompt) = session.next().await else {
@@ -393,6 +401,25 @@ async fn logs_in_runs_requests_and_streams_a_subscription() {
     // Closing the input ends the session.
     session.input.close();
     while session.output.recv().await.is_ok() {}
+}
+
+#[tokio::test]
+async fn connects_to_an_ipv6_address_written_bare_or_in_brackets() {
+    let Ok(port) = gnmi_target_at("[::1]:0").await else {
+        // No IPv6 loopback on this machine.
+        return;
+    };
+    for host in ["::1", "[::1]"] {
+        let session = Session::start(Arc::new(TestEnv::default()));
+        login_to(&session, host, port).await;
+        let ManagementServerMessage::Ready { info, .. } = session.next().await else {
+            panic!("{host}: not ready");
+        };
+        let ManagementSessionInfo::Gnmi(info) = info else {
+            panic!("not a gNMI session");
+        };
+        assert_eq!(info.address, format!("admin@[::1]:{port}"));
+    }
 }
 
 #[tokio::test]
