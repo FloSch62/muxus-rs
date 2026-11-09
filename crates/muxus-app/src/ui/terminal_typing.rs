@@ -41,7 +41,7 @@ impl AppShell {
     }
 
     /// A paced paste went out, or one is running: saved text queues behind it.
-    fn paste_pending(&self, tab_id: &str) -> bool {
+    pub(super) fn paste_pending(&self, tab_id: &str) -> bool {
         self.terminals
             .get(tab_id)
             .and_then(|terminal| terminal.session.as_ref())

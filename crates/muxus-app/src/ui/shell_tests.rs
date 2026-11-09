@@ -277,6 +277,44 @@ fn a_paced_paste_drops_the_selection(cx: &mut TestAppContext) {
         .unwrap();
 }
 
+/// A paste the host takes at once waits for a paced paste that is running instead of landing
+/// between its lines. The test server echoes, and the host's Enter is a bare CR: in order the
+/// line reads "twothree", while "three" sent early would have gone out after "one".
+#[gpui::test]
+fn an_unpaced_paste_waits_for_a_running_paced_paste(cx: &mut TestAppContext) {
+    let fx = Fixture::start(|_| {});
+    let window = main_window(&fx, cx);
+    let tab_id = window
+        .update(cx, |shell, window, cx| {
+            let id = shell.tabs.open(muxus_app::model::ssh_profile("box"), "box");
+            shell.tabs_changed(cx);
+            window.refresh();
+            id
+        })
+        .unwrap();
+    wait_connected(&window, &tab_id, cx);
+    window
+        .update(cx, |shell, _, cx| {
+            shell.paste_into_session(&tab_id, "one\ntwo", Some(300), true, cx);
+            shell.paste_into_session(&tab_id, "three", None, true, cx);
+        })
+        .unwrap();
+    wait_until(cx, Duration::from_secs(10), "both pastes", |cx| {
+        cx.executor().advance_clock(Duration::from_millis(20));
+        cx.run_until_parked();
+        window
+            .update(cx, |shell, _, cx| {
+                let text = shell.terminals[&tab_id]
+                    .view
+                    .read(cx)
+                    .emulator()
+                    .buffer_text();
+                text.contains("twothree")
+            })
+            .unwrap()
+    });
+}
+
 /// A program reporting with OSC 7501 marks its tab: work in progress until the next prompt,
 /// a finished result until the tab is looked at.
 #[gpui::test]
