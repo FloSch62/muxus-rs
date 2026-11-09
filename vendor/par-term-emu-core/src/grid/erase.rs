@@ -49,6 +49,7 @@ impl Grid {
         if start >= end {
             return;
         }
+        self.split_wide_chars_at(row, start, end, PackedColor::pack(bg));
         self.mark_row_content(row);
         let used = self.row_used[row];
         if bg == DEFAULT_BG {
