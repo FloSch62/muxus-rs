@@ -106,9 +106,28 @@ impl DialError {
     }
 }
 
+/// `host` without the brackets an IPv6 address may be written in: what a
+/// socket or an SSH direct-tcpip channel is opened to.
+pub fn bare_host(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
+/// `host:port` as an address or an HTTP/2 authority: an IPv6 address goes in
+/// brackets, whether or not it was written with them.
+pub fn host_port(host: &str, port: u16) -> String {
+    let bare = bare_host(host);
+    if bare.contains(':') {
+        format!("[{bare}]:{port}")
+    } else {
+        format!("{bare}:{port}")
+    }
+}
+
 /// A TCP connection to `host:port`, given up after 15 seconds.
 pub async fn connect_tcp(host: &str, port: u16) -> Result<TcpStream, DialError> {
-    let connect = TcpStream::connect((host.trim_start_matches('[').trim_end_matches(']'), port));
+    let connect = TcpStream::connect((bare_host(host), port));
     let socket = match tokio::time::timeout(TCP_CONNECT_TIMEOUT, connect).await {
         Ok(Ok(socket)) => socket,
         Ok(Err(err)) => return Err(DialError::from_io(&err)),
@@ -128,6 +147,24 @@ pub async fn connect_tcp(host: &str, port: u16) -> Result<TcpStream, DialError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writes_ipv6_hosts_bare_for_dialing_and_bracketed_with_a_port() {
+        assert_eq!(bare_host("[fd00::1]"), "fd00::1");
+        assert_eq!(bare_host("fd00::1"), "fd00::1");
+        assert_eq!(bare_host("leaf1"), "leaf1");
+        assert_eq!(host_port("fd00::1", 57400), "[fd00::1]:57400");
+        assert_eq!(host_port("[fd00::1]", 57400), "[fd00::1]:57400");
+        assert_eq!(host_port("10.0.0.1", 57400), "10.0.0.1:57400");
+        assert_eq!(host_port("leaf1", 57400), "leaf1:57400");
+        // The bracketed form is what an HTTP/2 authority takes.
+        assert!("fd00::1:57400".parse::<http::uri::Authority>().is_err());
+        assert!(
+            host_port("fd00::1", 57400)
+                .parse::<http::uri::Authority>()
+                .is_ok()
+        );
+    }
 
     #[tokio::test]
     async fn words_refused_and_unresolvable_connections() {

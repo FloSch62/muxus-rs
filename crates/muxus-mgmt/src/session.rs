@@ -38,7 +38,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
-use crate::dial::{DialError, connect_tcp};
+use crate::dial::{DialError, bare_host, connect_tcp, host_port};
 use crate::error::{Error, GrpcError, code, describe_error};
 use crate::gnmi::values::pick_encoding;
 use crate::gnmi::{
@@ -865,13 +865,12 @@ impl Session {
                     let services = list_services(&client).await;
                     break GnmiSessionInfo {
                         address: format!(
-                            "{}{}:{}",
+                            "{}{}",
                             username
                                 .as_deref()
                                 .map(|name| format!("{name}@"))
                                 .unwrap_or_default(),
-                            profile.host,
-                            profile.port
+                            host_port(&profile.host, profile.port)
                         ),
                         via: self.used_gateway().map(|gateway| gateway.target),
                         connected_at: now_iso(),
@@ -1007,7 +1006,8 @@ impl Session {
     }
 
     async fn device_stream(&self, profile: &GnmiProfile) -> Result<BoxedStream, ConnectFailure> {
-        let target = format!("{}:{}", profile.host, profile.port);
+        let target = host_port(&profile.host, profile.port);
+        let host = bare_host(&profile.host);
         let lease = self.state().lease.clone();
         Ok(match lease {
             Some(lease) => {
@@ -1017,14 +1017,11 @@ impl Session {
                     .map(|gateway| gateway.target)
                     .unwrap_or_default();
                 self.status(&format!("Connecting to {target} through {via} …"), true);
-                lease.open_direct_tcpip(&profile.host, profile.port).await?
+                lease.open_direct_tcpip(host, profile.port).await?
             }
             None => {
                 self.status(&format!("Connecting to {target} …"), true);
-                self.inner
-                    .env
-                    .connect_tcp(&profile.host, profile.port)
-                    .await?
+                self.inner.env.connect_tcp(host, profile.port).await?
             }
         })
     }
@@ -1035,10 +1032,9 @@ impl Session {
     ) -> Result<(GnmiClient, ManagementTlsInfo), ConnectFailure> {
         let stream = self.device_stream(profile).await?;
         let mode = profile.tls.unwrap_or_default();
-        let authority = format!(
-            "{}:{}",
+        let authority = host_port(
             profile.tls_server_name.as_deref().unwrap_or(&profile.host),
-            profile.port
+            profile.port,
         );
         let mut tls_info = ManagementTlsInfo {
             mode,
@@ -1353,11 +1349,15 @@ impl Session {
                 };
                 let lease = self.state().lease.clone();
                 let stream = match lease {
-                    Some(lease) => lease.open_direct_tcpip(&profile.host, profile.port).await,
+                    Some(lease) => {
+                        lease
+                            .open_direct_tcpip(bare_host(&profile.host), profile.port)
+                            .await
+                    }
                     None => {
                         self.inner
                             .env
-                            .connect_tcp(&profile.host, profile.port)
+                            .connect_tcp(bare_host(&profile.host), profile.port)
                             .await
                     }
                 }
