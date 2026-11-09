@@ -256,6 +256,23 @@ blank the other half.
 | `src/terminal/write.rs` | Every cell write (characters, regional indicators and a flag's spacer) calls it. |
 | `src/terminal/write.rs` (tests), `crates/muxus-term/tests/engine_write.rs` | `overwriting_half_a_wide_character_blanks_the_other_half`, `editing_half_a_wide_character_blanks_the_other_half`, `overwriting_or_deleting_half_a_wide_character_blanks_the_other_half`. |
 
+## REP (`CSI Ps b`)
+
+The engine ignored REP, which `xterm-256color` lists as `rep`: `a CSI 3 b` showed `a` instead of
+`aaaa`, and htop's meter bars and dialog and mc lines came out short. REP prints the graphic
+character printed last Ps more times (0 or none counts as 1), through the same path as printed
+text (charset, pen, wrapping, wide characters). As in xterm.js, it repeats only a character it
+directly follows: any control, sequence or string in between (another REP included) clears it.
+A zero-width character is not repeated.
+
+| File | Change |
+|---|---|
+| `src/terminal/mod.rs` | `Terminal::rep_char`. |
+| `src/terminal/perform.rs` | `print` sets it for a character outside the ASCII run; every other callback clears it (CSI after dispatching, so REP still reads it). |
+| `src/terminal/write.rs` | `flush_print_run` sets it to the run's last byte (once per run, not per byte); `Terminal::repeat_last_graphic`. |
+| `src/terminal/sequences/csi/mod.rs` | The `b` arm without intermediates. |
+| `src/terminal/sequences/csi/tests.rs`, `crates/muxus-term/tests/engine_write.rs` | `rep_repeats_the_character_printed_last` (both), `rep_does_nothing_without_a_character_right_before_it`. |
+
 ## Kept as upstream has it
 
 **OpenTelemetry (`src/otel.rs`, `src/otel/`, 0.80.0).** Always compiled, but without the

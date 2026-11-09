@@ -265,6 +265,10 @@ pub struct Terminal {
     /// [`Terminal::flush_print_run`]) before any other parser callback and
     /// before a parse pass returns, so no code ever observes it pending.
     pub(crate) print_run: Vec<u8>,
+    /// Muxus patch: the graphic character printed last, which REP
+    /// (`CSI Ps b`) repeats. Any other parser callback clears it, as in
+    /// xterm.js, so REP only repeats a character it directly follows.
+    pub(crate) rep_char: Option<char>,
     /// Long-lived Kitty TGP parser; reset between unrelated transmissions.
     pub(crate) kitty_parser: KittyParser,
     /// DECAWM delayed wrap: set after printing in last column
@@ -397,6 +401,7 @@ impl Terminal {
             apc: ApcPrefilterState::default(),
             osc_scratch: Vec::new(),
             print_run: Vec::new(),
+            rep_char: None,
             kitty_parser: KittyParser::new(),
             pending_wrap: false,
             // Initialize pixel dimensions with reasonable defaults (10x20 per cell)
