@@ -1254,8 +1254,9 @@ impl Worker {
     }
 
     /// Move the history of a version-6 application database (BLOB events in
-    /// `session_log_events`) into this root. Sessions already imported are
-    /// skipped, so an interrupted import resumes.
+    /// `session_log_events`) into this root. Each session is imported in one
+    /// transaction and sessions already imported are skipped, so an
+    /// interrupted import resumes.
     fn import_legacy_history(&mut self, legacy_file: &Path) -> Outcome<()> {
         if !legacy_file.exists() || resolve_path(legacy_file) == resolve_path(&self.database_file) {
             return Ok(());
@@ -1330,6 +1331,10 @@ impl Worker {
             } else {
                 session.status
             };
+            // One transaction per session: an interrupted import leaves no
+            // row of it behind, so the next open imports the whole session
+            // again instead of skipping it as already imported.
+            let transaction = self.db.unchecked_transaction()?;
             self.db.execute(
                 "
         INSERT INTO session_logs(
@@ -1490,12 +1495,13 @@ impl Worker {
       ",
                 params![totals.0, totals.1, totals.2, totals.3, id],
             )?;
+            transaction.commit()?;
         }
         Ok(())
     }
 
     fn finish_legacy_part(
-        &mut self,
+        &self,
         id: &str,
         part: u32,
         partial: &Path,
