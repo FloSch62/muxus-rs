@@ -138,6 +138,15 @@ mod tests {
     }
 
     #[test]
+    fn a_hostile_remote_name_stays_in_the_downloads_folder() {
+        let folder = tempfile::tempdir().unwrap();
+        for name in ["../../.bashrc", "/etc/passwd", "..", "a/../../b", "..\\x"] {
+            let path = crate::util::file_dialog::free_path(folder.path(), &local_file_name(name));
+            assert_eq!(path.parent(), Some(folder.path()), "{name}");
+        }
+    }
+
+    #[test]
     fn names_the_folder_in_the_message() {
         assert_eq!(
             downloaded_message(3, Path::new("/home/me/Downloads")),
