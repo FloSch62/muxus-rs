@@ -4,8 +4,11 @@
 
 mod support;
 
-use muxus_core::api::{HostStatsResponse, OpenSshMetadataPatch};
-use muxus_core::protocol::{ExitReason, TerminalServerMessage};
+use std::time::Duration;
+
+use muxus_core::api::{AntiIdle, HostStatsResponse, OpenSshMetadataPatch};
+use muxus_core::js::Patch;
+use muxus_core::protocol::{ExitReason, PasteProgressState, TerminalServerMessage};
 use muxus_session::SessionEvent;
 use muxus_ssh::testing::server::{ServerSpec, start as start_sshd};
 use serde_json::json;
@@ -59,6 +62,11 @@ async fn runs_a_host_set_to_system_openssh_through_the_ssh_program() {
             "krb",
             OpenSshMetadataPatch {
                 system_open_ssh: Some(true),
+                anti_idle: Patch::Set(AntiIdle {
+                    interval_seconds: 10,
+                    text: "still here".into(),
+                    enter: true,
+                }),
                 ..OpenSshMetadataPatch::default()
             },
         )
@@ -97,6 +105,55 @@ async fn runs_a_host_set_to_system_openssh_through_the_ssh_program() {
     // A pty was asked for, so the fake shell echoes what is typed.
     handle.send_data(b"typed text\r".to_vec());
     output_until(&handle, "typed text").await;
+
+    // A paste that waits for the prompt reads the answer to each line. The echoing shell shows
+    // no prompt, so the empty line after each echo stands in for one; the echo of the second
+    // line is the error that stops the paste.
+    handle.send(body(json!({
+        "op": "paste", "text": "first\nbogus\nthird\n",
+        "bracketed": false, "lineDelayMs": 0, "charDelayMs": 0, "enterKey": "lf",
+        "prompt": { "promptPattern": "^$", "timeoutMs": 3000, "errorPattern": "^bogus" },
+    })));
+    let pasted = events_until(&handle, |event| {
+        matches!(
+            event,
+            SessionEvent::Message(TerminalServerMessage::PasteProgress {
+                state: PasteProgressState::Stopped | PasteProgressState::Done,
+                ..
+            })
+        )
+    })
+    .await;
+    assert!(
+        matches!(
+            pasted.last(),
+            Some(SessionEvent::Message(
+                TerminalServerMessage::PasteProgress {
+                    state: PasteProgressState::Stopped,
+                    line: 2,
+                    ..
+                }
+            ))
+        ),
+        "{pasted:?}"
+    );
+
+    // The host's anti-idle text is typed a full interval (10 s) after the last input, so the
+    // wait outlasts the helpers' 10 s for one event.
+    let anti_idle = tokio::time::timeout(Duration::from_secs(25), async {
+        let mut text = String::new();
+        while let Some(event) = handle.next_event().await {
+            if let SessionEvent::Data(data) = event {
+                text.push_str(&String::from_utf8_lossy(&data));
+                if text.contains("still here") {
+                    return true;
+                }
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(anti_idle, Ok(true), "no anti-idle text");
 
     // The file browser shares the terminal's login.
     let home = backend.sftp_home(&conn_id).await.unwrap();
