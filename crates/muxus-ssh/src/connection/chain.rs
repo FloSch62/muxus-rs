@@ -59,9 +59,10 @@ pub struct ChainSources<'a> {
 #[error("{0}")]
 pub struct DialPlanError(pub String);
 
-/// Expand a profile into the ordered list of hosts to dial: every ProxyJump hop (each
-/// recursively resolved through the config, like the `ssh -W` processes OpenSSH would spawn) and
-/// the final target last. Each hop that is a saved alias picks up its own folder's defaults as
+/// Expand a profile into the ordered list of hosts to dial: every ProxyJump hop (each resolved
+/// through the config, like the `ssh -W` processes OpenSSH would spawn) and the final target
+/// last. As with `ssh -J a,b`, only the first hop of a list follows its own ProxyJump; each later
+/// hop is reached through the one before it. Each hop that is a saved alias picks up its own folder's defaults as
 /// the lowest-priority config layer. A hop naming a saved Muxus SSH host dials with that host's
 /// own settings, exactly as connecting to it directly would.
 pub fn build_chain(
@@ -80,6 +81,7 @@ pub fn build_chain(
         parse_host_spec(&profile.target),
         Some(profile.clone()),
         true,
+        true,
         0,
     )?;
     Ok(walker.chain)
@@ -96,12 +98,15 @@ struct Walker<'a> {
 impl Walker<'_> {
     /// `owner` is the Muxus-side profile whose fields win over the resolved base: the requested
     /// profile for the final target, or the saved host a jump hop names. Plain jump hops have
-    /// none and resolve through the config.
+    /// none and resolve through the config. `follow_jumps` is false for a hop after the first of a
+    /// ProxyJump list: OpenSSH reaches it with `ssh -J <previous> -W ...`, which replaces its own
+    /// ProxyJump.
     fn walk(
         &mut self,
         spec: HostSpec,
         owner: Option<SshProfile>,
         is_final: bool,
+        follow_jumps: bool,
         depth: usize,
     ) -> Result<(), DialPlanError> {
         if depth > MAX_JUMP_DEPTH {
@@ -165,9 +170,15 @@ impl Walker<'_> {
             Some(owner) => overlay_profile(base, owner, &user, self.doc),
             None => base,
         };
-        for hop_spec in resolved.proxy_jump.clone() {
+        let jumps = if follow_jumps {
+            resolved.proxy_jump.clone()
+        } else {
+            Vec::new()
+        };
+        for (index, hop_spec) in jumps.into_iter().enumerate() {
+            let first = index == 0;
             let Some(saved_id) = saved_host_hop_id(&hop_spec) else {
-                self.walk(parse_host_spec(&hop_spec), None, false, depth + 1)?;
+                self.walk(parse_host_spec(&hop_spec), None, false, first, depth + 1)?;
                 continue;
             };
             let saved = self.sources.saved_profile.and_then(|f| f(saved_id));
@@ -184,6 +195,7 @@ impl Walker<'_> {
                 parse_host_spec(&saved.target),
                 Some(saved),
                 false,
+                first,
                 depth + 1,
             )?;
         }
