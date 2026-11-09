@@ -169,19 +169,10 @@ pub fn decode_typed_value(typed: Option<&gnmi::TypedValue>) -> GnmiValue {
 }
 
 /// `digits × 10^-precision` as the JavaScript number the TypeScript makes of it.
+/// Written in exponent form, so a device's absurd precision is parsed as a
+/// tiny number instead of being padded out with that many zeros first.
 fn decimal_to_json(digits: i64, precision: u32) -> Value {
-    let negative = digits < 0;
-    let precision = precision as usize;
-    let text = format!("{:0>width$}", digits.unsigned_abs(), width = precision + 1);
-    let whole = if precision > 0 {
-        let split = text.len() - precision;
-        format!("{}.{}", &text[..split], &text[split..])
-    } else {
-        text
-    };
-    let parsed: f64 = format!("{}{whole}", if negative { "-" } else { "" })
-        .parse()
-        .unwrap_or(f64::NAN);
+    let parsed: f64 = format!("{digits}e-{precision}").parse().unwrap_or(f64::NAN);
     js_number(parsed)
 }
 
@@ -465,6 +456,11 @@ mod tests {
         );
         assert_eq!(decimal_to_json(5, 3), json!(0.005));
         assert_eq!(decimal_to_json(500, 2), json!(5));
+        assert_eq!(decimal_to_json(-12_345, 0), json!(-12_345));
+        assert_eq!(decimal_to_json(i64::MIN, 18), json!(-9.223_372_036_854_776));
+        // A hostile precision is a tiny number, not gigabytes of zeros.
+        assert_eq!(decimal_to_json(7, u32::MAX), json!(0));
+        assert_eq!(decimal_to_json(7, 310), json!(7e-310));
     }
 
     #[test]
