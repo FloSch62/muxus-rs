@@ -705,6 +705,8 @@ fn fastpath_events(database: &mut Database, ops: &[InputOp]) -> Vec<FastPathInpu
         let operation = match *op {
             InputOp::KeyPressed(code) => Operation::KeyPressed(Scancode::from_u16(code)),
             InputOp::KeyReleased(code) => Operation::KeyReleased(Scancode::from_u16(code)),
+            InputOp::UnicodePressed(typed) => Operation::UnicodeKeyPressed(typed),
+            InputOp::UnicodeReleased(typed) => Operation::UnicodeKeyReleased(typed),
             InputOp::MouseMove { x, y } => Operation::MouseMove(MousePosition { x, y }),
             InputOp::MouseButton { button, pressed } => {
                 if pressed {

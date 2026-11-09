@@ -4,6 +4,10 @@
 //! Port of the input half of `client/src/remote-desktop/rdp-client.ts`. The output is a list of
 //! [`InputOp`]s, the same device events the TypeScript code hands to IronRDP's input
 //! transactions; the session applies them through IronRDP's input database.
+//!
+//! Keys that type a character go out as Unicode keyboard events instead, when their physical
+//! key is not known for sure (see `typed_char`): what they type then no longer depends on
+//! the server's keyboard layout guessing the right physical key.
 
 use std::collections::BTreeSet;
 
@@ -32,8 +36,9 @@ pub struct Modifiers {
 pub struct KeyEvent {
     /// The physical key, named like `KeyboardEvent.code` (`KeyA`, `ShiftLeft`, `NumpadEnter`).
     pub code: String,
-    /// The produced key value, like `KeyboardEvent.key`. RDP ignores it (the remote layout
-    /// decides what a key means); VNC needs it for keysyms.
+    /// The produced key value, like `KeyboardEvent.key`. RDP sends a character it holds as a
+    /// Unicode event when the key is not a shortcut (see `typed_char`); VNC needs it for
+    /// keysyms.
     pub key: String,
     /// True for keydown, false for keyup.
     pub pressed: bool,
@@ -132,6 +137,9 @@ pub enum InputOp {
         num_lock: bool,
         caps_lock: bool,
     },
+    /// A character typed as a Unicode keyboard event (IronRDP's `UnicodeKeyPressed`).
+    UnicodePressed(char),
+    UnicodeReleased(char),
     /// Let go of every key and button the input database holds.
     ReleaseAll,
     /// The Pause key: the EXTENDED1 sequence (Ctrl 0x1D, then Num Lock 0x45, pressed and
@@ -148,8 +156,10 @@ enum ModifierFlag {
     Meta,
 }
 
+const SHIFT_CODES: [u16; 2] = [0x2a, 0x36];
+
 const MODIFIERS: [(ModifierFlag, [u16; 2]); 4] = [
-    (ModifierFlag::Shift, [0x2a, 0x36]),
+    (ModifierFlag::Shift, SHIFT_CODES),
     (ModifierFlag::Ctrl, [0x1d, 0xe01d]),
     (ModifierFlag::Alt, [0x38, 0xe038]),
     (ModifierFlag::Meta, [0xe05b, 0xe05c]),
@@ -163,6 +173,58 @@ fn is_lock_code(code: &str) -> bool {
     matches!(code, "ScrollLock" | "NumLock" | "CapsLock")
 }
 
+/// Keys whose meaning depends on the keyboard layout (the DOM's "writing system keys").
+fn is_writing_system_code(code: &str) -> bool {
+    code.starts_with("Key")
+        || code.starts_with("Digit")
+        || matches!(
+            code,
+            "Minus"
+                | "Equal"
+                | "BracketLeft"
+                | "BracketRight"
+                | "Backslash"
+                | "Semicolon"
+                | "Quote"
+                | "Backquote"
+                | "Comma"
+                | "Period"
+                | "Slash"
+                | "IntlBackslash"
+                | "IntlRo"
+                | "IntlYen"
+        )
+}
+
+/// The character a key event types when it goes to the server as a Unicode event rather than
+/// a scancode.
+///
+/// The desktop view knows the character a key typed, but not reliably the physical key: it
+/// names the US key that types the same character, which on any other local layout is the
+/// wrong key (German `z` arrived as the server's `y`, `/` as `_`, AltGr+Q as `2`), and
+/// characters no US key types (`ö`, `ß`, `é`) had no key at all. So a key goes as Unicode
+/// when it is a layout-dependent key (letters, digits, punctuation) or has no scancode, its
+/// `key` is a single printable character other than space, and it is not a shortcut: no Ctrl,
+/// Alt or Meta, unless AltGr (`alt_graph`) made the character. Everything else keeps its
+/// scancode: shortcuts (Ctrl+C, Alt+F, Win+R, which applications match by key), named keys
+/// (Enter, Tab, Backspace, Escape, arrows, F-keys, Space), the keypad and modifiers.
+fn typed_char(event: &KeyEvent) -> Option<char> {
+    let mut chars = event.key.chars();
+    let (Some(typed), None) = (chars.next(), chars.next()) else {
+        return None;
+    };
+    if typed.is_control() || typed.is_whitespace() {
+        return None;
+    }
+    let flags = event.modifiers;
+    if flags.meta || ((flags.ctrl || flags.alt) && !flags.alt_graph) {
+        return None;
+    }
+    let layout_key =
+        is_writing_system_code(&event.code) || scancode_for_code(&event.code).is_none();
+    layout_key.then_some(typed)
+}
+
 /// The keyboard state one RDP session keeps between events.
 #[derive(Debug, Default)]
 pub struct RdpKeyboard {
@@ -170,6 +232,8 @@ pub struct RdpKeyboard {
     held_modifiers: BTreeSet<u16>,
     /// Lock-key state as last reported to the server (scroll, num, caps).
     lock_state: Option<(bool, bool, bool)>,
+    /// Other keys pressed as scancodes and not yet released.
+    held_keys: BTreeSet<u16>,
 }
 
 /// The Num Lock state a synchronize event carries when the local state is unknown and the
@@ -192,6 +256,9 @@ impl RdpKeyboard {
         if event.code == "Pause" && !event.modifiers.ctrl {
             return Some(self.pause(event));
         }
+        if let Some(typed) = typed_char(event) {
+            return Some(self.text(event, typed));
+        }
         let scancode = scancode_for_code(&event.code)?;
         let modifier = is_modifier_code(scancode);
         let mut ops = Vec::new();
@@ -213,21 +280,63 @@ impl RdpKeyboard {
             if !is_lock_code(&event.code) && self.sync_lock_keys(event, &mut ops) {
                 // A synchronize event also lets go of every key on the server
                 // ([MS-RDPBCGR] 2.2.8.1.1.3.1.1.5), so held modifiers must go down again.
-                self.held_modifiers.clear();
+                self.forget_held();
             }
             if modifier {
                 self.held_modifiers.insert(scancode);
             } else {
                 self.reconcile_modifiers(event, &mut ops);
+                self.held_keys.insert(scancode);
             }
             ops.push(InputOp::KeyPressed(scancode));
         } else {
             if modifier {
                 self.held_modifiers.remove(&scancode);
+            } else {
+                self.held_keys.remove(&scancode);
             }
             ops.push(InputOp::KeyReleased(scancode));
         }
         Some(ops)
+    }
+
+    /// A typed character: pressed and released at once on the key's press (and on each
+    /// auto-repeat), since its release may carry another character once Shift or AltGr
+    /// changed. Ctrl, Alt and Meta held on the server are let go first: Windows would deliver
+    /// the character with Alt down as a menu shortcut. The release sends nothing, unless the
+    /// key went down as a scancode (Ctrl+A with Ctrl let go first).
+    fn text(&mut self, event: &KeyEvent, typed: char) -> Vec<InputOp> {
+        let mut ops = Vec::new();
+        if !event.pressed {
+            if let Some(scancode) = scancode_for_code(&event.code)
+                && self.held_keys.remove(&scancode)
+            {
+                ops.push(InputOp::KeyReleased(scancode));
+            }
+            return ops;
+        }
+        if self.sync_lock_keys(event, &mut ops) {
+            self.forget_held();
+        }
+        let shortcut_modifiers: Vec<u16> = self
+            .held_modifiers
+            .iter()
+            .copied()
+            .filter(|code| !SHIFT_CODES.contains(code))
+            .collect();
+        for code in shortcut_modifiers {
+            self.held_modifiers.remove(&code);
+            ops.push(InputOp::KeyReleased(code));
+        }
+        ops.push(InputOp::UnicodePressed(typed));
+        ops.push(InputOp::UnicodeReleased(typed));
+        ops
+    }
+
+    /// After a synchronize event the server holds no keys.
+    fn forget_held(&mut self) {
+        self.held_modifiers.clear();
+        self.held_keys.clear();
     }
 
     /// Pause goes out whole on the press; auto-repeat and the release send nothing.
@@ -237,7 +346,7 @@ impl RdpKeyboard {
             return ops;
         }
         if self.sync_lock_keys(event, &mut ops) {
-            self.held_modifiers.clear();
+            self.forget_held();
         }
         self.reconcile_modifiers(event, &mut ops);
         ops.push(InputOp::Pause);
@@ -311,7 +420,7 @@ impl RdpKeyboard {
 
     /// Let go of everything held down, e.g. when focus leaves mid-chord.
     pub fn release_all(&mut self) -> Vec<InputOp> {
-        self.held_modifiers.clear();
+        self.forget_held();
         vec![InputOp::ReleaseAll]
     }
 }
@@ -698,6 +807,134 @@ mod tests {
         brk.pressed = false;
         rdp.key(brk);
         assert_eq!(rdp.sent, ["down 1d", "down e046", "up e046"]);
+    }
+
+    fn typing(pressed: bool, code: &str, key: &str, modifiers: Modifiers) -> KeyEvent {
+        KeyEvent {
+            code: code.to_owned(),
+            key: key.to_owned(),
+            pressed,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn types_characters_as_unicode_whatever_the_local_layout() {
+        let mut rdp = Recorder::new();
+        let none = Modifiers::default();
+        let shift = Modifiers {
+            shift: true,
+            ..none
+        };
+        // German layout: the view names the US key that types the same character.
+        rdp.key(typing(true, "KeyZ", "z", none));
+        rdp.key(typing(false, "KeyZ", "z", none));
+        rdp.key(typing(true, "ShiftLeft", "Shift", shift));
+        // Shift+7 types `/`; Shift stays held on the server.
+        rdp.key(typing(true, "Slash", "/", shift));
+        rdp.key(typing(false, "Digit7", "7", none));
+        rdp.key(typing(false, "ShiftLeft", "Shift", none));
+        // No US key types these: they used to be dropped.
+        rdp.key(typing(true, "", "ö", none));
+        let mut repeat = typing(true, "", "ö", none);
+        repeat.repeat = true;
+        rdp.key(repeat);
+        assert!(rdp.key(typing(false, "", "ö", none)));
+        assert_eq!(
+            rdp.sent,
+            [
+                "sync 010",
+                "UnicodePressed('z')",
+                "UnicodeReleased('z')",
+                "down 2a",
+                "UnicodePressed('/')",
+                "UnicodeReleased('/')",
+                "up 2a",
+                "UnicodePressed('ö')",
+                "UnicodeReleased('ö')",
+                "UnicodePressed('ö')",
+                "UnicodeReleased('ö')",
+            ]
+        );
+    }
+
+    #[test]
+    fn types_altgr_characters_without_ctrl_or_alt_held_on_the_server() {
+        let mut rdp = Recorder::new();
+        // Windows reports AltGr as Ctrl+Alt; the view marks the character as AltGr's.
+        let ctrl_alt = Modifiers {
+            ctrl: true,
+            alt: true,
+            ..Modifiers::default()
+        };
+        rdp.key(typing(true, "ControlLeft", "Control", ctrl_alt));
+        rdp.key(typing(true, "AltLeft", "Alt", ctrl_alt));
+        rdp.sent.clear();
+        let alt_graph = Modifiers {
+            alt_graph: true,
+            ..ctrl_alt
+        };
+        rdp.key(typing(true, "KeyQ", "@", alt_graph));
+        rdp.key(typing(false, "KeyQ", "@", alt_graph));
+        // Letting go of the modifiers afterwards is harmless (the input database knows they
+        // are up).
+        rdp.key(typing(false, "AltLeft", "Alt", Modifiers::default()));
+        assert_eq!(
+            rdp.sent,
+            [
+                "up 1d",
+                "up 38",
+                "UnicodePressed('@')",
+                "UnicodeReleased('@')",
+                "up 38"
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_scancodes_for_shortcuts_and_named_keys() {
+        let mut rdp = Recorder::new();
+        let none = Modifiers::default();
+        let ctrl = Modifiers { ctrl: true, ..none };
+        rdp.key(typing(true, "KeyA", "a", none));
+        rdp.sent.clear();
+        // Ctrl+A goes as the key; let go of Ctrl first and the key still comes back up.
+        rdp.key(typing(true, "KeyA", "a", ctrl));
+        rdp.key(typing(false, "KeyA", "a", none));
+        assert_eq!(rdp.sent, ["down 1d", "down 1e", "up 1e"]);
+        // Alt+F is a menu shortcut, Meta+R a Windows one.
+        rdp.key(typing(true, "KeyF", "f", Modifiers { alt: true, ..none }));
+        rdp.key(typing(true, "KeyR", "r", Modifiers { meta: true, ..none }));
+        assert_eq!(
+            &rdp.sent[3..],
+            [
+                "up 1d",
+                "down 38",
+                "down 21",
+                "up 38",
+                "down e05b",
+                "down 13"
+            ]
+        );
+        rdp.sent.clear();
+        for (code, key) in [
+            ("Space", " "),
+            ("Enter", "Enter"),
+            ("NumpadAdd", "+"),
+            ("Tab", "Tab"),
+        ] {
+            rdp.key(typing(true, code, key, none));
+        }
+        assert_eq!(
+            rdp.sent,
+            [
+                // Meta+R let go of Alt already; Space lets go of Meta.
+                "up e05b", "down 39", "down 1c", "down 4e", "down f"
+            ]
+        );
+        // Keys with no character and no scancode stay the caller's.
+        assert!(!rdp.key(typing(true, "", "Unidentified", none)));
     }
 
     #[test]

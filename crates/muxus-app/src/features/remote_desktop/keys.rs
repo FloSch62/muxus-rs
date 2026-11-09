@@ -6,7 +6,11 @@
 //!
 //! - no physical key, only the layout's key name (`a`, `!`, `enter`, `f5`), so `code` is
 //!   derived from that name in US-layout terms. On a US layout this is exactly what Chrome
-//!   reports; on other layouts letters and symbols map to the US key that produces them;
+//!   reports; on other layouts letters and symbols map to the US key that produces them. RDP
+//!   therefore sends the characters keys type as Unicode events and keeps scancodes for
+//!   shortcuts and named keys (`muxus_rdp`'s `typed_char`);
+//! - no AltGr state: a character Alt (Ctrl+Alt on Windows, Option on macOS) changed is
+//!   marked `alt_graph`, so RDP types it instead of sending an Alt shortcut;
 //! - modifier keys produce no key events, only a modifiers-changed event, from which the
 //!   modifier keydown/keyup pairs are rebuilt (always the left-hand key);
 //! - Shift is dropped from a keystroke whose key is a symbol (`shift-1` arrives as `!`), so the
@@ -180,6 +184,19 @@ pub fn dom_key(keystroke: &Keystroke, modifiers: &GpuiModifiers, caps_lock: bool
     }
 }
 
+/// Whether AltGr (or macOS Option) made the keystroke's character: Alt is held (Windows
+/// reports AltGr as Ctrl+Alt) and the character differs from the key's own, as `@` from
+/// AltGr+Q. Alt+F types a plain `f` and stays a shortcut.
+fn alt_graph(keystroke: &Keystroke, modifiers: &GpuiModifiers) -> bool {
+    modifiers.alt
+        && !modifiers.platform
+        && keystroke.key_char.as_deref().is_some_and(|typed| {
+            !typed.is_empty()
+                && !typed.chars().any(char::is_control)
+                && typed.to_lowercase() != keystroke.key.to_lowercase()
+        })
+}
+
 /// `KeyboardEvent`'s modifier flags for this state.
 pub fn dom_modifiers(modifiers: &GpuiModifiers, caps_lock: bool) -> Modifiers {
     Modifiers {
@@ -247,7 +264,9 @@ impl KeyTranslator {
         self.sync(modifiers, caps_lock);
         let key = dom_key(keystroke, &self.modifiers, self.caps_lock);
         let code = dom_code(&keystroke.key).unwrap_or_default();
-        self.event(code, key, true, repeat)
+        let mut event = self.event(code, key, true, repeat);
+        event.modifiers.alt_graph = alt_graph(keystroke, &self.modifiers);
+        event
     }
 
     pub fn key_up(
@@ -259,7 +278,9 @@ impl KeyTranslator {
         self.sync(modifiers, caps_lock);
         let key = dom_key(keystroke, &self.modifiers, self.caps_lock);
         let code = dom_code(&keystroke.key).unwrap_or_default();
-        self.event(code, key, false, false)
+        let mut event = self.event(code, key, false, false);
+        event.modifiers.alt_graph = alt_graph(keystroke, &self.modifiers);
+        event
     }
 
     /// The modifier (and Caps Lock) key events behind a change of modifier state, presses
@@ -425,7 +446,7 @@ mod tests {
 
     /// The RDP Shift fix end to end: GPUI drops Shift from `shift-1` (it arrives as `!`), so
     /// the event's flags must come from the window state, or the client would let go of Shift
-    /// before the key and the server would type `1`.
+    /// before the next key. Characters go as Unicode; Shift+Tab still needs Shift held.
     #[test]
     fn keeps_shift_held_for_symbols_on_rdp() {
         let mut keys = KeyTranslator::new();
@@ -447,6 +468,12 @@ mod tests {
                 .unwrap(),
         );
         ops.extend(rdp.key(&keys.key_up(&capital, shift(), false)).unwrap());
+        let tab = typed("tab", None);
+        ops.extend(
+            rdp.key(&keys.key_down(&tab, false, shift(), false))
+                .unwrap(),
+        );
+        ops.extend(rdp.key(&keys.key_up(&tab, shift(), false)).unwrap());
         for event in keys.modifiers_changed(GpuiModifiers::default(), false) {
             ops.extend(rdp.key(&event).unwrap());
         }
@@ -462,14 +489,69 @@ mod tests {
                     caps_lock: false
                 },
                 InputOp::KeyPressed(scancode::SHIFT_LEFT),
-                // Shift stays down for the symbol and the capital.
-                InputOp::KeyPressed(0x02),
-                InputOp::KeyReleased(0x02),
-                InputOp::KeyPressed(0x1e),
-                InputOp::KeyReleased(0x1e),
+                // Shift stays down for the symbol, the capital and Shift+Tab.
+                InputOp::UnicodePressed('!'),
+                InputOp::UnicodeReleased('!'),
+                InputOp::UnicodePressed('A'),
+                InputOp::UnicodeReleased('A'),
+                InputOp::KeyPressed(scancode::TAB),
+                InputOp::KeyReleased(scancode::TAB),
                 InputOp::KeyReleased(scancode::SHIFT_LEFT),
             ]
         );
+    }
+
+    /// What a German layout types on RDP: characters as Unicode, whatever US key the view
+    /// guessed for them; shortcuts as keys.
+    #[test]
+    fn types_what_a_non_us_layout_types_on_rdp() {
+        let mut keys = KeyTranslator::new();
+        let mut rdp = RdpKeyboard::new();
+        let none = GpuiModifiers::default();
+        let mut press = |keystroke: Keystroke, modifiers: GpuiModifiers| {
+            rdp.key(&keys.key_down(&keystroke, false, modifiers, false))
+        };
+        let ctrl_alt = GpuiModifiers {
+            control: true,
+            alt: true,
+            ..none
+        };
+        let alt = GpuiModifiers { alt: true, ..none };
+        let sent = [
+            press(typed("z", Some("z")), none),
+            press(typed("/", Some("/")), shift()),
+            // AltGr+Q on Linux (no modifier flag) and on Windows (Ctrl+Alt).
+            press(typed("@", Some("@")), none),
+            press(
+                Keystroke {
+                    modifiers: ctrl_alt,
+                    key: "q".into(),
+                    key_char: Some("@".into()),
+                },
+                ctrl_alt,
+            ),
+            press(typed("ö", Some("ö")), none),
+        ];
+        let unicode: Vec<_> = sent
+            .iter()
+            .map(|ops| {
+                ops.as_ref().unwrap().iter().find_map(|op| match op {
+                    InputOp::UnicodePressed(typed) => Some(*typed),
+                    _ => None,
+                })
+            })
+            .collect();
+        assert_eq!(
+            unicode,
+            [Some('z'), Some('/'), Some('@'), Some('@'), Some('ö')]
+        );
+        // Ctrl+Z and Alt+F stay shortcuts.
+        let ctrl_z = press(typed("z", None), ctrl()).unwrap();
+        assert_eq!(ctrl_z.last(), Some(&InputOp::KeyPressed(0x2c)));
+        assert!(ctrl_z.contains(&InputOp::KeyPressed(scancode::CONTROL_LEFT)));
+        let alt_f = press(typed("f", Some("f")), alt).unwrap();
+        assert_eq!(alt_f.last(), Some(&InputOp::KeyPressed(0x21)));
+        assert!(alt_f.contains(&InputOp::KeyPressed(scancode::ALT_LEFT)));
     }
 
     #[test]
@@ -477,11 +559,11 @@ mod tests {
         let mut keys = KeyTranslator::new();
         let mut rdp = RdpKeyboard::new();
         let none = GpuiModifiers::default();
-        let held = typed("a", Some("a"));
+        let held = typed("backspace", None);
         rdp.key(&keys.key_down(&held, false, none, false)).unwrap();
         let repeat = keys.key_down(&held, true, none, false);
         assert!(repeat.repeat);
-        assert_eq!(rdp.key(&repeat).unwrap(), [InputOp::KeyPressed(0x1e)]);
+        assert_eq!(rdp.key(&repeat).unwrap(), [InputOp::KeyPressed(0x0e)]);
         let caps = keys.modifiers_changed(none, true);
         // A Caps Lock press toggles the server's lock itself, without a sync first.
         assert_eq!(rdp.key(&caps[0]).unwrap(), [InputOp::KeyPressed(0x3a)]);
