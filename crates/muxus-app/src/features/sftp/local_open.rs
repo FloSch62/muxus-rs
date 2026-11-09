@@ -615,7 +615,9 @@ pub fn open_downloaded_file(download: DownloadedFile, target: LocalOpenTarget, c
     let _ = name;
 }
 
-/// Report saves into the copy (polling its size and time, then its contents).
+/// Report saves into the copy (polling its size and time, then its contents) for as long as
+/// the copy is tracked. A missing file is no reason to stop: a rename-style save removes it
+/// for a moment, and [`check_copy`] looks again on the next round.
 fn watch_local_copy(id: String, file: PathBuf, signature: FileSignature, cx: &mut App) {
     cx.spawn(async move |cx| {
         let mut signature = signature;
@@ -625,7 +627,7 @@ fn watch_local_copy(id: String, file: PathBuf, signature: FileSignature, cx: &mu
                 .await;
             let tracked =
                 cx.update(|cx| services(cx).local_copies.read(cx).copies.contains_key(&id));
-            if !tracked || !file.exists() {
+            if !tracked {
                 break;
             }
             let check_file = file.clone();
@@ -1058,6 +1060,21 @@ mod tests {
         assert!(check_copy(&file, &mut signature));
         // The same contents again is no change.
         fs::write(&file, "three").unwrap();
+        assert!(!check_copy(&file, &mut signature));
+    }
+
+    #[test]
+    fn reports_a_save_that_removed_the_file_for_a_moment() {
+        let scratch = tempfile::tempdir().unwrap();
+        let file = scratch.path().join("notes.txt");
+        fs::write(&file, "one").unwrap();
+        let mut signature = file_signature(&file).unwrap();
+        // The editor deleted the copy and has not written the new one yet.
+        fs::remove_file(&file).unwrap();
+        assert!(!check_copy(&file, &mut signature));
+        assert!(!check_copy(&file, &mut signature));
+        fs::write(&file, "two").unwrap();
+        assert!(check_copy(&file, &mut signature));
         assert!(!check_copy(&file, &mut signature));
     }
 
