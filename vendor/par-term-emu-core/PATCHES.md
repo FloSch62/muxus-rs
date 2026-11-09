@@ -204,6 +204,19 @@ lost from copies). xterm and xterm.js wrap there.
 | `src/terminal/write.rs` | The pending wrap is set whenever a character ends at the last column, whatever its width. |
 | `src/terminal/write.rs` (tests), `crates/muxus-term/tests/engine_write.rs` | `a_wide_character_ending_in_the_last_column_leaves_the_wrap_pending`, `a_wide_character_in_the_last_column_wraps_the_next_character`. |
 
+## Combining marks during the pending wrap
+
+A combining mark, variation selector, ZWJ or ZWJ continuation attaches to the character written
+last. While a wrap is pending the cursor still sits on that character in the last column, but the
+engine looked one cell to the left: with 3 columns, `abc` + U+0301 accented the `b` (NFD text
+such as macOS file names). A regional indicator completing a flag looked there too and could
+write its spacer over the last column.
+
+| File | Change |
+|---|---|
+| `src/terminal/write.rs` | `Terminal::last_written_cell`: the cursor's own cell while a wrap is pending, else the one before it, a spacer resolved to its wide character; the combining and ZWJ paths use it. A regional indicator during the pending wrap starts a new pair on the next row. |
+| `src/terminal/write.rs` (tests), `crates/muxus-term/tests/engine_write.rs` | `a_combining_mark_during_the_pending_wrap_joins_the_last_column`, `a_regional_indicator_during_the_pending_wrap_starts_a_new_pair`, `a_combining_mark_after_the_last_column_joins_the_character_there`. |
+
 ## Kept as upstream has it
 
 **OpenTelemetry (`src/otel.rs`, `src/otel/`, 0.80.0).** Always compiled, but without the

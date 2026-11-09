@@ -44,3 +44,12 @@ fn a_wide_character_in_the_last_column_wraps_the_next_character() {
     assert_eq!(row(&term, 1), "x");
     assert_eq!(cursor(&term), (1, 1));
 }
+
+#[test]
+fn a_combining_mark_after_the_last_column_joins_the_character_there() {
+    // NFD text (macOS file names): the accent belongs to the c in the last column.
+    let mut term = emulator(3, 3);
+    term.write("abc\u{301}d".as_bytes());
+    assert_eq!(row(&term, 0), "ab\u{107}");
+    assert_eq!(row(&term, 1), "d");
+}
