@@ -16,7 +16,7 @@ use muxus_session::Backend;
 use muxus_store::prefs::command_buttons::{
     CommandButton, command_button_input, command_button_label, is_secret_command_button,
 };
-use muxus_ui::gpui_kit::{App, Global, Pixels, Point, Window};
+use muxus_ui::gpui_kit::{App, Global, Window};
 
 /// The secret a button types: its id and the name it is known by.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,7 +28,6 @@ pub struct SecretRef {
 type SendInput = Rc<dyn Fn(&str, &str, &mut Window, &mut App) -> bool>;
 type FocusTerminal = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 type SendSecret = Rc<dyn Fn(&str, &SecretRef, bool, &mut Window, &mut App) -> bool>;
-type CursorAnchor = Rc<dyn Fn(&str, &mut Window, &mut App) -> Option<Point<Pixels>>>;
 
 /// What running a command needs from the window's terminals.
 #[derive(Clone, Default)]
@@ -42,9 +41,6 @@ pub struct CommandHooks {
     /// tab and the panes mirroring it (asking for the master password while
     /// the vault wants one). False when the tab is not a connected terminal.
     pub send_secret: Option<SendSecret>,
-    /// Where the terminal's caret is (`cursorAnchorPosition`), for the
-    /// keyboard menu; the menu centres itself without one.
-    pub cursor_anchor: Option<CursorAnchor>,
 }
 
 impl Global for CommandHooks {}

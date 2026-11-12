@@ -23,7 +23,7 @@ use muxus_ui::widgets::menu::{self, MenuItem, menu_divider};
 
 use super::model::{CommandButtons, prefs};
 use super::palette::command_button_ink;
-use super::run::{command_hooks, focus_terminal, run_command_button};
+use super::run::{focus_terminal, run_command_button};
 use crate::features::launcher::kit::show_toast;
 use crate::features::settings::vault_secrets::{find_vault_secret, vault_secret_missing};
 
@@ -59,20 +59,28 @@ impl Focusable for CommandButtonMenu {
     }
 }
 
-/// Open the menu at the active terminal's caret.
+/// Open the menu at `anchor` (the active terminal's caret), else the
+/// window's centre. The window reads the caret itself: asking it back from
+/// in here would read the window while it is still opening the menu.
 pub fn open_command_menu(
     model: Entity<CommandButtons>,
+    anchor: Option<Point<Pixels>>,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<CommandButtonMenu> {
-    cx.new(|cx| CommandButtonMenu::new(model, window, cx))
+    cx.new(|cx| CommandButtonMenu::new(model, anchor, window, cx))
 }
 
 /// The manage item's slot in `focused`.
 const MANAGE: usize = usize::MAX;
 
 impl CommandButtonMenu {
-    pub fn new(model: Entity<CommandButtons>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        model: Entity<CommandButtons>,
+        anchor: Option<Point<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search commands"));
         let subscriptions = vec![
             cx.observe(&model, |_, _, cx| cx.notify()),
@@ -83,11 +91,6 @@ impl CommandButtonMenu {
                 }
             }),
         ];
-        let tab = model.read(cx).active_id().map(str::to_owned);
-        let anchor = match (tab, command_hooks(cx).cursor_anchor) {
-            (Some(tab), Some(anchor)) => anchor(&tab, window, cx),
-            _ => None,
-        };
         search.update(cx, |state, cx| state.focus(window, cx));
         Self {
             model,

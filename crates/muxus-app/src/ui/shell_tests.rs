@@ -625,3 +625,34 @@ fn toasts_offer_copy_and_details(cx: &mut TestAppContext) {
         })
         .unwrap();
 }
+
+/// Ctrl+Space closed the app instead of showing the command menu: the menu asked the window
+/// for the terminal's caret while the window was still opening it, and reading the window
+/// mid-update panicked. The window hands the caret to the menu now.
+#[gpui::test]
+fn the_command_menu_opens_over_a_connected_terminal(cx: &mut TestAppContext) {
+    let fx = Fixture::start(|_| {});
+    let window = main_window(&fx, cx);
+    let tab_id = window
+        .update(cx, |shell, window, cx| {
+            let id = shell.tabs.open(muxus_app::model::ssh_profile("box"), "box");
+            shell.tabs_changed(cx);
+            window.refresh();
+            id
+        })
+        .unwrap();
+    wait_connected(&window, &tab_id, cx);
+    let opened = window
+        .update(cx, |shell, window, cx| shell.open_command_menu(window, cx))
+        .unwrap();
+    assert!(opened);
+    let mounted = window
+        .update(cx, |shell, _, _| {
+            shell
+                .overlays
+                .iter()
+                .any(|overlay| overlay.key == "command-menu")
+        })
+        .unwrap();
+    assert!(mounted);
+}

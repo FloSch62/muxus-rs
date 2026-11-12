@@ -18,8 +18,7 @@
 
 use muxus_app::features::command_buttons::multi_exec_control::multi_exec_control;
 use muxus_app::features::command_buttons::{
-    CommandButtons, CommandHooks, MultiExec, action_bar, open_command_buttons, open_command_menu,
-    set_command_hooks,
+    CommandButtons, MultiExec, action_bar, open_command_buttons, open_command_menu,
 };
 use muxus_app::features::launcher::demo::{connected_tab, demo_env, run_demo};
 use muxus_app::state::tabs::{IdGen, TabPatch, TabsState};
@@ -182,14 +181,6 @@ fn main() {
                 },
             );
         }
-        // The caret of web-01's prompt, where the Ctrl+Space menu opens.
-        set_command_hooks(
-            CommandHooks {
-                cursor_anchor: Some(std::rc::Rc::new(|_, _, _| Some(point(px(410.), px(161.))))),
-                ..CommandHooks::default()
-            },
-            cx,
-        );
         let model: Entity<CommandButtons> = cx.new(|cx| CommandButtons::new(backend.clone(), cx));
         model.update(cx, |model, cx| model.set_tabs(&tabs, cx));
         let (bar, control, overlay): (Option<AnyView>, Option<AnyView>, Option<AnyView>) =
@@ -202,7 +193,16 @@ fn main() {
                 "menu" => (
                     Some(action_bar(model.clone(), cx).into()),
                     None,
-                    Some(open_command_menu(model.clone(), window, cx).into()),
+                    // The caret of web-01's prompt, where the Ctrl+Space menu opens.
+                    Some(
+                        open_command_menu(
+                            model.clone(),
+                            Some(point(px(410.), px(161.))),
+                            window,
+                            cx,
+                        )
+                        .into(),
+                    ),
                 ),
                 "multi-exec" | "multi-exec-off" => {
                     let multi = cx.new(|_| MultiExec::new());

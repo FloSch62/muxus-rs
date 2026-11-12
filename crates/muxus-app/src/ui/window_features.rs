@@ -569,7 +569,12 @@ impl AppShell {
         let Some(model) = self.features.command_buttons.clone() else {
             return false;
         };
-        let menu = open_command_menu(model, window, cx);
+        let anchor = self
+            .tabs
+            .active_id
+            .clone()
+            .and_then(|id| self.cursor_anchor(&id, cx));
+        let menu = open_command_menu(model, anchor, window, cx);
         self.mount_overlay(
             "command-menu",
             menu,
@@ -770,11 +775,6 @@ fn install_command_hooks(cx: &mut App) {
                 shell.focus_terminal(&tab_id, window, cx);
             });
         }
-    }));
-    hooks.cursor_anchor = Some(Rc::new(|tab_id, window, cx| {
-        let shell = crate::ui::features::shell_for_window(window, cx)?;
-        let view = shell.read(cx).terminal_of(tab_id)?;
-        view.read(cx).cursor_anchor()
     }));
     set_command_hooks(hooks, cx);
 }
