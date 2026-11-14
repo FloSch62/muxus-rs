@@ -68,10 +68,32 @@ impl Focusable for PromptDialog {
     }
 }
 
-/// `label={p.prompt.replace(/:\s*$/, '')}`.
-fn field_label(prompt: &str) -> String {
-    let trimmed = prompt.trim_end();
-    trimmed.strip_suffix(':').unwrap_or(trimmed).to_string()
+/// A server's prompt as the dialog lays it out (`auth-prompt-text.ts`).
+#[derive(Debug, PartialEq)]
+struct PromptText {
+    /// What the field is labelled with.
+    label: String,
+    /// Lines the server sent ahead of the question, shown above the field.
+    text: Option<String>,
+}
+
+/// A keyboard-interactive prompt may be a whole screen of text: Duo sends its menu of options
+/// and the question as one prompt. A field label holds a single line, so only the last line
+/// labels the field and the rest stays readable above it.
+fn prompt_text(prompt: &str) -> PromptText {
+    let prompt = prompt.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines: Vec<&str> = prompt.trim_end().split('\n').collect();
+    let last = lines.pop().unwrap_or_default().trim();
+    let label = last.strip_suffix(':').unwrap_or(last).to_string();
+    let first = lines
+        .iter()
+        .position(|line| !line.trim().is_empty())
+        .unwrap_or(lines.len());
+    let text = lines[first..].join("\n").trim_end().to_string();
+    PromptText {
+        label,
+        text: (!text.is_empty()).then_some(text),
+    }
 }
 
 /// Checks before a new vault's master password is sent.
@@ -237,11 +259,23 @@ impl PromptDialog {
             stack = stack.child(Alert::new(Status::Error, error.clone()));
         }
         for (index, (field, input)) in info.prompts.iter().zip(&self.answers).enumerate() {
+            let PromptText { label, text } = prompt_text(&field.prompt);
+            if let Some(text) = text {
+                // A paragraph lays out a single line of the server's text, so each gets its own.
+                stack = stack.child(div().flex().flex_col().children(text.split('\n').map(
+                    |line| {
+                        paragraph(line.to_string())
+                            .size(body2.size)
+                            .line_height(body2.line_height)
+                            .color(p.text.secondary)
+                    },
+                )));
+            }
             stack = stack.child(
                 // The notched label sits above the field's top edge.
                 div().pt(px(6.)).child(
                     TextField::new(SharedString::from(format!("auth-prompt-{index}")), input)
-                        .label(field_label(&field.prompt))
+                        .label(label)
                         .full_width(),
                 ),
             );
@@ -719,11 +753,69 @@ impl AppShell {
 mod tests {
     use super::*;
 
+    fn label_only(label: &str) -> PromptText {
+        PromptText {
+            label: label.into(),
+            text: None,
+        }
+    }
+
     #[test]
-    fn labels_drop_the_trailing_colon() {
-        assert_eq!(field_label("Verification code: "), "Verification code");
-        assert_eq!(field_label("Password:"), "Password");
-        assert_eq!(field_label("PIN"), "PIN");
+    fn labels_the_field_with_a_one_line_prompt_without_its_colon() {
+        assert_eq!(
+            prompt_text("Verification code: "),
+            label_only("Verification code")
+        );
+        assert_eq!(prompt_text("Password:"), label_only("Password"));
+        assert_eq!(prompt_text("PIN"), label_only("PIN"));
+        assert_eq!(
+            prompt_text("admin@core's password"),
+            label_only("admin@core's password")
+        );
+    }
+
+    #[test]
+    fn keeps_a_menu_sent_ahead_of_the_question_readable_above_the_field() {
+        let prompt = [
+            "Duo two-factor login for admin",
+            "",
+            "Enter a passcode or select one of the following options:",
+            "",
+            " 1. Duo Push to XXX-XXX-0130",
+            " 2. Phone call to XXX-XXX-0130",
+            "",
+            "Passcode or option (1-2): ",
+        ]
+        .join("\n");
+        assert_eq!(
+            prompt_text(&prompt),
+            PromptText {
+                label: "Passcode or option (1-2)".into(),
+                text: Some(
+                    [
+                        "Duo two-factor login for admin",
+                        "",
+                        "Enter a passcode or select one of the following options:",
+                        "",
+                        " 1. Duo Push to XXX-XXX-0130",
+                        " 2. Phone call to XXX-XXX-0130",
+                    ]
+                    .join("\n")
+                ),
+            }
+        );
+    }
+
+    #[test]
+    fn ignores_blank_lines_around_the_prompt_and_carriage_returns() {
+        assert_eq!(
+            prompt_text("\r\n\r\nBanner line\r\nToken: \r\n"),
+            PromptText {
+                label: "Token".into(),
+                text: Some("Banner line".into()),
+            }
+        );
+        assert_eq!(prompt_text("\n\nToken: \n"), label_only("Token"));
     }
 
     #[test]
