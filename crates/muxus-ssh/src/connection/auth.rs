@@ -1,8 +1,10 @@
 //! OpenSSH's client auth order: none → agent (with IdentitiesOnly, only the identities that
 //! match a configured identity) → configured certificates with their matching private keys →
 //! identity files (config ones first, else the default id_* files) with passphrase prompts →
-//! keyboard-interactive → password. Every attempt happens inside one SSH connection, like the
-//! real client.
+//! keyboard-interactive → password. That order is a preference, not a single pass: each reply
+//! from the server picks the first untried attempt it currently accepts, so a multi-step login
+//! can ask for a method it did not advertise until an earlier one succeeded. Every attempt
+//! happens inside one SSH connection, like the real client.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -388,26 +390,34 @@ impl AuthLadder {
         handle: &mut Handle<ClientHandler>,
     ) -> Result<AuthReport, AuthError> {
         let user = self.cx.hop.user.clone();
+        let attempts = self.build();
+        // Attempts already offered, or found to have nothing to offer.
+        let mut tried = vec![false; attempts.len()];
         let mut remaining: Option<MethodSet> = None;
-        for attempt in self.build() {
+        loop {
             if self.cancelled {
                 return Err(AuthError::Cancelled);
             }
+            // The server told us which methods can still succeed; pass over the rest without
+            // spending them, since a later step may start accepting them.
+            let next = (0..attempts.len()).find(|&index| {
+                let kind = attempts[index].kind();
+                !tried[index]
+                    && (kind == AttemptKind::None
+                        || remaining
+                            .as_ref()
+                            .is_none_or(|left| left.contains(&kind.wire())))
+            });
+            let Some(index) = next else {
+                tracing::debug!(?remaining, "ssh auth ladder exhausted");
+                break;
+            };
+            tried[index] = true;
+            let attempt = &attempts[index];
             let kind = attempt.kind();
-            // The server told us which methods can still succeed; skip the rest.
-            if kind != AttemptKind::None
-                && let Some(left) = &remaining
-                && !left.iter().any(|m| *m == kind.wire())
-            {
-                tracing::debug!(
-                    method = method_name(kind),
-                    "ssh auth method not accepted by server; skipping"
-                );
-                continue;
-            }
             self.key_algorithm = None;
             let outcome = match self
-                .attempt(handle, &user, &attempt, remaining.as_ref())
+                .attempt(handle, &user, attempt, remaining.as_ref())
                 .await
             {
                 Ok(outcome) => outcome,
