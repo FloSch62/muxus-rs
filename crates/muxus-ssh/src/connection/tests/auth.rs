@@ -461,6 +461,117 @@ async fn lists_every_method_of_a_multi_factor_login_in_order() {
     );
 }
 
+const PASSCODE: &str = "1";
+
+/// Takes the password first and only then offers a keyboard-interactive passcode, as a Duo
+/// host does.
+fn password_then_passcode() -> ServerSpec {
+    let mut spec = ServerSpec::new().password(PASSWORD);
+    spec.require_all = vec![MethodKind::Password, MethodKind::KeyboardInteractive];
+    spec.next_factor_only = true;
+    spec.kbd_rounds = vec![KbdRound {
+        name: String::new(),
+        instructions: String::new(),
+        prompts: vec![("Passcode or option (1-3): ".into(), true)],
+        answers: vec![PASSCODE.into()],
+    }];
+    spec
+}
+
+#[tokio::test]
+async fn logs_in_when_the_second_factor_is_only_offered_after_the_password() {
+    let server = start(password_then_passcode()).await;
+    let sandbox = Sandbox::new();
+    lab(&sandbox, server.port(), &[]);
+    let io = TestIo::accepting(PASSWORD);
+    io.answers.lock().unwrap().extend([
+        crate::connection::io::answers([PASSWORD]),
+        crate::connection::io::answers([PASSCODE]),
+    ]);
+    let lease = connect(&sandbox.manager(), io.clone()).await.unwrap();
+    assert_eq!(
+        server.auth_events(),
+        vec![
+            "auth password:accepted user=tester".to_string(),
+            "auth keyboard-interactive:passed round=0".to_string(),
+        ]
+    );
+    assert_eq!(
+        lease.connection().facts.handshake.auth_methods,
+        vec!["password".to_string(), "keyboard-interactive".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn reuses_a_saved_password_when_the_passcode_is_only_asked_for_after_it() {
+    let server = start(password_then_passcode()).await;
+    let sandbox = Sandbox::new();
+    lab(&sandbox, server.port(), &[]);
+    let vault = MemoryVault::unlocked();
+    let mut options = sandbox.options();
+    options.vault = Some(vault.clone());
+    let manager = SshConnectionManager::new(options);
+    let io = TestIo::accepting(PASSCODE);
+    io.answers
+        .lock()
+        .unwrap()
+        .push_back(crate::connection::AuthPromptResponse {
+            answers: vec![PASSWORD.into()],
+            remember_password: Some(true),
+            skipped: None,
+        });
+    let lease = connect(&manager, io).await.unwrap();
+    lease.connection().wait_for_post_auth().await;
+    let account = ssh_password_account("tester", "127.0.0.1", server.port());
+    assert_eq!(
+        vault
+            .passwords
+            .lock()
+            .unwrap()
+            .get(&account)
+            .map(String::as_str),
+        Some(PASSWORD)
+    );
+    lease.connection().close();
+    drop(lease);
+
+    // A fresh connection sends the saved password and asks only for the passcode.
+    let io = TestIo::accepting(PASSCODE);
+    let fresh = manager
+        .connect(
+            &SshProfile::new("lab"),
+            io.clone(),
+            ConnectionLeaseOwner::Terminal,
+            ConnectOptions {
+                dedicated_transport: true,
+                ..ConnectOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    let purposes: Vec<_> = io
+        .prompts
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|prompt| prompt.purpose)
+        .collect();
+    assert_eq!(
+        purposes,
+        vec![Some(crate::connection::AuthPromptPurpose::Authentication)]
+    );
+    assert_eq!(
+        server.auth_events(),
+        vec![
+            "auth password:accepted user=tester".to_string(),
+            "auth keyboard-interactive:passed round=0".to_string(),
+            "auth password:accepted user=tester".to_string(),
+            "auth keyboard-interactive:passed round=0".to_string(),
+        ]
+    );
+    drop(fresh);
+}
+
 // --- keyboard-interactive and remembered passwords ---
 
 fn password_round(answer: &str) -> KbdRound {

@@ -30,8 +30,13 @@ pub struct ServerSpec {
     pub password: Option<String>,
     pub authorized_keys: Vec<PublicKey>,
     pub kbd_rounds: Vec<KbdRound>,
-    /// Methods required in order (multi-factor); each must pass before the next is offered.
+    /// Methods required (multi-factor). Every one still missing is advertised, unless
+    /// [`ServerSpec::next_factor_only`] is set.
     pub require_all: Vec<MethodKind>,
+    /// Advertise only the next method of `require_all`, the way OpenSSH's
+    /// AuthenticationMethods does: a Duo host offers its keyboard-interactive passcode only once
+    /// the password is in.
+    pub next_factor_only: bool,
     pub banner: Option<String>,
     pub greeting: String,
     pub max_sessions: Option<usize>,
@@ -89,6 +94,7 @@ impl ServerSpec {
             authorized_keys: Vec::new(),
             kbd_rounds: Vec::new(),
             require_all: Vec::new(),
+            next_factor_only: false,
             banner: None,
             greeting: "shell ok\n".into(),
             max_sessions: None,
@@ -262,18 +268,27 @@ impl ServerHandler {
         self.log.lock().unwrap().events.push(event);
     }
 
+    /// The required methods still to pass that the server advertises.
+    fn missing(&self) -> Vec<MethodKind> {
+        let missing = self
+            .spec
+            .require_all
+            .iter()
+            .filter(|m| !self.passed.contains(m))
+            .cloned();
+        if self.spec.next_factor_only {
+            missing.take(1).collect()
+        } else {
+            missing.collect()
+        }
+    }
+
     /// Accept now, or ask for the next required factor.
     fn passed(&mut self, method: MethodKind) -> Auth {
         if !self.passed.contains(&method) {
             self.passed.push(method);
         }
-        let missing: Vec<MethodKind> = self
-            .spec
-            .require_all
-            .iter()
-            .filter(|m| !self.passed.contains(m))
-            .cloned()
-            .collect();
+        let missing = self.missing();
         if missing.is_empty() {
             Auth::Accept
         } else {
@@ -288,12 +303,7 @@ impl ServerHandler {
         let remaining: Vec<MethodKind> = if self.spec.require_all.is_empty() {
             self.spec.methods.clone()
         } else {
-            self.spec
-                .require_all
-                .iter()
-                .filter(|m| !self.passed.contains(m))
-                .cloned()
-                .collect()
+            self.missing()
         };
         Auth::Reject {
             proceed_with_methods: Some(MethodSet::from(remaining.as_slice())),
