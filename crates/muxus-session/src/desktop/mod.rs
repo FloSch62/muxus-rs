@@ -455,6 +455,7 @@ impl Backend {
         let session = session::Session::new(
             self.database().clone(),
             self.vault().clone(),
+            self.password_managers().clone(),
             self.connections().clone(),
             sender,
             options,

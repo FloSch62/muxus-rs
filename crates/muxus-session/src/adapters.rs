@@ -1,21 +1,33 @@
 //! The store and the SSH layer, behind the traits the lower crates asked for.
 //!
-//! The lower layers never reach into each other: `muxus-ssh` asks for a [`muxus_ssh::PasswordVault`]
-//! and a [`FolderAuthSource`], the recorder for a [`HistorySink`], login sequences for a
-//! [`SecretVault`] and a [`LoginSequenceSource`], host statistics for a [`RemoteCommand`], and
-//! connection diagnostics for [`DiagnosticHop`]s. This module implements them over
-//! `muxus-store` and `muxus-ssh`, the way `server/src/app.ts` wired the TypeScript server.
+//! The lower layers never reach into each other: `muxus-ssh` asks for a [`muxus_ssh::PasswordVault`],
+//! a [`FolderAuthSource`] and the [`LinkedPasswords`] of external password managers, the
+//! recorder for a [`HistorySink`], login sequences for a [`SecretVault`] and a
+//! [`LoginSequenceSource`], host statistics for a [`RemoteCommand`], connection diagnostics
+//! for [`DiagnosticHop`]s, and `muxus-passwords` for the [`SourceStore`] its managers are
+//! kept in. This module implements them over `muxus-store`, `muxus-ssh` and
+//! `muxus-passwords`, the way `server/src/app.ts` wired the TypeScript server.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use muxus_core::api::{LoginSequence, SessionEndStatus, SessionLogCreateInput};
+use muxus_core::api::{
+    ExternalPasswordRef, LoginSequence, PasswordManagerConfig, PasswordManagerKind,
+    SessionEndStatus, SessionLogCreateInput,
+};
+use muxus_core::protocol::{AuthPromptInfo, AuthPromptResponse};
+use muxus_passwords::{
+    PasswordManagerIo, PasswordManagers, PromptCancelled, SourceStore, StoredSource,
+};
+use muxus_rdp::passwords::DesktopPrompts;
 use muxus_ssh::connection::chain::expanded_proxy_command;
 use muxus_ssh::connection::session::{SessionRequest, open_session};
-use muxus_ssh::connection::{BoxFuture, ChainHop, ManagedConnection};
+use muxus_ssh::connection::{
+    BoxFuture, Cancelled, ChainHop, ConnectIo, LinkedPasswords, ManagedConnection,
+};
 use muxus_ssh::folder_auth::{FolderAuthSource, FolderSettingsRow as SshFolderRow};
 use muxus_store::Database;
-use muxus_store::db::HostRef;
+use muxus_store::db::{HostRef, PasswordManagerSourceRow};
 use muxus_store::history::{PartPolicy, SessionHistoryStore, SessionStatePatch};
 use muxus_store::vault::{PasswordVault, VaultError as StoreVaultError};
 use russh::ChannelMsg;
@@ -51,6 +63,135 @@ impl FolderAuthSource for StoreFolderAuth {
     fn group_for_saved_host(&self, id: &str) -> Option<String> {
         self.0.group_for_saved_host(id).ok().flatten()
     }
+}
+
+// --- external password managers --------------------------------------------------------------
+
+/// The connected password managers, kept in the database (`new PasswordManagers(database)`).
+pub struct StorePasswordSources(pub Arc<Database>);
+
+fn stored_source(row: PasswordManagerSourceRow) -> StoredSource {
+    StoredSource {
+        id: row.id,
+        kind: row.kind,
+        name: row.name,
+        config: row.config,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    }
+}
+
+impl SourceStore for StorePasswordSources {
+    fn list(&self) -> Result<Vec<StoredSource>, String> {
+        self.0
+            .list_password_manager_sources()
+            .map(|rows| rows.into_iter().map(stored_source).collect())
+            .map_err(|error| error.to_string())
+    }
+
+    fn get(&self, id: &str) -> Result<Option<StoredSource>, String> {
+        self.0
+            .password_manager_source(id)
+            .map(|row| row.map(stored_source))
+            .map_err(|error| error.to_string())
+    }
+
+    fn create(
+        &self,
+        kind: PasswordManagerKind,
+        name: &str,
+        config: &PasswordManagerConfig,
+    ) -> Result<StoredSource, String> {
+        self.0
+            .create_password_manager_source(kind.as_str(), name, config)
+            .map(stored_source)
+            .map_err(|error| error.to_string())
+    }
+
+    fn update(
+        &self,
+        id: &str,
+        name: &str,
+        config: &PasswordManagerConfig,
+    ) -> Result<Option<StoredSource>, String> {
+        self.0
+            .update_password_manager_source(id, name, config)
+            .map(|row| row.map(stored_source))
+            .map_err(|error| error.to_string())
+    }
+
+    fn delete(&self, id: &str) -> Result<bool, String> {
+        self.0
+            .delete_password_manager_source(id)
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// The connected password managers for SSH logins: a linked entry is read, and its
+/// manager unlocked, through the connection's own status lines and prompts.
+pub struct LinkedEntries(pub Arc<PasswordManagers>);
+
+struct ConnectPrompts(Arc<dyn ConnectIo>);
+
+#[async_trait]
+impl PasswordManagerIo for ConnectPrompts {
+    fn status(&self, message: &str, transient: bool) {
+        self.0.status(message, transient);
+    }
+
+    async fn prompt(&self, info: AuthPromptInfo) -> Result<AuthPromptResponse, PromptCancelled> {
+        self.0.prompt(info).await.map_err(|_| PromptCancelled)
+    }
+}
+
+impl LinkedPasswords for LinkedEntries {
+    fn password_for<'a>(
+        &'a self,
+        entry: &'a ExternalPasswordRef,
+        io: Arc<dyn ConnectIo>,
+    ) -> BoxFuture<'a, Result<Option<String>, Cancelled>> {
+        Box::pin(async move {
+            self.0
+                .password_for(entry, &ConnectPrompts(io))
+                .await
+                .map_err(|_| Cancelled)
+        })
+    }
+}
+
+/// An RDP, VNC or gNMI login's prompts, as the password managers ask them. A prompt that
+/// was withdrawn reads as skipped there; the closing session ends the login anyway.
+struct LogonPrompts<'a>(&'a dyn DesktopPrompts);
+
+#[async_trait]
+impl PasswordManagerIo for LogonPrompts<'_> {
+    fn status(&self, message: &str, transient: bool) {
+        self.0.status(message, transient);
+    }
+
+    async fn prompt(&self, info: AuthPromptInfo) -> Result<AuthPromptResponse, PromptCancelled> {
+        Ok(self.0.prompt(info).await)
+    }
+}
+
+/// The password of the password-manager entry a saved host is linked to, for an RDP, VNC
+/// or gNMI login in progress. `None` when the host has no entry or it could not be read,
+/// which `prompts` was then told.
+pub(crate) async fn linked_host_password(
+    managers: &PasswordManagers,
+    database: &Database,
+    profile_id: Option<&str>,
+    prompts: &dyn DesktopPrompts,
+) -> Option<String> {
+    let entry = database
+        .password_ref_for_saved_host(profile_id?)
+        .ok()
+        .flatten()?;
+    managers
+        .password_for(&entry, &LogonPrompts(prompts))
+        .await
+        .ok()
+        .flatten()
 }
 
 // --- the password vault ----------------------------------------------------------------------

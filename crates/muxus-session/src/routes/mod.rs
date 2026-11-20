@@ -12,6 +12,7 @@
 //! | `forwards.ts`, `tunnels.ts` | [`forwards`] |
 //! | `profiles.ts`, `host-order.ts`, `terminal-snapshots.ts`, `metadata-schema.ts` | [`hosts`] |
 //! | `local-files.ts` | [`local_files`] |
+//! | `password-managers.ts` | [`password_managers`] |
 //! | `password-vault.ts` | [`vault`] |
 //! | `session-history.ts` | [`history`] |
 //! | `sftp.ts`, `ws/sftp-lease-socket.ts` | [`sftp`] |
@@ -28,6 +29,7 @@ pub mod forwards;
 pub mod history;
 pub mod hosts;
 pub mod local_files;
+pub mod password_managers;
 pub mod sftp;
 pub mod ssh;
 pub mod vault;

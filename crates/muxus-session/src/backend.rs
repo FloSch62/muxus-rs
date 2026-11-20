@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use muxus_local::pty::LocalEnvironment;
+use muxus_passwords::PasswordManagers;
 use muxus_ssh::LocalEnv;
 use muxus_ssh::connection::{ManagerOptions, SshConnectionManager};
 use muxus_ssh::folder_auth::{folder_auth_resolver, saved_profile_folder_auth_resolver};
@@ -23,7 +24,9 @@ use muxus_store::vault::{
 };
 use tokio::runtime::{Handle, Runtime};
 
-use crate::adapters::{StoreFolderAuth, StoreHistory, StoreVault};
+use crate::adapters::{
+    LinkedEntries, StoreFolderAuth, StoreHistory, StorePasswordSources, StoreVault,
+};
 use crate::data_dir::{DataLocation, DataSource};
 use crate::diagnostics::DiagnosticProbes;
 use crate::error::{ApiError, ApiResult};
@@ -210,6 +213,8 @@ pub(crate) struct Shared {
     local_environment: Mutex<Option<LocalEnvironment>>,
     pub database: Arc<Database>,
     pub vault: Arc<PasswordVault>,
+    /// Connected external password managers (KeePass, 1Password, Bitwarden, …).
+    pub password_managers: Arc<PasswordManagers>,
     pub history: Arc<SessionHistoryStore>,
     pub prefs: Mutex<muxus_store::prefs::PrefsStore>,
     pub connections: SshConnectionManager,
@@ -343,6 +348,7 @@ impl Backend {
             shared.connections.close_all();
             shared.x11.close();
             shared.vault.dispose();
+            shared.password_managers.dispose();
             let _ = shared.history.close().await;
             let _ = tx.send(());
         });
@@ -373,6 +379,11 @@ impl Backend {
     /// management passwords).
     pub fn vault(&self) -> &Arc<PasswordVault> {
         &self.shared.vault
+    }
+
+    /// The connected password managers, for layers that read a linked entry themselves.
+    pub fn password_managers(&self) -> &Arc<PasswordManagers> {
+        &self.shared.password_managers
     }
 
     /// The session history store, for layers that record sessions of their own.
@@ -454,6 +465,7 @@ struct Parts {
     local_environment: Option<LocalEnvironment>,
     database: Arc<Database>,
     vault: Arc<PasswordVault>,
+    password_managers: Arc<PasswordManagers>,
     history: Arc<SessionHistoryStore>,
     prefs: muxus_store::prefs::PrefsStore,
     connections: SshConnectionManager,
@@ -475,6 +487,7 @@ impl Parts {
             local_environment: Mutex::new(self.local_environment),
             database: self.database,
             vault: self.vault,
+            password_managers: self.password_managers,
             history: self.history,
             prefs: Mutex::new(self.prefs),
             connections: self.connections,
@@ -566,11 +579,17 @@ async fn initialize(options: BackendOptions, runtime: Handle) -> ApiResult<Parts
         bundled_server_shell: x11_server_shell,
         ..LocalX11Options::default()
     }));
+    // `~` in a database or store path is the home this backend was given.
+    let password_managers = Arc::new(PasswordManagers::for_host(
+        Arc::new(StorePasswordSources(database.clone())),
+        muxus_passwords::HostEnv::system().with_home(&home),
+    ));
     let connections = SshConnectionManager::new(manager_options(
         &local_env,
         env_lookup.clone(),
         database.clone(),
         vault.clone(),
+        password_managers.clone(),
         x11.clone(),
     ));
     connections
@@ -642,6 +661,7 @@ async fn initialize(options: BackendOptions, runtime: Handle) -> ApiResult<Parts
         local_environment,
         database,
         vault,
+        password_managers,
         history: Arc::new(history),
         prefs,
         connections,
@@ -657,11 +677,21 @@ fn manager_options(
     env_lookup: EnvLookup,
     database: Arc<Database>,
     vault: Arc<PasswordVault>,
+    password_managers: Arc<PasswordManagers>,
     x11: Arc<LocalX11>,
 ) -> ManagerOptions {
     let mut options = ManagerOptions::new(local_env.clone());
     options.env_lookup = env_lookup;
     options.vault = Some(Arc::new(StoreVault(vault)));
+    options.password_managers = Some(Arc::new(LinkedEntries(password_managers)));
+    let db = database.clone();
+    options.password_ref_for_host = Some(Arc::new(move |alias: &str| {
+        db.password_ref_for_alias(alias).ok().flatten()
+    }));
+    let db = database.clone();
+    options.password_ref_for_profile = Some(Arc::new(move |id: &str| {
+        db.password_ref_for_saved_host(id).ok().flatten()
+    }));
     let saved_db = database.clone();
     options.saved_ssh_profile = Some(Arc::new(move |id: &str| {
         match saved_db.saved_host_profile(id).ok().flatten()?.profile {

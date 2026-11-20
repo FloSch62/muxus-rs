@@ -32,6 +32,12 @@ struct TestEnv {
     recorded: Mutex<Vec<String>>,
     lease: Mutex<Option<Arc<FakeLease>>>,
     trusted: Mutex<Vec<TrustedIdentity>>,
+    /// The port of the gNMI target saved as "saved-gnmi".
+    saved_gnmi: Mutex<Option<u16>>,
+    /// What the password-manager entry linked to "saved-gnmi" holds, when it can be read.
+    linked: Mutex<Option<String>>,
+    /// The saved hosts whose linked entry a login asked for.
+    linked_asked: Mutex<Vec<String>>,
 }
 
 impl ManagementEnv for TestEnv {
@@ -55,9 +61,37 @@ impl ManagementEnv for TestEnv {
     }
 
     fn saved_profile(&self, profile_id: &str) -> Option<ManagementProfile> {
+        if profile_id == "saved-gnmi" {
+            let port = (*self.saved_gnmi.lock().unwrap())?;
+            return Some(
+                serde_json::from_value(json!({
+                    "kind": "gnmi", "host": "127.0.0.1", "port": port, "username": "admin",
+                    "tls": "plaintext", "profileId": "saved-gnmi",
+                }))
+                .unwrap(),
+            );
+        }
         (profile_id == "saved").then(|| {
             serde_json::from_value(json!({"kind": "netconf", "host": "r1", "profileId": "saved"}))
                 .unwrap()
+        })
+    }
+
+    fn linked_password<'a>(
+        &'a self,
+        profile_id: &'a str,
+        io: &'a SessionIo,
+    ) -> BoxFuture<'a, Option<String>> {
+        Box::pin(async move {
+            self.linked_asked
+                .lock()
+                .unwrap()
+                .push(profile_id.to_owned());
+            let password = self.linked.lock().unwrap().clone();
+            if password.is_some() {
+                io.status("Using the password of “leaf1” from KeePass.", true);
+            }
+            password
         })
     }
 
@@ -401,6 +435,104 @@ async fn logs_in_runs_requests_and_streams_a_subscription() {
     // Closing the input ends the session.
     session.input.close();
     while session.output.recv().await.is_ok() {}
+}
+
+#[tokio::test]
+async fn logs_a_saved_host_in_with_its_linked_password_manager_entry() {
+    let port = gnmi_target().await;
+    let env = Arc::new(TestEnv::default());
+    *env.saved_gnmi.lock().unwrap() = Some(port);
+    *env.linked.lock().unwrap() = Some("secret".into());
+    let session = Session::start(env.clone());
+    // The tab still holds what the host looked like before; the saved host says where to go.
+    session
+        .send(json!({"op": "connect", "profile": {
+            "kind": "gnmi", "host": "old-name", "port": 1, "profileId": "saved-gnmi"
+        }}))
+        .await;
+    // No prompt: the entry's password was what the device wanted.
+    let mut statuses = Vec::new();
+    let ready = loop {
+        let message = tokio::time::timeout(Duration::from_secs(5), session.output.recv())
+            .await
+            .expect("the session went quiet")
+            .expect("the session ended");
+        match message {
+            ManagementServerMessage::Status { message, .. } => statuses.push(message),
+            other => break other,
+        }
+    };
+    assert!(
+        matches!(ready, ManagementServerMessage::Ready { .. }),
+        "{ready:?}"
+    );
+    assert_eq!(*env.linked_asked.lock().unwrap(), ["saved-gnmi"]);
+    assert!(
+        statuses
+            .iter()
+            .any(|status| status == "Using the password of “leaf1” from KeePass."),
+        "{statuses:?}"
+    );
+    assert!(
+        statuses
+            .iter()
+            .any(|status| status.starts_with("Using the saved password for ")),
+        "{statuses:?}"
+    );
+}
+
+#[tokio::test]
+async fn asks_for_the_password_when_the_linked_entry_is_stale_or_cannot_be_read() {
+    let port = gnmi_target().await;
+    let env = Arc::new(TestEnv::default());
+    *env.saved_gnmi.lock().unwrap() = Some(port);
+    *env.linked.lock().unwrap() = Some("an-old-password".into());
+    let connect = json!({"op": "connect", "profile": {
+        "kind": "gnmi", "host": "127.0.0.1", "port": port, "profileId": "saved-gnmi"
+    }});
+    let session = Session::start(env.clone());
+    session.send(connect.clone()).await;
+    let ManagementServerMessage::AuthPrompt(prompt) = session.next().await else {
+        panic!("no login prompt after the device turned the entry's password down");
+    };
+    assert_eq!(
+        prompt.instructions.as_deref(),
+        Some("The saved password was not accepted. Enter the current password.")
+    );
+    session
+        .send(json!({"op": "auth-response", "answers": ["secret"]}))
+        .await;
+    assert!(matches!(
+        session.next().await,
+        ManagementServerMessage::Ready { .. }
+    ));
+
+    // An entry that could not be read leaves the login to the prompt, without a complaint
+    // about a saved password that was never tried.
+    *env.linked.lock().unwrap() = None;
+    let session = Session::start(env.clone());
+    session.send(connect).await;
+    let ManagementServerMessage::AuthPrompt(prompt) = session.next().await else {
+        panic!("no login prompt");
+    };
+    assert_eq!(prompt.instructions, None);
+    session
+        .send(json!({"op": "auth-response", "answers": ["secret"]}))
+        .await;
+    assert!(matches!(
+        session.next().await,
+        ManagementServerMessage::Ready { .. }
+    ));
+
+    // A host that is not saved has nothing linked to it.
+    let before = env.linked_asked.lock().unwrap().len();
+    let unsaved = Session::start(env.clone());
+    login(&unsaved, port).await;
+    assert!(matches!(
+        unsaved.next().await,
+        ManagementServerMessage::Ready { .. }
+    ));
+    assert_eq!(env.linked_asked.lock().unwrap().len(), before);
 }
 
 #[tokio::test]

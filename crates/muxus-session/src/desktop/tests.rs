@@ -966,6 +966,151 @@ async fn remembers_a_vnc_password_and_uses_it_next_time() {
     sandbox.stop().await;
 }
 
+/// A saved VNC host linked to the "web1" entry of the KeePass database KeePassXC wrote.
+async fn linked_vnc_host(sandbox: &Sandbox, port: u16) -> (String, serde_json::Value) {
+    let backend = &sandbox.backend;
+    let database = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../muxus-passwords/tests/fixtures/keepassxc-kdbx3.kdbx");
+    let source = backend
+        .create_password_manager(
+            serde_json::from_value(serde_json::json!({
+                "kind": "keepass", "config": { "path": database.to_string_lossy() },
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    backend
+        .unlock_password_manager(&source.id, "master-pw-1")
+        .await
+        .unwrap();
+    let entry = backend
+        .password_manager_entries(&source.id, false)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.title == "web1")
+        .unwrap();
+    let saved = backend
+        .save_saved_host(
+            serde_json::from_value(serde_json::json!({
+                "name": "design-vm",
+                "profile": { "kind": "vnc", "host": "127.0.0.1", "port": port },
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    backend
+        .patch_saved_host_metadata(
+            &saved.id,
+            serde_json::from_value(serde_json::json!({
+                "passwordRef": { "sourceId": source.id, "entryId": entry.id, "title": entry.title },
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let profile = serde_json::json!({
+        "kind": "vnc", "profileId": saved.id, "host": "127.0.0.1", "port": port,
+    });
+    (source.id, profile)
+}
+
+#[tokio::test]
+async fn logs_a_saved_host_in_with_its_linked_password_manager_entry() {
+    let sandbox = Sandbox::start().await;
+    let server = RfbServer::start(RfbSecurity::VncAuth, 0).await;
+    let (source, profile) = linked_vnc_host(&sandbox, server.port).await;
+
+    // The database is unlocked: nothing is asked.
+    let handle = sandbox.open(profile.clone());
+    let events = until(&handle, |event| matches!(event, DesktopEvent::Connected(_))).await;
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, DesktopEvent::AuthPrompt(_))),
+        "{events:?}"
+    );
+    assert!(
+        statuses(&events)
+            .contains(&"Using the password of “web1” from KeePass – keepassxc-kdbx3.".to_owned()),
+        "{events:?}"
+    );
+    handle.close();
+    exit_of(&handle).await;
+
+    // Locked, the logon asks for the database password first.
+    sandbox
+        .backend
+        .lock_password_manager(&source)
+        .await
+        .unwrap();
+    let locked = sandbox.open(profile.clone());
+    let DesktopEvent::AuthPrompt(prompt) = next_question(&locked).await else {
+        panic!("no unlock prompt");
+    };
+    assert_eq!(prompt.purpose, Some(AuthPromptPurpose::VaultUnlock));
+    assert_eq!(prompt.prompts[0].prompt, "Database password");
+    locked.answer_auth(answer("master-pw-1"));
+    assert!(matches!(
+        next_question(&locked).await,
+        DesktopEvent::Connected(_)
+    ));
+    locked.close();
+    exit_of(&locked).await;
+
+    // The same password was sent each time: the entry's.
+    let responses = server.responses.lock().unwrap().clone();
+    assert_eq!(responses.len(), 2);
+    sandbox.stop().await;
+}
+
+#[tokio::test]
+async fn asks_for_the_desktop_password_when_unlocking_its_password_manager_is_skipped() {
+    let sandbox = Sandbox::start().await;
+    let server = RfbServer::start(RfbSecurity::VncAuth, 0).await;
+    let (source, profile) = linked_vnc_host(&sandbox, server.port).await;
+    sandbox
+        .backend
+        .lock_password_manager(&source)
+        .await
+        .unwrap();
+
+    let handle = sandbox.open(profile.clone());
+    let DesktopEvent::AuthPrompt(unlock) = next_question(&handle).await else {
+        panic!("no unlock prompt");
+    };
+    assert_eq!(unlock.skip_label.as_deref(), Some("Use another password"));
+    handle.answer_auth(Some(AuthPromptResponse {
+        skipped: Some(true),
+        ..AuthPromptResponse::default()
+    }));
+    let DesktopEvent::AuthPrompt(logon) = next_question(&handle).await else {
+        panic!("no logon prompt");
+    };
+    assert_ne!(logon.purpose, Some(AuthPromptPurpose::VaultUnlock));
+    handle.answer_auth(answer("typed"));
+    assert!(matches!(
+        next_question(&handle).await,
+        DesktopEvent::Connected(_)
+    ));
+    handle.close();
+    exit_of(&handle).await;
+
+    // The same address opened without the saved host has no entry to read.
+    let unsaved = sandbox.open(serde_json::json!({
+        "kind": "vnc", "host": "127.0.0.1", "port": server.port,
+    }));
+    let DesktopEvent::AuthPrompt(logon) = next_question(&unsaved).await else {
+        panic!("no logon prompt");
+    };
+    assert_ne!(logon.purpose, Some(AuthPromptPurpose::VaultUnlock));
+    unsaved.close();
+    exit_of(&unsaved).await;
+    sandbox.stop().await;
+}
+
 /// `acceptServerKey`: a new key is the user's call and pinned once trusted; the pinned key
 /// passes; a different one is a warning; another port is another server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -987,6 +1132,7 @@ async fn pins_a_vnc_server_key_and_asks_again_when_it_changes() {
         let session = Session::new(
             sandbox.backend.database().clone(),
             sandbox.backend.vault().clone(),
+            sandbox.backend.password_managers().clone(),
             sandbox.backend.connections().clone(),
             sender,
             DesktopOptions::default(),

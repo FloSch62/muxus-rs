@@ -144,6 +144,17 @@ pub trait ManagementEnv: Send + Sync + 'static {
         None
     }
 
+    /// The password of the password-manager entry a saved host is linked to, for a login
+    /// in progress: its manager is unlocked through `io` when it has to be. `None` when
+    /// the host has no entry, or it could not be read, which `io` was then told.
+    fn linked_password<'a>(
+        &'a self,
+        _profile_id: &'a str,
+        _io: &'a SessionIo,
+    ) -> BoxFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+
     /// A direct TCP connection to a device.
     fn connect_tcp<'a>(
         &'a self,
@@ -827,11 +838,20 @@ impl Session {
         let mut password: Option<String> = None;
         let mut used_saved = false;
         let mut remember: Option<(PasswordRef, String)> = None;
-        if let (Some(name), Some(vault)) = (&username, &passwords) {
+        if let Some(name) = &username {
             let reference = password_ref(profile, self.used_gateway().as_ref(), name);
-            if vault.has(&reference.account)
-                && let Ok(Some(saved)) = vault.read(&reference, &io).await
+            // The host's linked password-manager entry, or else its saved password.
+            let mut saved = match profile.profile_id.as_deref() {
+                Some(id) => self.inner.env.linked_password(id, &io).await,
+                None => None,
+            };
+            if saved.is_none()
+                && let Some(vault) = &passwords
+                && vault.has(&reference.account)
             {
+                saved = vault.read(&reference, &io).await.ok().flatten();
+            }
+            if let Some(saved) = saved {
                 password = Some(saved);
                 used_saved = true;
                 self.status(

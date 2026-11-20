@@ -14,6 +14,7 @@ use muxus_core::protocol::{
     RememberPasswordOffer, SavedHostSessionProfile, SshGateway, VncProfile,
 };
 use muxus_mgmt::dial::{DialError, DialFailure};
+use muxus_passwords::PasswordManagers;
 use muxus_rdp::passwords::{
     DesktopPasswords, DesktopPrompts, LogonAnswer, LogonPrompt, VaultPasswordRef,
 };
@@ -90,6 +91,8 @@ struct State {
 pub(super) struct Session {
     database: Arc<Database>,
     vault: StoreDesktopVault,
+    /// External password managers the host's linked entry is read from.
+    password_managers: Arc<PasswordManagers>,
     connections: SshConnectionManager,
     events: async_channel::Sender<DesktopEvent>,
     options: DesktopOptions,
@@ -181,6 +184,7 @@ impl Session {
     pub(super) fn new(
         database: Arc<Database>,
         vault: Arc<PasswordVault>,
+        password_managers: Arc<PasswordManagers>,
         connections: SshConnectionManager,
         events: async_channel::Sender<DesktopEvent>,
         options: DesktopOptions,
@@ -188,6 +192,7 @@ impl Session {
         Arc::new(Self {
             database,
             vault: StoreDesktopVault(vault),
+            password_managers,
             connections,
             events,
             options,
@@ -706,6 +711,30 @@ impl Session {
 
     // --- credentials -----------------------------------------------------------------------
 
+    /// The host's linked password-manager entry, or else the saved password, unlocking
+    /// whichever holds it when that has to be done first.
+    async fn saved_password(
+        self: &Arc<Self>,
+        reference: &VaultPasswordRef,
+        prompts: &Prompts,
+    ) -> Result<Option<String>, String> {
+        let profile = self.profile();
+        let linked = crate::adapters::linked_host_password(
+            &self.password_managers,
+            &self.database,
+            profile_id(&profile),
+            prompts,
+        )
+        .await;
+        if linked.is_some() {
+            return Ok(linked);
+        }
+        DesktopPasswords::new(Some(&self.vault), prompts)
+            .read(reference)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     /// RDP needs the whole logon before it connects: NLA runs CredSSP in the client, and
     /// TLS-only servers take it in the Client Info PDU.
     async fn load_rdp_credentials(
@@ -718,11 +747,7 @@ impl Session {
         if !rejected && let Some(user) = &username {
             let reference = self.password_ref(user);
             let prompts = Prompts(self.clone());
-            let passwords = DesktopPasswords::new(Some(&self.vault), &prompts);
-            let saved = passwords
-                .read(&reference)
-                .await
-                .map_err(|error| error.to_string())?;
+            let saved = self.saved_password(&reference, &prompts).await?;
             if let Some(password) = saved {
                 self.status(
                     &format!("Using the saved password for {}.", reference.label),
@@ -824,11 +849,7 @@ impl Session {
                 ""
             });
             let prompts = Prompts(self.clone());
-            let passwords = DesktopPasswords::new(Some(&self.vault), &prompts);
-            let saved = passwords
-                .read(&reference)
-                .await
-                .map_err(|error| error.to_string())?;
+            let saved = self.saved_password(&reference, &prompts).await?;
             if let Some(password) = saved {
                 self.status(
                     &format!("Using the saved password for {}.", reference.label),

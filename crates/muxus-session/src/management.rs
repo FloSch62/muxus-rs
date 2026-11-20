@@ -53,6 +53,7 @@ impl Backend {
         let env = Arc::new(BackendManagementEnv {
             database: self.database().clone(),
             vault: self.vault().clone(),
+            password_managers: self.password_managers().clone(),
             connections: self.connections().clone(),
         });
         let _runtime = self.runtime().enter();
@@ -140,6 +141,7 @@ impl ManagementRequestStore for RequestStore<'_> {
 pub struct BackendManagementEnv {
     database: Arc<Database>,
     vault: Arc<PasswordVault>,
+    password_managers: Arc<muxus_passwords::PasswordManagers>,
     connections: SshConnectionManager,
 }
 
@@ -187,6 +189,23 @@ impl ManagementEnv for BackendManagementEnv {
         Some(Arc::new(ManagementPasswords {
             vault: StoreDesktopVault(self.vault.clone()),
         }))
+    }
+
+    fn linked_password<'a>(
+        &'a self,
+        profile_id: &'a str,
+        io: &'a SessionIo,
+    ) -> MgmtFuture<'a, Option<String>> {
+        Box::pin(async move {
+            let prompts = SessionPrompts(io.clone());
+            crate::adapters::linked_host_password(
+                &self.password_managers,
+                &self.database,
+                Some(profile_id),
+                &prompts,
+            )
+            .await
+        })
     }
 
     fn connect_ssh_gateway<'a>(
