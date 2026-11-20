@@ -767,6 +767,7 @@ impl LocalCopySyncEnv for AppLocalCopies {
                         overwrite: true,
                         expected_mtime_ms: expected_mtime_ms.map(|ms| ms as f64),
                         size,
+                        source: None,
                     },
                     source,
                     move |step| {

@@ -18,7 +18,7 @@ pub mod upload;
 pub use fs::{SftpError, SftpSource};
 pub use lease::SftpWindowLease;
 pub use progress::{ByteProgress, CancelSignal, ProgressMeter, UploadStep};
-pub use service::{SftpDownload, SftpService, UploadOptions};
+pub use service::{DownloadRange, SftpDownload, SftpService, UploadOptions, UploadSource};
 pub use types::*;
 
 #[cfg(test)]

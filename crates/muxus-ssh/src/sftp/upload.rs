@@ -3,12 +3,17 @@
 //! here, so both create folders, report progress and ask before replacing a file alike.
 
 use std::collections::HashSet;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::progress::{ByteProgress, CancelSignal, UploadStep};
-use super::service::{SFTP_DESTINATION_EXISTS, SftpService, UploadOptions};
+use super::service::{
+    SFTP_DESTINATION_EXISTS, SFTP_UPLOAD_MISMATCH, SftpService, UploadOptions, UploadSource,
+};
 use crate::Problem;
 use crate::connection::io::BoxFuture;
 
@@ -103,13 +108,26 @@ pub trait UploadDeps: Send + Sync {
         path: &'a str,
     ) -> BoxFuture<'a, Result<(), UploadError>>;
 
+    /// What identifies a local file to the server, so that it can continue an upload of it that
+    /// a lost connection cut short. `None` for a file that is sent whole every time.
+    fn source<'a>(
+        &'a self,
+        file: &'a DroppedFile,
+    ) -> BoxFuture<'a, Result<Option<UploadSource>, UploadError>> {
+        Box::pin(async move { Ok(upload_source(file).await.map_err(Problem::from)?) })
+    }
+
     /// Uploads one file. Without `overwrite`, an existing destination fails with a 409
-    /// `SFTP_DESTINATION_EXISTS` problem.
+    /// `SFTP_DESTINATION_EXISTS` problem. With a `source`, an interrupted upload of the same file
+    /// is continued, or refused with a 409 `SFTP_UPLOAD_MISMATCH` problem when what the server
+    /// kept is not this file's.
+    #[allow(clippy::too_many_arguments)]
     fn upload<'a>(
         &'a self,
         conn_id: &'a str,
         path: &'a str,
         overwrite: bool,
+        source: Option<&'a UploadSource>,
         file: &'a DroppedFile,
         cancel: &'a CancelSignal,
         on_step: &'a mut (dyn FnMut(UploadStep) + Send),
@@ -187,9 +205,76 @@ fn visit(
     Ok(())
 }
 
-fn is_destination_exists(error: &UploadError) -> bool {
+/// Smaller files are sent whole again: continuing them would save less than the checks cost.
+pub const MIN_RESUMABLE_UPLOAD_BYTES: u64 = 1024 * 1024;
+const FINGERPRINT_WINDOW_BYTES: u64 = 64 * 1024;
+const FINGERPRINT_SPACING_BYTES: u64 = 1024 * 1024;
+/// Bounds what is read to 16 MiB; larger files get their windows further apart.
+const MAX_FINGERPRINT_WINDOWS: u64 = 256;
+
+/// Where the fingerprint's windows start in a file of `size` bytes: spread evenly from its first
+/// to its last bytes, at most 1 MiB apart.
+pub fn fingerprint_windows(size: u64) -> Vec<u64> {
+    let span = size.saturating_sub(FINGERPRINT_WINDOW_BYTES);
+    let gaps = (MAX_FINGERPRINT_WINDOWS - 1).min(span.div_ceil(FINGERPRINT_SPACING_BYTES));
+    (0..=gaps)
+        .map(|index| {
+            if gaps == 0 {
+                return 0;
+            }
+            // `Math.round(index * span / gaps)`.
+            let (numerator, gaps) = (u128::from(index) * u128::from(span), u128::from(gaps));
+            ((2 * numerator + gaps) / (2 * gaps)) as u64
+        })
+        .collect()
+}
+
+/// SHA-256 of 64 KiB windows spread evenly over a file of `size` bytes. With its size and time,
+/// it tells the server which interrupted upload is this file's, without reading the whole file
+/// first.
+pub fn upload_fingerprint<R: Read + Seek>(file: &mut R, size: u64) -> std::io::Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    let mut window = vec![0u8; FINGERPRINT_WINDOW_BYTES as usize];
+    for start in fingerprint_windows(size) {
+        file.seek(SeekFrom::Start(start))?;
+        let mut filled = 0;
+        while filled < window.len() {
+            match file.read(&mut window[filled..])? {
+                0 => break,
+                read => filled += read,
+            }
+        }
+        hasher.update(&window[..filled]);
+    }
+    Ok(hasher.finalize().into())
+}
+
+/// The size, modification time and fingerprint of a local file of 1 MiB or more.
+pub async fn upload_source(file: &DroppedFile) -> std::io::Result<Option<UploadSource>> {
+    if file.size < MIN_RESUMABLE_UPLOAD_BYTES {
+        return Ok(None);
+    }
+    let (path, size) = (file.source.clone(), file.size);
+    tokio::task::spawn_blocking(move || {
+        let mut local = std::fs::File::open(&path)?;
+        let modified = local.metadata()?.modified()?;
+        let last_modified = match modified.duration_since(UNIX_EPOCH) {
+            Ok(since) => since.as_millis() as i64,
+            Err(before) => -(before.duration().as_millis() as i64),
+        };
+        Ok(Some(UploadSource {
+            size,
+            last_modified,
+            fingerprint: upload_fingerprint(&mut local, size)?,
+        }))
+    })
+    .await
+    .map_err(std::io::Error::other)?
+}
+
+fn is_conflict(error: &UploadError, code: &str) -> bool {
     matches!(error, UploadError::Failed(problem)
-        if problem.status == 409 && problem.code.as_deref() == Some(SFTP_DESTINATION_EXISTS))
+        if problem.status == 409 && problem.code.as_deref() == Some(code))
 }
 
 fn check(cancel: &CancelSignal) -> Result<(), UploadError> {
@@ -267,12 +352,21 @@ pub async fn upload_to_remote(
         } else {
             &item.relative_path
         });
+        // What identifies the file lets the server continue an upload of it that a lost
+        // connection cut short.
+        let source = tokio::select! {
+            source = deps.source(item) => source?,
+            () = cancel.cancelled() => return Err(UploadError::Cancelled),
+        };
+        // A cancel while the file was read for its fingerprint must stop the request too.
+        check(cancel)?;
         let send = FileSend {
             deps,
             conn_id,
             destination: join_remote_path(directory, &relative),
             relative: &relative,
             item,
+            source,
             cancel,
             completed_bytes,
             total_bytes,
@@ -280,7 +374,7 @@ pub async fn upload_to_remote(
         };
         match send.run(false, &mut last, on_progress).await {
             Ok(()) => uploaded += 1,
-            Err(error) if !is_destination_exists(&error) => return Err(error),
+            Err(error) if !is_conflict(&error, SFTP_DESTINATION_EXISTS) => return Err(error),
             Err(_) => {
                 let replace = deps
                     .confirm(ConfirmRequest {
@@ -325,6 +419,7 @@ struct FileSend<'a> {
     destination: String,
     relative: &'a str,
     item: &'a DroppedFile,
+    source: Option<UploadSource>,
     cancel: &'a CancelSignal,
     completed_bytes: u64,
     total_bytes: u64,
@@ -332,9 +427,30 @@ struct FileSend<'a> {
 }
 
 impl FileSend<'_> {
+    /// Sends the file. What the server kept of an interrupted upload may not be this file's;
+    /// then it goes whole, as a new upload.
     async fn run(
         &self,
         overwrite: bool,
+        last: &mut UploadProgress,
+        on_progress: &mut (dyn FnMut(&UploadProgress) + Send),
+    ) -> Result<(), UploadError> {
+        match self
+            .request(overwrite, self.source.as_ref(), last, on_progress)
+            .await
+        {
+            Err(error) if is_conflict(&error, SFTP_UPLOAD_MISMATCH) => {
+                check(self.cancel)?;
+                self.request(overwrite, None, last, on_progress).await
+            }
+            result => result,
+        }
+    }
+
+    async fn request(
+        &self,
+        overwrite: bool,
+        source: Option<&UploadSource>,
         last: &mut UploadProgress,
         on_progress: &mut (dyn FnMut(&UploadProgress) + Send),
     ) -> Result<(), UploadError> {
@@ -364,6 +480,7 @@ impl FileSend<'_> {
                 self.conn_id,
                 &self.destination,
                 overwrite,
+                source,
                 self.item,
                 self.cancel,
                 &mut on_step,
@@ -422,6 +539,7 @@ where
         conn_id: &'a str,
         path: &'a str,
         overwrite: bool,
+        source: Option<&'a UploadSource>,
         file: &'a DroppedFile,
         cancel: &'a CancelSignal,
         on_step: &'a mut (dyn FnMut(UploadStep) + Send),
@@ -434,6 +552,7 @@ where
                 overwrite,
                 expected_mtime_ms: None,
                 size: Some(file.size),
+                source: source.copied(),
             };
             // Dropping the upload on cancel removes its staged temporary file.
             tokio::select! {

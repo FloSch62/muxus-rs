@@ -15,8 +15,8 @@ use muxus_ssh::sftp::upload::{
     upload_to_remote,
 };
 use muxus_ssh::sftp::{
-    CancelSignal, SftpClipboardImageResponse, SftpDownload, SftpHomeResponse, SftpOkResponse,
-    SftpWindowLease, UploadOptions, UploadStep,
+    CancelSignal, DownloadRange, SftpClipboardImageResponse, SftpDownload, SftpHomeResponse,
+    SftpOkResponse, SftpWindowLease, UploadOptions, UploadStep,
 };
 
 use crate::backend::Backend;
@@ -28,8 +28,13 @@ const DOWNLOAD_QUEUE: usize = 8;
 /// transfer and releases its hold on the connection.
 pub struct SftpDownloadStream {
     pub name: String,
+    /// The whole file's size, wherever the stream starts.
     pub size: Option<u64>,
     pub mtime_ms: Option<i64>,
+    /// The file's validator (`etag`): a download that stops early continues under it.
+    pub etag: Option<String>,
+    /// The byte the stream starts at; past 0 only when the requested range was honoured (206).
+    pub start: u64,
     chunks: async_channel::Receiver<ApiResult<Vec<u8>>>,
 }
 
@@ -38,6 +43,7 @@ impl std::fmt::Debug for SftpDownloadStream {
         f.debug_struct("SftpDownloadStream")
             .field("name", &self.name)
             .field("size", &self.size)
+            .field("start", &self.start)
             .finish_non_exhaustive()
     }
 }
@@ -46,6 +52,7 @@ impl SftpDownloadStream {
     fn start(download: SftpDownload, runtime: &tokio::runtime::Handle) -> Self {
         let (tx, rx) = async_channel::bounded(DOWNLOAD_QUEUE);
         let header = (download.name.clone(), download.size, download.mtime_ms);
+        let (etag, start) = (download.etag.clone(), download.start);
         runtime.spawn(async move {
             let mut download = download;
             loop {
@@ -65,6 +72,8 @@ impl SftpDownloadStream {
             name: header.0,
             size: header.1,
             mtime_ms: header.2,
+            etag,
+            start,
             chunks: rx,
         }
     }
@@ -134,11 +143,26 @@ impl Backend {
 
     /// `GET /api/sftp/:connId/download`.
     pub async fn sftp_download(&self, conn_id: &str, path: &str) -> ApiResult<SftpDownloadStream> {
+        self.sftp_download_from(conn_id, path, None).await
+    }
+
+    /// `GET /api/sftp/:connId/download` with `Range` and `If-Range`: only the rest of a file an
+    /// earlier attempt read part of, while it is still the same file. The stream's `start`
+    /// says whether the rest or the whole file follows.
+    pub async fn sftp_download_from(
+        &self,
+        conn_id: &str,
+        path: &str,
+        range: Option<DownloadRange>,
+    ) -> ApiResult<SftpDownloadStream> {
         let log_target = (conn_id.to_string(), path.to_string());
         let (conn_id, path) = (conn_id.to_string(), path.to_string());
         let result = self
             .run(move |shared| async move {
-                let download = shared.sftp.download(&conn_id, &path).await?;
+                let download = shared
+                    .sftp
+                    .download_from(&conn_id, &path, range.as_ref())
+                    .await?;
                 Ok(SftpDownloadStream::start(download, &shared.runtime))
             })
             .await;

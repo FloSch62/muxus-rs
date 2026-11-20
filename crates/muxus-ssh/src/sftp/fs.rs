@@ -377,6 +377,43 @@ impl RemoteFs {
         .await
     }
 
+    /// The attributes of an open file, whatever its name points to by now.
+    pub(crate) async fn fstat(&self, handle: &str) -> SftpResult<FileAttributes> {
+        self.call(|c| {
+            let handle = handle.to_string();
+            async move { c.session.fstat(handle).await }
+        })
+        .await
+        .map(|attrs| attrs.attrs)
+    }
+
+    /// Bytes `start` to `end` of an open file, or `None` when the file ends sooner.
+    pub(crate) async fn read_range(
+        &self,
+        handle: &str,
+        start: u64,
+        end: u64,
+    ) -> SftpResult<Option<Vec<u8>>> {
+        let mut bytes = Vec::with_capacity((end - start) as usize);
+        while (bytes.len() as u64) < end - start {
+            let at = start + bytes.len() as u64;
+            let want = (end - at).min(CHUNK as u64) as u32;
+            let read = self
+                .call(|c| {
+                    let handle = handle.to_string();
+                    async move { c.session.read(handle, at, want).await }
+                })
+                .await;
+            match read {
+                Ok(data) if data.data.is_empty() => return Ok(None),
+                Ok(data) => bytes.extend_from_slice(&data.data),
+                Err(err) if err.is_eof() => return Ok(None),
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(Some(bytes))
+    }
+
     /// Streams an open file from its start: chunks in order on the returned channel, ending with
     /// the channel closing at EOF or after an error. The handle is closed and `on_end` runs once
     /// the file is read through or the receiver is dropped.
@@ -385,20 +422,30 @@ impl RemoteFs {
         handle: String,
         on_end: Box<dyn FnOnce() + Send>,
     ) -> mpsc::Receiver<SftpResult<Vec<u8>>> {
+        self.stream_reader_from(handle, 0, on_end)
+    }
+
+    /// [`stream_reader`](Self::stream_reader) from the byte `start` on.
+    pub(crate) fn stream_reader_from(
+        &self,
+        handle: String,
+        start: u64,
+        on_end: Box<dyn FnOnce() + Send>,
+    ) -> mpsc::Receiver<SftpResult<Vec<u8>>> {
         let (tx, rx) = mpsc::channel(2);
         let fs = self.clone();
         tokio::spawn(async move {
-            fs.pump_reads(&handle, &tx).await;
+            fs.pump_reads(&handle, start, &tx).await;
             let _ = fs.close(&handle).await;
             on_end();
         });
         rx
     }
 
-    async fn pump_reads(&self, handle: &str, tx: &mpsc::Sender<SftpResult<Vec<u8>>>) {
+    async fn pump_reads(&self, handle: &str, start: u64, tx: &mpsc::Sender<SftpResult<Vec<u8>>>) {
         let session = self.channel();
         let mut in_flight: VecDeque<(u64, ReadTask)> = VecDeque::new();
-        let mut next = 0u64;
+        let mut next = start;
         // Ramp up like a slow start, so small files cost one request plus the EOF probe.
         let mut window = 1usize;
         let abort_all = |in_flight: &mut VecDeque<(u64, ReadTask)>| {
@@ -472,10 +519,25 @@ impl RemoteFs {
     where
         R: AsyncRead + Unpin + ?Sized,
     {
+        self.write_from_at(handle, 0, body, on_written).await
+    }
+
+    /// Writes `body` into an open file from the byte `start` on. `on_written` gets the offset
+    /// the server acknowledged up to, and the result is the offset after the last byte.
+    pub(crate) async fn write_from_at<R>(
+        &self,
+        handle: &str,
+        start: u64,
+        body: &mut R,
+        on_written: &mut (dyn FnMut(u64) + Send),
+    ) -> Result<u64, WriteError>
+    where
+        R: AsyncRead + Unpin + ?Sized,
+    {
         let session = self.channel();
         let mut in_flight: VecDeque<JoinHandle<Result<usize, ClientError>>> = VecDeque::new();
-        let mut offset = 0u64;
-        let mut acknowledged = 0u64;
+        let mut offset = start;
+        let mut acknowledged = start;
         let result: Result<u64, WriteError> = async {
             loop {
                 let mut chunk = vec![0u8; CHUNK];

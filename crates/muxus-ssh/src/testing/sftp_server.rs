@@ -3,7 +3,8 @@
 //! Remote paths resolve below `root` (`/srv/a` is `<root>/srv/a`; relative paths start at the
 //! configured home). Plain `rename` refuses an existing destination the way OpenSSH's SFTP v3
 //! rename does, and `posix-rename@openssh.com` replaces atomically when it is enabled. Every
-//! request except reads, writes and closes lands in a per-root log the tests assert on.
+//! request except reads, writes and closes lands in a per-root log the tests assert on; writes
+//! and the closes of files are kept apart, for the tests of continued uploads.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -27,6 +28,17 @@ pub struct SftpServerOptions {
     /// Owner and group names shown in directory long names.
     pub owner: String,
     pub group: String,
+    /// Empty a file that is opened for writing, as some servers do whatever the flags say.
+    pub truncate_on_open: bool,
+    /// Remote paths that belong to someone else, who neither lets them be opened nor removed.
+    pub stuck: Vec<String>,
+    /// Answer every write with a failure.
+    pub fail_writes: bool,
+    /// `(path, target)`: when `path` is opened without being created, it is first replaced by
+    /// a symbolic link to `target`, as by someone racing the open.
+    pub link_before_open: Option<(String, String)>,
+    /// Reads at this offset or past it never answer, as on a link that went quiet.
+    pub stall_reads_from: Option<u64>,
 }
 
 impl Default for SftpServerOptions {
@@ -36,21 +48,47 @@ impl Default for SftpServerOptions {
             home: "/".into(),
             owner: "tester".into(),
             group: "staff".into(),
+            truncate_on_open: false,
+            stuck: Vec::new(),
+            fail_writes: false,
+            link_before_open: None,
+            stall_reads_from: None,
         }
     }
 }
+
+/// One write request: the file's remote path, the offset and the byte count.
+pub type WriteRecord = (String, u64, usize);
 
 /// A served root's options and request log.
 #[derive(Default)]
 pub struct SftpServerState {
     pub options: Mutex<SftpServerOptions>,
     pub log: Mutex<Vec<String>>,
+    writes: Mutex<Vec<WriteRecord>>,
+    reads: Mutex<Vec<WriteRecord>>,
+    closes: Mutex<Vec<String>>,
 }
 
 impl SftpServerState {
     /// Requests seen so far, e.g. `open /a.txt wctx 644` or `posix-rename /a.tmp /a`.
     pub fn ops(&self) -> Vec<String> {
         self.log.lock().unwrap().clone()
+    }
+
+    /// Every write request that succeeded, in order.
+    pub fn writes(&self) -> Vec<WriteRecord> {
+        self.writes.lock().unwrap().clone()
+    }
+
+    /// Every read request that was answered with data: the path, the offset and the bytes.
+    pub fn reads(&self) -> Vec<WriteRecord> {
+        self.reads.lock().unwrap().clone()
+    }
+
+    /// The remote path of every file handle closed so far, in order.
+    pub fn closes(&self) -> Vec<String> {
+        self.closes.lock().unwrap().clone()
     }
 
     fn record(&self, entry: String) {
@@ -67,7 +105,7 @@ fn registry() -> &'static Mutex<HashMap<PathBuf, Arc<SftpServerState>>> {
 pub fn register(root: &Path, options: SftpServerOptions) -> Arc<SftpServerState> {
     let state = Arc::new(SftpServerState {
         options: Mutex::new(options),
-        log: Mutex::new(Vec::new()),
+        ..SftpServerState::default()
     });
     registry()
         .lock()
@@ -102,7 +140,7 @@ where
 }
 
 enum OpenHandle {
-    File(std::fs::File),
+    File { file: std::fs::File, path: String },
     Dir { entries: Vec<File>, sent: bool },
 }
 
@@ -235,9 +273,19 @@ impl LocalFs {
 
     fn file(&self, handle: &str) -> Result<&std::fs::File, StatusReply> {
         match self.handles.get(handle) {
-            Some(OpenHandle::File(file)) => Ok(file),
+            Some(OpenHandle::File { file, .. }) => Ok(file),
             _ => Err(reply(StatusCode::Failure)),
         }
+    }
+
+    fn is_stuck(&self, remote: &str) -> bool {
+        self.state
+            .options
+            .lock()
+            .unwrap()
+            .stuck
+            .iter()
+            .any(|stuck| stuck == remote)
     }
 
     fn set_attrs(&self, path: &Path, attrs: &FileAttributes) -> Result<(), StatusReply> {
@@ -295,29 +343,49 @@ impl russh_sftp::server::Handler for LocalFs {
         let mode = attrs
             .permissions
             .map_or("-".to_string(), |mode| format!("{:o}", mode & 0o7777));
-        self.record(format!(
-            "open {} {} {mode}",
-            self.remote(&filename),
-            flag_letters(pflags)
-        ));
+        let remote = self.remote(&filename);
+        self.record(format!("open {remote} {} {mode}", flag_letters(pflags)));
+        if self.is_stuck(&remote) {
+            return Err(reply(StatusCode::PermissionDenied));
+        }
+        let (truncate, link) = {
+            let options = self.state.options.lock().unwrap();
+            (options.truncate_on_open, options.link_before_open.clone())
+        };
+        let local = self.local(&filename);
+        if let Some((path, target)) = link
+            && path == remote
+            && !pflags.contains(OpenFlags::CREATE)
+        {
+            std::fs::remove_file(&local).map_err(io_reply)?;
+            let target = self.local(&target);
+            platform::symlink(&target.to_string_lossy(), &local).map_err(io_reply)?;
+        }
         let mut options: std::fs::OpenOptions = pflags.into();
         if let Some(mode) = attrs.permissions {
             platform::open_mode(&mut options, mode & 0o7777);
         }
-        let file = options.open(self.local(&filename)).map_err(|err| {
+        let file = options.open(&local).map_err(|err| {
             if err.kind() == std::io::ErrorKind::AlreadyExists {
                 reply(StatusCode::Failure)
             } else {
                 io_reply(err)
             }
         })?;
-        let handle = self.add_handle(OpenHandle::File(file));
+        if truncate && pflags.contains(OpenFlags::WRITE) {
+            file.set_len(0).map_err(io_reply)?;
+        }
+        let handle = self.add_handle(OpenHandle::File { file, path: remote });
         Ok(Handle { id, handle })
     }
 
     async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
         match self.handles.remove(&handle) {
-            Some(_) => Ok(ok(id)),
+            Some(OpenHandle::File { path, .. }) => {
+                self.state.closes.lock().unwrap().push(path);
+                Ok(ok(id))
+            }
+            Some(OpenHandle::Dir { .. }) => Ok(ok(id)),
             None => Err(reply(StatusCode::Failure)),
         }
     }
@@ -329,7 +397,13 @@ impl russh_sftp::server::Handler for LocalFs {
         offset: u64,
         len: u32,
     ) -> Result<Data, Self::Error> {
-        let file = self.file(&handle)?;
+        let stall = self.state.options.lock().unwrap().stall_reads_from;
+        if stall.is_some_and(|from| offset >= from) {
+            std::future::pending::<()>().await;
+        }
+        let Some(OpenHandle::File { file, path }) = self.handles.get(&handle) else {
+            return Err(reply(StatusCode::Failure));
+        };
         let mut data = vec![0u8; len as usize];
         let mut filled = 0;
         while filled < data.len() {
@@ -343,6 +417,11 @@ impl russh_sftp::server::Handler for LocalFs {
             return Err(reply(StatusCode::Eof));
         }
         data.truncate(filled);
+        self.state
+            .reads
+            .lock()
+            .unwrap()
+            .push((path.clone(), offset, filled));
         Ok(Data { id, data })
     }
 
@@ -353,8 +432,18 @@ impl russh_sftp::server::Handler for LocalFs {
         offset: u64,
         data: Vec<u8>,
     ) -> Result<Status, Self::Error> {
-        let file = self.file(&handle)?;
+        if self.state.options.lock().unwrap().fail_writes {
+            return Err(reply(StatusCode::Failure));
+        }
+        let Some(OpenHandle::File { file, path }) = self.handles.get(&handle) else {
+            return Err(reply(StatusCode::Failure));
+        };
         platform::write_all_at(file, &data, offset).map_err(io_reply)?;
+        self.state
+            .writes
+            .lock()
+            .unwrap()
+            .push((path.clone(), offset, data.len()));
         Ok(ok(id))
     }
 
@@ -455,7 +544,11 @@ impl russh_sftp::server::Handler for LocalFs {
     }
 
     async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
-        self.record(format!("remove {}", self.remote(&filename)));
+        let remote = self.remote(&filename);
+        self.record(format!("remove {remote}"));
+        if self.is_stuck(&remote) {
+            return Err(reply(StatusCode::PermissionDenied));
+        }
         let path = self.local(&filename);
         let meta = std::fs::symlink_metadata(&path).map_err(io_reply)?;
         if meta.is_dir() {

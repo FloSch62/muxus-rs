@@ -6,18 +6,19 @@
 //! connection's one SFTP session. The HTTP routes became methods; their failures are [`Problem`]s
 //! carrying the status the route answered with.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, ready};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
-use russh_sftp::protocol::{FileAttributes, OpenFlags};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
+use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
+use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::sync::mpsc;
 
-use super::fs::{RemoteFs, SftpError, SftpResult, WriteError};
+use super::fs::{CHUNK, RemoteFs, SftpError, SftpResult, WriteError};
 use super::lease::{SftpLease, SftpWindowLease};
 use super::paths;
 use super::progress::{ByteProgress, ProgressMeter, UploadStep};
@@ -38,6 +39,8 @@ pub const NEW_FILE_MODE: u32 = 0o644;
 /// Pasted clipboard images are readable by their owner only.
 pub const CLIPBOARD_IMAGE_MODE: u32 = 0o600;
 pub const CLIPBOARD_IMAGE_TEMP_DIR: &str = "/tmp";
+/// How many bytes just before where an upload continues must match the staged file.
+pub const RESUME_CHECK_BYTES: u64 = 64 * 1024;
 
 /// Problem codes the client acts on.
 pub const SFTP_DESTINATION_EXISTS: &str = "SFTP_DESTINATION_EXISTS";
@@ -45,6 +48,8 @@ pub const SFTP_DESTINATION_IS_DIRECTORY: &str = "SFTP_DESTINATION_IS_DIRECTORY";
 pub const SFTP_DESTINATION_IS_SYMLINK: &str = "SFTP_DESTINATION_IS_SYMLINK";
 pub const SFTP_EDITOR_SYMLINK: &str = "SFTP_EDITOR_SYMLINK";
 pub const SFTP_FILE_CHANGED: &str = "SFTP_FILE_CHANGED";
+/// What the server kept of an interrupted upload is not this file's: send it again, whole.
+pub const SFTP_UPLOAD_MISMATCH: &str = "SFTP_UPLOAD_MISMATCH";
 
 const S_IFMT: u32 = 0o170000;
 const S_IFDIR: u32 = 0o040000;
@@ -63,6 +68,78 @@ impl From<WriteError> for Problem {
     }
 }
 
+/// The local file an upload sends (the `size`, `lastModified` and `fingerprint` query
+/// parameters): an interrupted upload of the same file continues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UploadSource {
+    pub size: u64,
+    /// The local modification time (ms).
+    pub last_modified: i64,
+    /// SHA-256 of samples spread over the file ([`upload_fingerprint`](super::upload::upload_fingerprint)).
+    pub fingerprint: [u8; 32],
+}
+
+/// `Number.MAX_SAFE_INTEGER`.
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
+/// `Number(value)` of a query value, when it is a safe integer.
+fn safe_integer(value: Option<&str>) -> Option<f64> {
+    let text = value?.trim();
+    let number = if text.is_empty() {
+        0.0
+    } else {
+        text.parse::<f64>().ok()?
+    };
+    (number.is_finite() && number.fract() == 0.0 && number.abs() <= MAX_SAFE_INTEGER)
+        .then_some(number)
+}
+
+impl UploadSource {
+    /// Parses the query values the TypeScript route accepted; none of them is no source.
+    pub fn from_query(
+        size: Option<&str>,
+        last_modified: Option<&str>,
+        fingerprint: Option<&str>,
+    ) -> Result<Option<Self>, Problem> {
+        if size.is_none() && last_modified.is_none() && fingerprint.is_none() {
+            return Ok(None);
+        }
+        let invalid = || {
+            Problem::bad_request("size, lastModified and fingerprint must describe the local file")
+        };
+        let size = safe_integer(size)
+            .filter(|size| *size >= 0.0)
+            .ok_or_else(invalid)?;
+        let last_modified = safe_integer(last_modified).ok_or_else(invalid)?;
+        let digits = fingerprint
+            .filter(|text| {
+                text.len() == 64
+                    && text
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+            .ok_or_else(invalid)?;
+        let mut fingerprint = [0u8; 32];
+        hex::decode_to_slice(digits, &mut fingerprint).map_err(|_| invalid())?;
+        Ok(Some(Self {
+            size: size as u64,
+            last_modified: last_modified as i64,
+            fingerprint,
+        }))
+    }
+
+    /// Names the staged file of this local file's uploads.
+    fn key(&self) -> String {
+        let described = format!(
+            "{}:{}:{}",
+            self.size,
+            self.last_modified,
+            hex::encode(self.fingerprint)
+        );
+        hex::encode(Sha256::digest(described.as_bytes()))[..12].to_string()
+    }
+}
+
 /// Upload request options (the `overwrite` and `expectedMtimeMs` query parameters).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct UploadOptions {
@@ -72,6 +149,8 @@ pub struct UploadOptions {
     pub expected_mtime_ms: Option<f64>,
     /// Size of the body, for progress only.
     pub size: Option<u64>,
+    /// The local file being sent, when an interrupted upload of it may be continued.
+    pub source: Option<UploadSource>,
 }
 
 impl UploadOptions {
@@ -95,6 +174,7 @@ impl UploadOptions {
             overwrite,
             expected_mtime_ms,
             size: None,
+            source: None,
         };
         options.validate()?;
         Ok(options)
@@ -126,11 +206,53 @@ struct DownloadTickets {
     by_connection: HashMap<String, HashMap<String, String>>,
 }
 
+/// Where a download continues: `Range: bytes=<start>-` under an `If-Range` with the validator
+/// the interrupted attempt was answered with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadRange {
+    pub start: u64,
+    pub etag: String,
+}
+
+/// Staged uploads in progress, by connection: the same file sent twice at once goes under a
+/// random name the second time instead of into the same file.
+type StagedUploads = Arc<Mutex<HashSet<String>>>;
+
+/// One staged upload's entry; it goes when the upload ends or is dropped.
+struct StagedUpload {
+    uploads: StagedUploads,
+    key: String,
+}
+
+impl StagedUpload {
+    /// `None` while another upload of the same file is staged under that name.
+    fn claim(uploads: &StagedUploads, key: String) -> Option<Self> {
+        let claimed = uploads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.clone());
+        claimed.then(|| Self {
+            uploads: uploads.clone(),
+            key,
+        })
+    }
+}
+
+impl Drop for StagedUpload {
+    fn drop(&mut self) {
+        self.uploads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+    }
+}
+
 /// The SFTP operations of the file browser and the remote editor.
 #[derive(Clone)]
 pub struct SftpService {
     manager: SshConnectionManager,
     tickets: Arc<Mutex<DownloadTickets>>,
+    staged_uploads: StagedUploads,
 }
 
 impl SftpService {
@@ -138,6 +260,7 @@ impl SftpService {
         Self {
             manager,
             tickets: Arc::new(Mutex::new(DownloadTickets::default())),
+            staged_uploads: StagedUploads::default(),
         }
     }
 
@@ -260,17 +383,40 @@ impl SftpService {
     /// Streams a remote file. The download keeps its SFTP lease until it is read through or
     /// dropped, so closing the terminal tab cannot tear the shared transport out from under it.
     pub async fn download(&self, conn_id: &str, path: &str) -> Result<SftpDownload, Problem> {
+        self.download_from(conn_id, path, None).await
+    }
+
+    /// [`download`](Self::download), continuing at `range` while the file is still the one the
+    /// interrupted attempt read: its validator (host, path, size and modification time) must
+    /// match, or the whole file is sent. [`SftpDownload::start`] says which it is.
+    pub async fn download_from(
+        &self,
+        conn_id: &str,
+        path: &str,
+        range: Option<&DownloadRange>,
+    ) -> Result<SftpDownload, Problem> {
         let (lease, fs) = self.acquire(conn_id).await?;
         let file = require_path(path)?;
         let stat = fs.stat(file).await?;
+        let etag = download_etag(lease.mux_key(), file, &stat);
+        let start = match (&etag, stat.size) {
+            (Some(etag), Some(size)) => range_start(range, etag, size),
+            _ => 0,
+        };
+        // Opened before anything is answered, so a file the user may not read fails with that
+        // error instead of a download that never delivers a byte.
         let handle = fs.open(file, OpenFlags::READ, None).await?;
-        Ok(SftpDownload::start(
+        Ok(SftpDownload::begin(
             lease,
             &fs,
             handle,
-            paths::basename(file),
-            stat.size,
-            mtime_ms(stat.mtime),
+            DownloadHead {
+                name: paths::basename(file),
+                size: stat.size,
+                mtime_ms: mtime_ms(stat.mtime),
+                etag,
+                start,
+            },
         ))
     }
 
@@ -290,13 +436,17 @@ impl SftpService {
         let (lease, fs) = self.acquire(conn_id).await?;
         let stat = fs.stat(&file).await?;
         let handle = fs.open(&file, OpenFlags::READ, None).await?;
-        Ok(SftpDownload::start(
+        Ok(SftpDownload::begin(
             lease,
             &fs,
             handle,
-            paths::basename(&file),
-            stat.size,
-            None,
+            DownloadHead {
+                name: paths::basename(&file),
+                size: stat.size,
+                mtime_ms: None,
+                etag: None,
+                start: 0,
+            },
         ))
     }
 
@@ -407,7 +557,7 @@ impl SftpService {
     where
         R: AsyncRead + Unpin + Send,
     {
-        let (_lease, fs) = self.acquire(conn_id).await?;
+        let (lease, fs) = self.acquire(conn_id).await?;
         let file = require_path(path)?;
         options.validate()?;
         let overwrite = options.overwrite;
@@ -445,6 +595,12 @@ impl SftpService {
         }
 
         let mode = existing.and_then(|attrs| attrs.permissions);
+        // The staged file is named after the local file, unless an upload of the same file is
+        // already going into it.
+        let staging = options.source.and_then(|source| {
+            let key = format!("{}\0{file}\0{}", lease.connection_id(), source.key());
+            StagedUpload::claim(&self.staged_uploads, key).map(|claim| (source, claim))
+        });
         let upload = StreamUpload {
             fs: &fs,
             lease: self.lease(conn_id),
@@ -452,8 +608,11 @@ impl SftpService {
             overwrite,
             mode,
             size: options.size,
+            source: staging.as_ref().map(|(source, _)| *source),
         };
-        if let Err(err) = upload.run(&mut body, on_progress).await {
+        let uploaded = upload.run(&mut body, on_progress).await;
+        drop(staging);
+        if let Err(err) = uploaded {
             // A different client may have created the destination while this upload streamed
             // into its temporary file: answer with the same actionable conflict instead of a
             // generic rename error.
@@ -495,6 +654,7 @@ impl SftpService {
             overwrite: false,
             mode: Some(CLIPBOARD_IMAGE_MODE),
             size: None,
+            source: None,
         };
         upload.run(&mut body, &mut |_| {}).await?;
         Ok(SftpClipboardImageResponse { path: file })
@@ -557,6 +717,11 @@ pub struct SftpDownload {
     /// Modification time (`last-modified`): a client that opens the file locally can upload it
     /// back with a check that nobody changed the remote file in between.
     pub mtime_ms: Option<i64>,
+    /// The file's validator (`etag`); a download that stops early can continue under it.
+    pub etag: Option<String>,
+    /// The byte the stream starts at: past 0 only where the request's range was honoured
+    /// (the route's 206).
+    pub start: u64,
     chunks: mpsc::Receiver<SftpResult<Vec<u8>>>,
     buffer: Vec<u8>,
     position: usize,
@@ -569,28 +734,34 @@ impl std::fmt::Debug for SftpDownload {
             .field("name", &self.name)
             .field("size", &self.size)
             .field("mtime_ms", &self.mtime_ms)
+            .field("etag", &self.etag)
+            .field("start", &self.start)
             .finish()
     }
 }
 
+/// What a download answers with before its first byte (the route's response headers).
+struct DownloadHead {
+    name: String,
+    size: Option<u64>,
+    mtime_ms: Option<i64>,
+    etag: Option<String>,
+    start: u64,
+}
+
 impl SftpDownload {
-    fn start(
-        lease: SftpLease,
-        fs: &RemoteFs,
-        handle: String,
-        name: String,
-        size: Option<u64>,
-        mtime_ms: Option<i64>,
-    ) -> Self {
+    fn begin(lease: SftpLease, fs: &RemoteFs, handle: String, head: DownloadHead) -> Self {
         let lease = Arc::new(lease);
         // The lease outlives this call: it goes when the remote stream ends or the download is
         // dropped, whichever comes first.
         let release = lease.clone();
-        let chunks = fs.stream_reader(handle, Box::new(move || release.release()));
+        let chunks = fs.stream_reader_from(handle, head.start, Box::new(move || release.release()));
         Self {
-            name,
-            size,
-            mtime_ms,
+            name: head.name,
+            size: head.size,
+            mtime_ms: head.mtime_ms,
+            etag: head.etag,
+            start: head.start,
             chunks,
             buffer: Vec::new(),
             position: 0,
@@ -623,11 +794,12 @@ impl SftpDownload {
     where
         W: AsyncWrite + Unpin + ?Sized,
     {
-        let mut meter = ProgressMeter::new();
-        if let Some(progress) = meter.report(0, self.size, true) {
+        let start = self.start;
+        let mut meter = ProgressMeter::starting_at(start);
+        if let Some(progress) = meter.report(start, self.size, true) {
             on_progress(progress);
         }
-        let mut loaded = 0u64;
+        let mut loaded = start;
         while let Some(chunk) = self.next_chunk().await? {
             writer.write_all(&chunk).await?;
             loaded += chunk.len() as u64;
@@ -639,7 +811,7 @@ impl SftpDownload {
         if let Some(progress) = meter.report(loaded, self.size.or(Some(loaded)), true) {
             on_progress(progress);
         }
-        Ok(loaded)
+        Ok(loaded - start)
     }
 
     /// The whole file in memory.
@@ -692,6 +864,33 @@ fn require_path(path: &str) -> Result<&str, Problem> {
     }
 }
 
+/// A download's validator: the host, path, size and modification time. A download continues
+/// from a byte only while all of them still match.
+fn download_etag(mux_key: &str, file: &str, stat: &FileAttributes) -> Option<String> {
+    let (size, mtime) = (stat.size?, stat.mtime?);
+    let described = serde_json::to_string(&(mux_key, file, size, mtime)).ok()?;
+    let digest = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(described.as_bytes()));
+    Some(format!("\"{}\"", &digest[..27]))
+}
+
+/// Where a download starts: a range counts only under the file's current validator, and
+/// inside the file.
+fn range_start(range: Option<&DownloadRange>, etag: &str, size: u64) -> u64 {
+    match range {
+        Some(range) if range.etag == etag && range.start < size => range.start,
+        _ => 0,
+    }
+}
+
+fn upload_mismatch() -> Problem {
+    Problem::with_code(
+        409,
+        "the upload kept on the server does not match this file",
+        SFTP_UPLOAD_MISMATCH,
+    )
+}
+
 fn destination_exists() -> Problem {
     Problem::with_code(
         409,
@@ -737,6 +936,10 @@ fn is_dir(attrs: &FileAttributes) -> bool {
 
 fn is_symlink(attrs: &FileAttributes) -> bool {
     file_format(attrs) == Some(S_IFLNK)
+}
+
+fn is_regular(attrs: &FileAttributes) -> bool {
+    file_format(attrs) == Some(S_IFREG)
 }
 
 fn entry_type(mode: u32) -> SftpEntryType {
@@ -828,6 +1031,13 @@ fn write_exclusive() -> OpenFlags {
 /// Uploads into a sibling temporary file. If the body fails, the SFTP stream fails, or the
 /// upload is dropped half way, only that temporary file is removed; an existing destination is
 /// never left truncated.
+///
+/// With a `source`, the temporary file is named after the local file, so that the next upload
+/// of it continues one a lost connection cut short (the removal never reached the server). A
+/// staged file that does not match the body is never written to: the upload fails with
+/// `SFTP_UPLOAD_MISMATCH` and the client sends the file again as a new upload. Anything else
+/// under that name is removed, or left alone when it cannot be, and the upload goes under a
+/// random name.
 struct StreamUpload<'a> {
     fs: &'a RemoteFs,
     /// Keeps the transport up for the clean-up of a dropped upload.
@@ -836,6 +1046,14 @@ struct StreamUpload<'a> {
     overwrite: bool,
     mode: Option<u32>,
     size: Option<u64>,
+    source: Option<UploadSource>,
+}
+
+/// What an interrupted attempt left in a staged file: open where it ends, with its last bytes.
+struct StagedPart {
+    handle: String,
+    offset: u64,
+    tail: Vec<u8>,
 }
 
 impl StreamUpload<'_> {
@@ -847,32 +1065,56 @@ impl StreamUpload<'_> {
     where
         R: AsyncRead + Unpin + Send + ?Sized,
     {
-        let temp = format!("{}.muxus-{}.upload", self.file, random_hex::<6>());
+        let (temp, part) = match self.source {
+            Some(source) => self.staged_file(&source).await?,
+            None => (self.random_temp(), None),
+        };
         let mut guard = TempFileGuard {
             fs: Some(self.fs.clone()),
             path: temp.clone(),
             lease: self.lease,
         };
         let result: Result<(), Problem> = async {
-            let handle = self
-                .fs
-                .open(&temp, write_exclusive(), Some(temp_file_mode(self.mode)))
-                .await?;
             let total = self.size;
-            let mut meter = ProgressMeter::new();
-            if let Some(progress) = meter.report(0, total, true) {
+            let (handle, offset, tail) = match part {
+                Some(part) => (part.handle, part.offset, part.tail),
+                None => {
+                    let handle = self
+                        .fs
+                        .open(&temp, write_exclusive(), Some(temp_file_mode(self.mode)))
+                        .await?;
+                    (handle, 0, Vec::new())
+                }
+            };
+            let continued = offset > 0;
+            let mut meter = ProgressMeter::starting_at(offset);
+            if let Some(progress) = meter.report(offset, total, true) {
                 on_progress(UploadStep::Progress(progress));
             }
-            let written = self
-                .fs
-                .write_from(&handle, body, &mut |acknowledged| {
-                    let done = total.is_some_and(|total| acknowledged >= total);
-                    if let Some(progress) = meter.report(acknowledged, total, done) {
-                        on_progress(UploadStep::Progress(progress));
+            let written = async {
+                if continued {
+                    skip_staged_bytes(body, offset, &tail).await?;
+                }
+                let written = self
+                    .fs
+                    .write_from_at(&handle, offset, body, &mut |acknowledged| {
+                        let done = total.is_some_and(|total| acknowledged >= total);
+                        if let Some(progress) = meter.report(acknowledged, total, done) {
+                            on_progress(UploadStep::Progress(progress));
+                        }
+                    })
+                    .await?;
+                if let Some(source) = self.source.filter(|_| continued) {
+                    // A server that wrote anywhere but where it was asked shows in the size.
+                    if self.fs.fstat(&handle).await?.size != Some(source.size) {
+                        return Err(upload_mismatch());
                     }
-                })
-                .await;
-            if written.is_ok() {
+                }
+                Ok(written)
+            }
+            .await;
+            // A continued upload keeps the mode its staged file was created with.
+            if written.is_ok() && !continued {
                 restore_mode(self.fs, &handle, &temp, self.mode).await;
             }
             let closed = self.fs.close(&handle).await;
@@ -890,6 +1132,102 @@ impl StreamUpload<'_> {
             Err(_) => guard.remove().await,
         }
         result
+    }
+
+    fn random_temp(&self) -> String {
+        format!("{}.muxus-{}.upload", self.file, random_hex::<6>())
+    }
+
+    /// The temporary file of an upload that can be continued, and what an interrupted attempt
+    /// left in it.
+    async fn staged_file(
+        &self,
+        source: &UploadSource,
+    ) -> Result<(String, Option<StagedPart>), Problem> {
+        let staged = format!("{}.muxus-{}.upload", self.file, source.key());
+        let found = self.fs.lstat_if_present(&staged).await?;
+        // Only a regular file is opened: opening a FIFO or a device can block, or act on it.
+        let part = match &found {
+            Some(attrs) if is_regular(attrs) => open_staged(self.fs, &staged, source.size).await,
+            _ => None,
+        };
+        let temp = if found.is_none() || part.is_some() || removed(self.fs, &staged).await {
+            staged
+        } else {
+            self.random_temp()
+        };
+        Ok((temp, part))
+    }
+}
+
+/// Opens the staged file of an interrupted attempt, if it is a regular file no larger than the
+/// upload. Its type, size and last bytes are read again through the handle that is written to,
+/// whatever the name pointed to by then.
+async fn open_staged(fs: &RemoteFs, staged: &str, size: u64) -> Option<StagedPart> {
+    let handle = fs
+        .open(staged, OpenFlags::READ | OpenFlags::WRITE, None)
+        .await
+        .ok()?;
+    let part = async {
+        let attrs = fs.fstat(&handle).await.ok()?;
+        let offset = attrs.size.unwrap_or(0);
+        if !is_regular(&attrs) || offset == 0 || offset > size {
+            return None;
+        }
+        let tail_start = offset.saturating_sub(RESUME_CHECK_BYTES);
+        // Unreadable: it starts over, like anything else that cannot be continued.
+        let tail = fs.read_range(&handle, tail_start, offset).await.ok()??;
+        Some((offset, tail))
+    }
+    .await;
+    match part {
+        Some((offset, tail)) => Some(StagedPart {
+            handle,
+            offset,
+            tail,
+        }),
+        None => {
+            let _ = fs.close(&handle).await;
+            None
+        }
+    }
+}
+
+/// Reads past the bytes of `body` the staged file already holds. The last of them must equal
+/// the file's `tail`: if they differ, or the body ends before them, what the server kept is not
+/// this file's and nothing is written to it.
+async fn skip_staged_bytes<R>(body: &mut R, offset: u64, tail: &[u8]) -> Result<(), Problem>
+where
+    R: AsyncRead + Unpin + ?Sized,
+{
+    let tail_start = offset - tail.len() as u64;
+    let mut buffer = vec![0u8; CHUNK];
+    let mut position = 0u64;
+    while position < offset {
+        let want = (offset - position).min(CHUNK as u64) as usize;
+        let read = body.read(&mut buffer[..want]).await?;
+        if read == 0 {
+            return Err(upload_mismatch());
+        }
+        let start = position;
+        position += read as u64;
+        let from = start.max(tail_start);
+        if from < position {
+            let bytes = &buffer[(from - start) as usize..read];
+            let kept = &tail[(from - tail_start) as usize..(position - tail_start) as usize];
+            if bytes != kept {
+                return Err(upload_mismatch());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether nothing is left at `file`: removed now, or never there.
+async fn removed(fs: &RemoteFs, file: &str) -> bool {
+    match fs.remove(file).await {
+        Ok(()) => true,
+        Err(err) => err.code() == Some(StatusCode::NoSuchFile),
     }
 }
 

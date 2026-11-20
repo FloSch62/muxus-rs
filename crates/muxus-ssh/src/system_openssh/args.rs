@@ -112,6 +112,23 @@ pub fn ssh_destination(profile: &SshProfile) -> SshDestination {
     }
 }
 
+/// `systemOpenSshMuxKey`: the host as `ssh` is told to reach it, standing in for a built-in
+/// transport's mux key. It is the same for every session that reaches the host the same way.
+pub fn system_openssh_mux_key(profile: &SshProfile) -> String {
+    let SshDestination {
+        options,
+        destination,
+    } = ssh_destination(profile);
+    let mut parts: Vec<serde_json::Value> = vec!["system-openssh".into()];
+    parts.extend(options.into_iter().map(serde_json::Value::from));
+    parts.push(destination.into());
+    parts.push(serde_json::json!(
+        profile.proxy_jump.clone().unwrap_or_default()
+    ));
+    parts.push(serde_json::json!(profile.proxy_command));
+    serde_json::Value::Array(parts).to_string()
+}
+
 fn forward_target(host: Option<&str>, port: Option<u16>) -> String {
     let name = match host {
         Some(host) if host.contains(':') => format!("[{host}]"),

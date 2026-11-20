@@ -7,12 +7,14 @@ use std::sync::Mutex;
 use super::*;
 use crate::Problem;
 use crate::connection::io::BoxFuture;
+use crate::sftp::UploadSource;
 use crate::sftp::progress::{ByteProgress, CancelSignal, UploadStep};
 #[cfg(unix)]
 use crate::sftp::upload::collect_drop;
 use crate::sftp::upload::{
     ConfirmRequest, DropPayload, DroppedFile, SftpUploadDeps, TransferPhase, UploadDeps,
-    UploadError, UploadProgress, UploadResult, upload_summary, upload_to_remote,
+    UploadError, UploadProgress, UploadResult, fingerprint_windows, upload_fingerprint,
+    upload_source, upload_summary, upload_to_remote,
 };
 
 /// Local files for a drop: `(relative path, content)`.
@@ -45,6 +47,12 @@ struct Harness {
     calls: Mutex<Vec<String>>,
     asked: Mutex<Vec<ConfirmRequest>>,
     cancel_on_confirm: Option<CancelSignal>,
+    /// The source each upload request described its file with.
+    sources: Mutex<Vec<Option<UploadSource>>>,
+    /// What the server kept of every described file is another file's.
+    mismatch: bool,
+    /// Cancelled while a file is read for its fingerprint, which then never finishes.
+    cancel_on_source: Option<CancelSignal>,
 }
 
 impl Harness {
@@ -76,16 +84,39 @@ impl UploadDeps for Harness {
         })
     }
 
+    fn source<'a>(
+        &'a self,
+        file: &'a DroppedFile,
+    ) -> BoxFuture<'a, Result<Option<UploadSource>, UploadError>> {
+        Box::pin(async move {
+            if let Some(cancel) = &self.cancel_on_source {
+                cancel.cancel();
+                std::future::pending::<()>().await;
+            }
+            Ok(upload_source(file).await.map_err(Problem::from)?)
+        })
+    }
+
     fn upload<'a>(
         &'a self,
         _conn_id: &'a str,
         path: &'a str,
         overwrite: bool,
+        source: Option<&'a UploadSource>,
         file: &'a DroppedFile,
         _cancel: &'a CancelSignal,
         on_step: &'a mut (dyn FnMut(UploadStep) + Send),
     ) -> BoxFuture<'a, Result<(), UploadError>> {
         Box::pin(async move {
+            self.sources.lock().unwrap().push(source.copied());
+            if self.mismatch && source.is_some() {
+                return Err(Problem::with_code(
+                    409,
+                    "the upload kept on the server does not match this file",
+                    "SFTP_UPLOAD_MISMATCH",
+                )
+                .into());
+            }
             if self.existing.iter().any(|existing| existing == path) && !overwrite {
                 return Err(Problem::with_code(
                     409,
@@ -94,7 +125,12 @@ impl UploadDeps for Harness {
                 )
                 .into());
             }
-            let text = std::fs::read_to_string(&file.source).unwrap();
+            let bytes = std::fs::read(&file.source).unwrap();
+            // A megabyte of zeros would only hide the call.
+            let text = match std::str::from_utf8(&bytes) {
+                Ok(text) if bytes.len() < 1024 => text.to_string(),
+                _ => format!("<{} bytes>", bytes.len()),
+            };
             let replace = if overwrite { " (replace)" } else { "" };
             self.calls
                 .lock()
@@ -250,6 +286,175 @@ async fn stops_at_the_next_file_once_cancelled_while_asking_to_replace() {
 
     assert_eq!(result.unwrap_err(), UploadError::Cancelled);
     assert!(harness.calls().is_empty());
+}
+
+const MIB: usize = 1024 * 1024;
+
+/// A local file of `bytes`, as one item of a drop.
+fn dropped(dir: &tempfile::TempDir, name: &str, bytes: &[u8]) -> DroppedFile {
+    let source = dir.path().join(name);
+    std::fs::write(&source, bytes).unwrap();
+    DroppedFile {
+        source,
+        relative_path: name.to_string(),
+        size: bytes.len() as u64,
+    }
+}
+
+fn fingerprint_of(bytes: &[u8]) -> [u8; 32] {
+    upload_fingerprint(&mut std::io::Cursor::new(bytes), bytes.len() as u64).unwrap()
+}
+
+#[tokio::test]
+async fn describes_a_file_of_1_mib_or_more_to_the_server_so_it_can_continue_an_interrupted_upload()
+{
+    let harness = Harness::new(&[], &[]);
+    let dir = tempfile::tempdir().unwrap();
+    let image = dropped(&dir, "image.bin", &vec![0u8; MIB]);
+    set_mtime(&image.source, 1_760_000_000);
+    let note = dropped(&dir, "note.txt", b"payload");
+    let drop = DropPayload {
+        files: vec![image, note],
+        directories: Vec::new(),
+    };
+
+    run("/srv", &drop, &harness, &CancelSignal::new())
+        .await
+        .0
+        .unwrap();
+
+    assert_eq!(
+        *harness.sources.lock().unwrap(),
+        vec![
+            Some(UploadSource {
+                size: MIB as u64,
+                last_modified: 1_760_000_000_000,
+                fingerprint: fingerprint_of(&vec![0u8; MIB]),
+            }),
+            None,
+        ]
+    );
+    assert_eq!(
+        harness.calls(),
+        vec![
+            "upload /srv/image.bin <1048576 bytes>",
+            "upload /srv/note.txt payload"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn sends_a_file_again_as_a_new_upload_when_what_the_server_kept_of_it_does_not_match() {
+    let harness = Harness {
+        mismatch: true,
+        ..Harness::new(&[], &[])
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let drop = DropPayload {
+        files: vec![dropped(&dir, "image.bin", &vec![0u8; MIB])],
+        directories: Vec::new(),
+    };
+
+    let (result, _) = run("/srv", &drop, &harness, &CancelSignal::new()).await;
+
+    let described: Vec<bool> = harness
+        .sources
+        .lock()
+        .unwrap()
+        .iter()
+        .map(Option::is_some)
+        .collect();
+    assert_eq!(described, vec![true, false]);
+    assert_eq!(
+        result.unwrap(),
+        UploadResult {
+            uploaded: 1,
+            directories: 0
+        }
+    );
+}
+
+#[tokio::test]
+async fn sends_nothing_for_a_file_cancelled_while_it_is_being_fingerprinted() {
+    let cancel = CancelSignal::new();
+    let harness = Harness {
+        cancel_on_source: Some(cancel.clone()),
+        ..Harness::new(&[], &[])
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let drop = DropPayload {
+        files: vec![dropped(&dir, "image.bin", &vec![0u8; MIB])],
+        directories: Vec::new(),
+    };
+
+    let (result, _) = run("/srv", &drop, &harness, &cancel).await;
+
+    assert_eq!(result.unwrap_err(), UploadError::Cancelled);
+    assert!(harness.calls().is_empty());
+    assert!(harness.sources.lock().unwrap().is_empty());
+}
+
+#[test]
+fn fingerprints_64_kib_windows_spread_over_the_whole_file_at_most_1_mib_apart() {
+    let base = vec![0u8; 3 * MIB];
+    let changed_at = |offset: usize| {
+        let mut copy = base.clone();
+        copy[offset] = 1;
+        fingerprint_of(&copy)
+    };
+    let fingerprint = fingerprint_of(&base);
+
+    assert_eq!(fingerprint_of(&base.clone()), fingerprint);
+    for offset in [0, MIB, 2 * MIB, 3 * MIB - 1] {
+        assert_ne!(changed_at(offset), fingerprint, "{offset}");
+    }
+    // Between windows a change goes unseen; the server checks the bytes before where it
+    // continues.
+    assert_eq!(changed_at(MIB + MIB / 2), fingerprint);
+    // A file shorter than a window is read once, whole.
+    assert_eq!(fingerprint_windows(7), vec![0]);
+    assert_ne!(fingerprint_of(b"payload"), fingerprint_of(b"payloae"));
+}
+
+#[test]
+fn reads_at_most_256_windows_the_first_and_the_last_among_them() {
+    let size = 10 * 1024 * 1024 * 1024u64;
+    let starts = fingerprint_windows(size);
+
+    assert_eq!(starts.len(), 256);
+    assert_eq!(starts[0], 0);
+    assert_eq!(starts.last(), Some(&(size - 64 * 1024)));
+    assert!(starts.windows(2).all(|pair| pair[0] < pair[1]));
+}
+
+#[test]
+fn tells_apart_full_flash_images_that_share_their_boot_loader_and_padding() {
+    // 8 MiB: the same 512 KiB boot loader, a different 2 MiB firmware, then erased flash.
+    let image = |firmware: usize| {
+        let mut bytes = vec![0xffu8; 8 * MIB];
+        for (index, byte) in bytes.iter_mut().take(512 * 1024).enumerate() {
+            *byte = (index % 251) as u8;
+        }
+        for index in 0..2 * MIB {
+            bytes[512 * 1024 + index] = ((index + firmware) % 253) as u8;
+        }
+        bytes
+    };
+
+    assert_ne!(fingerprint_of(&image(1)), fingerprint_of(&image(2)));
+}
+
+#[tokio::test]
+async fn sends_small_files_whole_without_reading_them_for_a_fingerprint() {
+    let dir = tempfile::tempdir().unwrap();
+    let small = dropped(&dir, "small.bin", &vec![7u8; MIB - 1]);
+    assert_eq!(upload_source(&small).await.unwrap(), None);
+    let gone = DroppedFile {
+        source: dir.path().join("gone.bin"),
+        relative_path: "gone.bin".into(),
+        size: MIB as u64,
+    };
+    assert!(upload_source(&gone).await.is_err());
 }
 
 #[tokio::test]

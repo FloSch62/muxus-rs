@@ -25,7 +25,7 @@ use tokio::sync::watch;
 pub use args::{
     COMMAND_PROBE, COMMAND_PROBE_ANSWER, CONTROL_PERSIST_SECONDS, SshDestination,
     command_probe_args, control_exit_args, find_ssh_binary, saved_host_options, script_ssh_args,
-    sftp_ssh_args, ssh_destination, terminal_ssh_args,
+    sftp_ssh_args, ssh_destination, system_openssh_mux_key, terminal_ssh_args,
 };
 
 use crate::connection::BoxFuture;
@@ -92,6 +92,9 @@ struct State {
 /// A terminal running the computer's `ssh` program, and the login it shares.
 pub struct SystemOpenSshSession {
     pub id: String,
+    /// The same for every session that reaches the host the same way, so a download can
+    /// continue on the next (`SftpConnection.muxKey`).
+    pub mux_key: String,
     /// Whether the file browser, statistics and commands can share the terminal's login.
     pub sftp_available: bool,
     profile: SshProfile,
@@ -623,6 +626,7 @@ impl SystemOpenSshSessions {
         let (closed, _) = watch::channel(false);
         let session = Arc::new(SystemOpenSshSession {
             id: format!("system-ssh-{}", random_suffix(10)),
+            mux_key: system_openssh_mux_key(profile),
             sftp_available,
             profile: profile.clone(),
             binary,

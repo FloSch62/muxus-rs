@@ -181,6 +181,37 @@ fn shares_the_login_with_the_file_browser_and_leaves_the_config_out_of_its_sessi
 }
 
 #[test]
+fn names_the_host_alike_for_every_session_that_reaches_it_the_same_way() {
+    let key = system_openssh_mux_key(&saved());
+    assert_eq!(
+        key,
+        r#"["system-openssh","-l","alice","-p","2200","build.example.com",[],null]"#
+    );
+
+    let forwarding = SshProfile {
+        forwards: Some(vec![ConfigForward {
+            kind: ForwardType::Dynamic,
+            bind_port: 1080,
+            target_host: None,
+            target_port: None,
+        }]),
+        ..saved()
+    };
+    assert_eq!(system_openssh_mux_key(&forwarding), key);
+    let other_user = SshProfile {
+        user: Some("bob".into()),
+        ..saved()
+    };
+    assert_ne!(system_openssh_mux_key(&other_user), key);
+    let jumped = SshProfile {
+        proxy_jump: Some(s(&["jump1"])),
+        ..saved()
+    };
+    assert_ne!(system_openssh_mux_key(&jumped), key);
+    assert_ne!(system_openssh_mux_key(&alias()), key);
+}
+
+#[test]
 fn feeds_scripts_over_the_shared_login() {
     let args = script_ssh_args(&alias(), Path::new("/tmp/d/c"));
     contains_all(

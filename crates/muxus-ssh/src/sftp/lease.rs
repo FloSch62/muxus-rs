@@ -45,6 +45,15 @@ impl SftpLease {
         }
     }
 
+    /// The same for every connection that reaches the host the same way (`muxKey`), so a
+    /// download can continue on the next one.
+    pub(crate) fn mux_key(&self) -> &str {
+        match self {
+            Self::Ssh(lease) => &lease.connection().mux_key,
+            Self::System(lease) => &lease.connection().mux_key,
+        }
+    }
+
     pub(crate) fn release(&self) {
         match self {
             Self::Ssh(lease) => lease.release(),

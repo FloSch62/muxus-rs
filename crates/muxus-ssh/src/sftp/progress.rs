@@ -59,6 +59,15 @@ impl ProgressMeter {
         }
     }
 
+    /// A meter for a transfer that continues at `bytes`: what an earlier attempt moved does
+    /// not count toward the speed.
+    pub fn starting_at(bytes: u64) -> Self {
+        Self {
+            sampled_bytes: bytes,
+            ..Self::new()
+        }
+    }
+
     /// The progress to show now, or `None` while throttled. `force` always emits (start, end).
     pub fn report(&mut self, loaded: u64, total: Option<u64>, force: bool) -> Option<ByteProgress> {
         self.report_at(Instant::now(), loaded, total, force)
@@ -163,6 +172,28 @@ mod tests {
             .report_at(start + Duration::from_millis(500), 1000, Some(1000), true)
             .unwrap();
         assert!((blended.bytes_per_second - (1000.0 * 0.72 + 3000.0 * 0.28)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_continued_transfer_measures_only_what_it_moves_itself() {
+        let start = Instant::now();
+        let mut meter = ProgressMeter {
+            sampled_at: start,
+            ..ProgressMeter::starting_at(1_000_000)
+        };
+        let first = meter
+            .report_at(start, 1_000_000, Some(2_000_000), true)
+            .unwrap();
+        assert_eq!((first.loaded, first.bytes_per_second), (1_000_000, 0.0));
+        let next = meter
+            .report_at(
+                start + Duration::from_millis(250),
+                1_000_250,
+                Some(2_000_000),
+                false,
+            )
+            .unwrap();
+        assert_eq!(next.bytes_per_second, 1000.0);
     }
 
     #[tokio::test]

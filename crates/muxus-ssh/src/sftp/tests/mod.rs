@@ -4,6 +4,8 @@
 mod lease_socket;
 #[cfg(unix)]
 mod modes;
+mod openssh;
+mod resume;
 mod routes;
 mod upload;
 
