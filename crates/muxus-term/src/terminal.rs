@@ -164,15 +164,17 @@ fn plain_color(color: Color) -> CellColor {
 /// Whether a program wrote this cell. Blank and erased cells keep the emulator's built-in
 /// default foreground, which the filter's pen never uses.
 fn has_content(cell: &Cell) -> bool {
-    !(cell.c == ' ' && cell.fg() == Color::Named(NamedColor::White) && cell.combining().is_empty())
-        && cell.c != '\0'
+    !(cell.c() == ' '
+        && cell.fg() == Color::Named(NamedColor::White)
+        && cell.combining().is_empty())
+        && cell.c() != '\0'
 }
 
 fn cell_text(cell: &Cell) -> CellText {
-    if cell.flags.wide_char_spacer() {
+    if cell.flags().wide_char_spacer() {
         return CellText::new("", 0);
     }
-    let width = if cell.flags.wide_char() { 2 } else { 1 };
+    let width = if cell.flags().wide_char() { 2 } else { 1 };
     if has_content(cell) {
         CellText::new(cell.get_grapheme(), width)
     } else {
@@ -182,7 +184,7 @@ fn cell_text(cell: &Cell) -> CellText {
 
 fn styled_cell(cell: &Cell) -> StyledCell {
     let text = cell_text(cell);
-    let flags = &cell.flags;
+    let flags = cell.flags();
     let underline = if flags.underline() {
         match flags.underline_style {
             CoreUnderline::None | CoreUnderline::Straight => UnderlineStyle::Single,
@@ -305,6 +307,9 @@ impl Emulator {
         // cursor follows its line, lines come back from the scrollback, and a width change
         // rewraps everything but the cursor's line.
         core.set_xterm_resize(true);
+        // Every character keeps its own width (`❤️` is 1 column, `👨‍💻` 4), as `wcwidth` counts
+        // and xterm.js with Unicode 11 widths draws, so the cursor stays where the program puts it.
+        core.set_codepoint_widths(true);
         let mut emulator = Self {
             core,
             filter: StreamFilter::new(),
