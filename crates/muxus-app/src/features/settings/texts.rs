@@ -241,7 +241,7 @@ pub fn update_reason_label(reason: Option<&str>) -> String {
 }
 
 /// The documentation site.
-pub const DOCS_URL: &str = "https://flosch62.github.io/muxus/";
+pub const DOCS_URL: &str = "https://muxus.app/";
 
 /// The docs page with this version's release notes: `0.8.1` → `/release-notes/0.8/`.
 pub fn release_notes_url(version: Option<&str>) -> String {
@@ -473,15 +473,15 @@ mod tests {
         );
         assert_eq!(
             release_notes_url(Some("0.8.1")),
-            "https://flosch62.github.io/muxus/release-notes/0.8/"
+            "https://muxus.app/release-notes/0.8/"
         );
         assert_eq!(
             release_notes_url(Some("dev")),
-            "https://flosch62.github.io/muxus/release-notes/"
+            "https://muxus.app/release-notes/"
         );
         assert_eq!(
             release_notes_url(Some("1.12-beta")),
-            "https://flosch62.github.io/muxus/release-notes/1.12/"
+            "https://muxus.app/release-notes/1.12/"
         );
     }
 

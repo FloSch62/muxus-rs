@@ -31,7 +31,7 @@ use crate::stats::SharedReadings;
 use crate::terminal::{SessionRegistry, TerminalInputs};
 
 /// The manifest the update check reads (`UPDATE_MANIFEST_URL`).
-pub const UPDATE_MANIFEST_URL: &str = "https://flosch62.github.io/muxus/latest.json";
+pub const UPDATE_MANIFEST_URL: &str = "https://muxus.app/latest.json";
 /// How long a detached terminal waits for a window to attach again
 /// (`TERMINAL_REATTACH_GRACE_MS`).
 pub const TERMINAL_REATTACH_GRACE: Duration = Duration::from_secs(15);
