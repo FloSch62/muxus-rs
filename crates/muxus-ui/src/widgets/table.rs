@@ -400,6 +400,10 @@ pub struct TableSortLabel {
     direction: Option<SortDirection>,
     /// The direction an inactive label's arrow shows on hover.
     idle: SortDirection,
+    /// The arrow's size and the margin on each side of it.
+    arrow: (f32, f32),
+    /// The arrow before the label, as in a right-aligned cell.
+    reversed: bool,
     on_click: Option<ClickHandler>,
 }
 
@@ -414,8 +418,29 @@ impl TableSortLabel {
             label: label.into(),
             direction,
             idle: SortDirection::Asc,
+            arrow: (18., 4.),
+            reversed: false,
             on_click: None,
         }
+    }
+
+    /// The direction the arrow of an unsorted column shows on hover: where a click starts.
+    pub fn idle(mut self, direction: SortDirection) -> Self {
+        self.idle = direction;
+        self
+    }
+
+    /// `'& .MuiTableSortLabel-icon': { fontSize, mx }`, in px.
+    pub fn arrow(mut self, size: f32, margin: f32) -> Self {
+        self.arrow = (size, margin);
+        self
+    }
+
+    /// The arrow before the label, as MUI lays the label out in a right-aligned cell
+    /// (`flexDirection: row-reverse`).
+    pub fn reversed(mut self) -> Self {
+        self.reversed = true;
+        self
     }
 
     pub fn on_click(
@@ -443,14 +468,15 @@ impl RenderOnce for TableSortLabel {
             0.
         };
         let group: SharedString = format!("sort-label-{:?}", self.id).into();
+        let (arrow_size, arrow_margin) = self.arrow;
         let arrow = div()
             .flex()
             .flex_none()
-            .mx(px(4.))
+            .mx(px(arrow_margin))
             .opacity(if active { 1. } else { 0. })
             .when_inactive(!active, group.clone())
             .child(
-                icon("ArrowDownward", 18., arrow_ink)
+                icon("ArrowDownward", arrow_size, arrow_ink)
                     .with_transformation(Transformation::rotate(percentage(turn))),
             );
         let mut root = div()
@@ -460,7 +486,11 @@ impl RenderOnce for TableSortLabel {
             .items_center()
             .cursor_pointer()
             .tab_stop(true)
-            .focusable()
+            .focusable();
+        if self.reversed {
+            root = root.flex_row_reverse();
+        }
+        let mut root = root
             .child(
                 label(self.label)
                     .size(size)
