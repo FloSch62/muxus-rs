@@ -20,10 +20,10 @@ Tight/ZRLE picture, remote resize 1920×1080 → 1280×720).
 
 ## IronRDP revision
 
-`muxus-rdp` uses IronRDP from git at `f1e218e58dc60c0579a8aba25e67077bf80be32b` (master of
-2026-11-06: connector 0.12, session 0.13, sspi 0.23.1, picky rc.27). The TypeScript build compiles
+`muxus-rdp` uses IronRDP from git at `13ccce6e1f9daeec5eda129780bfa294afe9a362` (master of
+2026-11-20: connector 0.12, session 0.13, sspi 0.23.1, picky rc.27). The TypeScript build compiles
 `9b151c4c` to WebAssembly; that commit pins `picky =7.0.0-rc.25`, whose
-`curve25519-dalek =5.0.0-rc.1` cannot resolve next to russh. `f1e218e5` is 269 commits ahead of
+`curve25519-dalek =5.0.0-rc.1` cannot resolve next to russh. `13ccce6e` is 334 commits ahead of
 `9b151c4c` and none behind, so it keeps the decoder fixes the TypeScript build pins for (bitmap
 stride, RDP6 orientation, bulk decompression), which the crates.io release 0.17.0 lacks. Do not
 move back to a revision that pins picky rc.25.
@@ -33,6 +33,13 @@ as before (`RdpVersion::V5_PLUS`) and no new optional Client Core Data; frames g
 their arrival time, so the session answers the server's bandwidth measurements; a Server
 Redirection (RD Connection Broker), which IronRDP used to reject as an unexpected PDU, is still not
 followed, during connection or later, and ends the connection with an error naming it.
+
+Since the move from `f1e218e5` to `13ccce6e` (65 commits, most of them in the server, the web
+client and the FFI): a Slow-Path pointer PDU that declares a shorter length than it carries
+(VirtualBox's VRDP server) is read instead of failing the session, and the connector keeps the RDP
+version the server announced (`ConnectionResult::server_rdp_version`, not used yet). The two
+breaking changes in that range (`DisplayControlServer`, a new `ConnectionResult` field) touch
+nothing Muxus calls.
 
 ## Status
 
