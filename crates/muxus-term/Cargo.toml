@@ -4,6 +4,7 @@ description = "Terminal emulation engine, schemes, keyword highlighting, scrollb
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -14,7 +15,7 @@ fancy-regex = "0.20"
 futures-lite = "2"
 memchr = "2"
 muxus-core.workspace = true
-par-term-emu-core-rust = { version = "=0.84.0", default-features = false }
+par-term-emu-core-rust = { version = "=0.84.1", default-features = false }
 percent-encoding = "2"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

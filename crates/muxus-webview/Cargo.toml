@@ -4,6 +4,7 @@ description = "Saved web pages in their own browser windows (port of electron/sr
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 
 [features]

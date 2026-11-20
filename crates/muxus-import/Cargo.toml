@@ -4,6 +4,7 @@ description = "Session imports (MobaXterm, SecureCRT), the import review model a
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
