@@ -10,7 +10,7 @@ build = "build.rs"
 
 [dependencies]
 async-channel = "2"
-gpui-kit = { version = "=0.9.1", features = ["assets", "tree-sitter-languages"] }
+gpui-kit = { version = "=0.10.0", features = ["assets", "tree-sitter-languages"] }
 image = { version = "0.25", default-features = false }
 muxus-core.workspace = true
 muxus-term.workspace = true
