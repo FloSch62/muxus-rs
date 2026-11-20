@@ -12,8 +12,6 @@ CARGO_TARGET_DIR=target-release cargo run --release -p muxus-term --example thro
 CARGO_TARGET_DIR=target-release cargo run --release -p muxus-term --example throughput -- log --resize
 # The app end to end (headless GNOME Shell, lavapipe):
 hack/perf.sh --binary target-release/release/muxus
-# The engine's own tests (it is excluded from the workspace):
-cd vendor/par-term-emu-core && cargo test --release
 ```
 
 The `throughput` example feeds six streams in 16 KiB pieces (what the app's
@@ -35,7 +33,7 @@ bookkeeping, what a tab runs).
 | 50 MB `cat` within 3 s | same | done | 1.06–1.65 s in the app, was 9.8 s |
 | Frames during a flood | xterm.js render debouncer | done | frame gaps while output flows: p95 22 ms (`seq`), 34 ms (`cat`); the longest output batch on the UI thread is under 1 ms (8 ms once) |
 | Idle CPU after a flood | xterm.js | done | below what `hack/perf.sh` can resolve (under 0.3% of a core over 3 s), one tab and ten tabs |
-| Memory | xterm.js `CircularList` of `BufferLine`s | partial | scrollback lines store their written cells only, and a cell is 32 bytes (was 40; xterm.js: 12): its cached width moved into the byte its flags padded to (`vendor/par-term-emu-core/PATCHES.md`, "Cell size"). Measured with `throughput <stream> --resize` (an emulator filled at 200×50 with 10 000 lines of scrollback, release, the resident memory it added): plain log 46.1 → 37.2 MB, colored log 57.8 → 46.9 MB, `ls -la` 28.6 → 23.3 MB, `seq` 5.3 → 4.7 MB, 19–20% less; output is as fast or faster (interleaved runs on a loaded machine: log 87–91 → 109–130 MB/s, colored log 61–76 → 70–83 MB/s, `seq` 55–59 → 64–74 MB/s). `hack/perf.sh` was not rerun (this machine has no GNOME Shell). Not taken, see below: 24 bytes (the combining marks, the underline color and the hyperlink id out of line together) and xterm.js's 12 |
+| Memory | xterm.js `CircularList` of `BufferLine`s | partial | scrollback lines store their written cells only; a cell is 40 bytes (xterm.js: 12). Measured with `throughput <stream> --resize` (an emulator filled at 200×50 with 10 000 lines of scrollback, release, the resident memory it added): plain log 46.2 MB, colored log 57.8–57.9 MB, `ls -la` 28.8 MB, `seq` 5.5–5.6 MB. The vendored engine packed a cell into 32 bytes (19–20% less, see "Back on the published engine" below); upstream plans that change for a breaking release. Not taken, see below: 24 bytes and xterm.js's 12 |
 | Engine benchmark | none | done | `crates/muxus-term/examples/throughput` |
 | Benchmark of the app | none | done | `hack/perf.sh`, now with the process's CPU per step |
 | Same behaviour as before | all of the above | done | the engine's 1890 tests plus 7 new ones (property tests against the per-character path), 285 + 2 terminal tests, and the final state after every benchmark stream is identical to the original engine's (the engine has 1998 tests now on 0.80.0, 1932 of them upstream's) |
@@ -87,12 +85,12 @@ which output arrived; `hack/perf.sh`'s once-a-second ticks give the same numbers
 
 ## What changed
 
-### The engine: `vendor/par-term-emu-core`
+### The engine: `par-term-emu-core`
 
-`par-term-emu-core` (MIT; 0.60.0 when this work was done, 0.80.0 now, see
-"Rebased onto engine 0.79.0" and "… and 0.80.0" below) is vendored and patched in through
-`[patch.crates-io]` in the root `Cargo.toml`; `par-term-emu-core-rust` (the
-crate `muxus-term` depends on) re-exports it unchanged. The profile (a sampling
+`par-term-emu-core` (MIT; 0.60.0 when this work was done) was vendored and patched in through
+`[patch.crates-io]` in the root `Cargo.toml` until upstream took these changes in 0.82.0 (see
+"Back on the published engine" below); `par-term-emu-core-rust` (the crate `muxus-term`
+depends on) re-exports it unchanged. The profile (a sampling
 profiler over the benchmark streams) showed where the time went; each change
 answers one finding:
 
@@ -185,12 +183,14 @@ frames), and feeding the emulator about half of the UI thread during `seq`.
 - **Row building per frame.** During a flood every visible row is rebuilt each
   frame (1.4 ms). Reusing rows that only moved (the engine's scroll-aware damage,
   `Grid::scroll_damage_since`) would make that proportional to the new lines.
-- **Cell size.** A cell is 32 bytes (xterm.js packs one into 12); compact
-  scrollback keeps short lines small, but full lines still cost 6.4 KB at 200
-  columns. The 32 come from the 8-byte pointer to the combining marks (which
+- **Cell size.** A cell is 40 bytes (xterm.js packs one into 12); compact
+  scrollback keeps short lines small, but full lines still cost 8 KB at 200
+  columns. The 40 come from the 8-byte pointer to the combining marks (which
   sets the alignment), four 4-byte words (character, foreground, background,
-  underline color) and 8 bytes of flags (attribute bits, underline style,
-  width, hyperlink id). 24 bytes would take the combining marks, the underline
+  underline color), 8 bytes of flags (attribute bits, underline style,
+  hyperlink id) and the width byte padded to 8. Moving the width into the
+  flags' padding gives 32 bytes, as the vendored engine did; upstream plans it
+  for a breaking release, as it removes the public `Cell::width` field. 24 bytes would take the combining marks, the underline
   color and the hyperlink id out of line into one shared, reference-counted
   record: rare per cell, but the write paths would clone it for every cell
   written while a link or an underline color is set, and every user of
@@ -201,21 +201,20 @@ frames), and feeding the emulator about half of the UI thread during `seq`.
   reader and writer of the grid. Both are left: the first saves a further
   quarter for a broad, risky change to the write paths.
 - **Buffer reflow.** A resize now treats the scrollback and the screen as one
-  buffer, as xterm.js does (`vendor/par-term-emu-core/src/grid/reflow.rs`), so it
+  buffer, as xterm.js does (`src/grid/reflow.rs` in the engine), so it
   costs in proportion to the scrollback: resizing a filled 200×50 emulator with
   10 000 lines to 150 columns, or back, takes about 1 ms with plain log lines
   and 7–14 ms with the colored log's wrapped lines (release,
   `throughput --resize`), once per settled resize. Rows the reflow does not
   touch move by pointer.
 - **Scrollback size changes** are done: `Grid::set_max_scrollback` drops the
-  oldest lines from the ring buffer in one drain (`PATCHES.md` in the engine).
+  oldest lines from the ring buffer in one drain.
 - Non-ASCII text (CJK, emoji) still takes the per-character path.
 
 ## Attribution
 
-- par-term-emu-core (MIT, © 2025 Paul Robello): vendored and modified in
-  `vendor/par-term-emu-core` (its `LICENSE` is kept there). The changes are
-  listed above.
+- par-term-emu-core (MIT, © 2025 Paul Robello): a crates.io dependency. The changes listed
+  above are upstream since 0.82.0.
 
 ## Integration pass
 
@@ -347,7 +346,7 @@ What changed:
   Frame gaps while output flows stay under 25 ms.
 - **A drawn glyph's placeholder space extends the text run** before it (`paint_text`): a
   screen of differently colored `▀` built a run, and a font, per cell.
-- **kitty frames edit the image in place** (engine patch, `PATCHES.md`) and **the view makes a
+- **kitty frames edit the image in place** (in the engine since 0.82.0) and **the view makes a
   placement's sprite again when its pixels change, retiring the old one from the atlas**. The
   view used to keep every sprite it ever made, one per frame. Images painted larger than their
   pixels are stretched by the GPU (bilinear, with a one-pixel border repeating the edge)
@@ -357,3 +356,21 @@ What is left: the UI thread now spends most of its time parsing (the emulator ta
 DOOM-fire's stream at 72 MB/s on its own, `throughput` with a captured stream), and that keeps
 DOOM-fire below xterm.js; parsing off the UI thread would be the next step. kitty-doom is bound
 by the program and the pty.
+
+## Back on the published engine (0.84.0)
+
+Upstream took the patch series in `par-term-emu-core-rust` 0.82.0 (the throughput rework, the
+running terminal's scrollback size, image removal from the scrollback, xterm.js's buffer
+resize, kitty animation frames and the sequence fixes), so the vendored copy and the
+`[patch.crates-io]` entry are gone and `muxus-term` depends on 0.84.0 from crates.io. Upstream
+keeps the resize and the per-code-point emoji widths behind switches; `Emulator::new` turns on
+both (`set_xterm_resize`, `set_codepoint_widths`). Two changes stayed local and are dropped:
+
+- **The 32-byte cell.** A cell is 40 bytes again. `throughput <stream> --resize` (two runs a
+  stream): plain log 37.2 → 46.2 MB, colored log 46.9 → 57.8–57.9 MB, `ls -la` 23.3 → 28.8 MB,
+  `seq` 4.7 → 5.5–5.6 MB, the numbers from before that change.
+- **The PTY backend left out.** It sits behind upstream's `pty_session` feature, which Muxus
+  does not enable (`muxus-term` turns the default features off), so it is not built.
+
+The emulator's tests and `cargo xtask ci` pass. Throughput was not compared run for run: the
+machine was loaded (load average 4–10) when `throughput --runs 3` ran.

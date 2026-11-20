@@ -1,7 +1,6 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "xtask"]
-exclude = ["vendor"]
 default-members = ["crates/muxus-app"]
 
 [workspace.package]
@@ -49,8 +48,3 @@ debug = false
 lto = "thin"
 codegen-units = 4
 strip = true
-
-# The terminal engine with the scrolling and printing hot paths reworked (see
-# docs/parity/terminal-perf.md).
-[patch.crates-io]
-par-term-emu-core = { path = "vendor/par-term-emu-core" }
