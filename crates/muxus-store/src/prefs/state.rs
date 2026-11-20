@@ -342,6 +342,8 @@ prefs_state! {
     /// Width of the per-session remote file browser.
     #[serde(with = "js::number")]
     sftp_panel_width: f64 = "sftpPanelWidth" => DEFAULT_SFTP_PANEL_WIDTH;
+    /// List names starting with a dot in every file browser.
+    show_hidden_files: bool = "showHiddenFiles" => true;
     /// Width of the containers and VMs panel.
     #[serde(with = "js::number")]
     environments_panel_width: f64 = "environmentsPanelWidth" => DEFAULT_ENVIRONMENTS_PANEL_WIDTH;

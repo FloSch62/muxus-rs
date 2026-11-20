@@ -117,6 +117,7 @@ pub const PREFERENCE_KEYS: &[&str] = &[
     "sidebarFolderOrder",
     "sidebarEmptyFolders",
     "sftpPanelWidth",
+    "showHiddenFiles",
 ];
 
 /// A failed read, backup, export or restore. The message is what the

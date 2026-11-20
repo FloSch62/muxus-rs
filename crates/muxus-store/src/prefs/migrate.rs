@@ -151,6 +151,7 @@ pub fn migrate_prefs_state(persisted: &Value, version: f64) -> Value {
     drop_unless(state, "dimInactivePanes", is_bool);
     drop_unless(state, "webglRenderer", is_bool);
     drop_unless(state, "showWslDistributions", is_bool);
+    drop_unless(state, "showHiddenFiles", is_bool);
     drop_unless(state, "inactivePaneDimStrength", |v| {
         v.and_then(Value::as_f64).is_some_and(|strength| {
             strength.is_finite()

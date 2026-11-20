@@ -865,6 +865,26 @@ fn restores_whether_wsl_distributions_are_listed() {
 }
 
 #[test]
+fn restores_whether_the_file_browser_lists_hidden_files_and_leaves_older_backups_at_the_default() {
+    assert_eq!(
+        sanitize(json!({ "showHiddenFiles": false }))["showHiddenFiles"],
+        json!(false)
+    );
+    assert!(!sanitize(json!({ "showHiddenFiles": "no" })).contains_key("showHiddenFiles"));
+    assert!(!sanitize(json!({})).contains_key("showHiddenFiles"));
+}
+
+#[test]
+fn includes_whether_the_file_browser_lists_hidden_files() {
+    let sandbox = Sandbox::new();
+    sandbox.set_prefs(|prefs| prefs.show_hidden_files = false);
+
+    let document = sandbox.backup();
+
+    assert_eq!(document.preferences()["showHiddenFiles"], json!(false));
+}
+
+#[test]
 fn restores_the_ssh_session_summary_switch() {
     assert_eq!(
         sanitize(json!({ "sshSessionSummary": true }))["sshSessionSummary"],

@@ -288,6 +288,11 @@ pub fn sanitize_preferences(input: &Map<String, Value>) -> Map<String, Value> {
     );
     keep(
         &mut output,
+        "showHiddenFiles",
+        is_bool(get("showHiddenFiles")),
+    );
+    keep(
+        &mut output,
         "sidebarCollapsedFolders",
         bounded_path_list(get("sidebarCollapsedFolders")),
     );

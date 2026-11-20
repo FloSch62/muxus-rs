@@ -590,6 +590,17 @@ fn local_shell_profile_preferences() {
         ),
         json!({ "monoFontSize": 16 })
     );
+    // The file browser lists hidden files by default, also for preferences saved before the
+    // setting existed; a stored value that is not a boolean is dropped.
+    assert!(PrefsState::default().show_hidden_files);
+    assert_eq!(
+        migrate(json!({ "showHiddenFiles": "no", "monoFontSize": 16 }), 17),
+        json!({ "monoFontSize": 16 })
+    );
+    assert_eq!(
+        migrate(json!({ "showHiddenFiles": false }), 17),
+        json!({ "showHiddenFiles": false })
+    );
     // A default that names a profile that is gone falls back to automatic.
     assert_eq!(
         migrate(
