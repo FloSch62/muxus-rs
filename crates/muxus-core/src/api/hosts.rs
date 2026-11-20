@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
-use super::ForwardType;
+use super::{ExternalPasswordRef, ForwardType};
 use crate::js::Patch;
 use crate::paste_pacing::{
     MAX_PASTE_PROMPT_TIMEOUT_MS, MIN_PASTE_PROMPT_TIMEOUT_MS, PastePromptWaitSetting,
@@ -552,6 +552,8 @@ pub struct OpenSshProfileMetadata {
     pub discover_environments: Option<bool>,
     /// The host's own login sequence; absent inherits the folder's.
     pub login_sequence: Option<LoginSequence>,
+    /// Password-manager entry this host logs in with; absent uses saved or folder passwords.
+    pub password_ref: Option<ExternalPasswordRef>,
     /// Jump routes tried in order when the ProxyJump in ssh_config fails, each
     /// a whole chain. Kept by Muxus: ssh_config has no way to say it. OpenSSH
     /// aliases only; a saved host keeps them in its profile.
@@ -613,6 +615,9 @@ pub struct OpenSshMetadataPatch {
     /// `null` goes back to the folder's sequence.
     #[serde(default, skip_serializing_if = "Patch::is_keep")]
     pub login_sequence: Patch<LoginSequence>,
+    /// `null` unlinks the password-manager entry.
+    #[serde(default, skip_serializing_if = "Patch::is_keep")]
+    pub password_ref: Patch<ExternalPasswordRef>,
     /// `null` or empty removes the fallback jump routes (OpenSSH aliases only).
     #[serde(default, skip_serializing_if = "Patch::is_keep")]
     pub proxy_jump_fallbacks: Patch<Vec<Vec<String>>>,
@@ -643,6 +648,7 @@ impl OpenSshMetadataPatch {
             && self.system_open_ssh.is_none()
             && self.discover_environments.is_keep()
             && self.login_sequence.is_keep()
+            && self.password_ref.is_keep()
             && self.proxy_jump_fallbacks.is_keep()
     }
 }
@@ -651,7 +657,8 @@ impl OpenSshMetadataPatch {
 /// field is optional: a folder only overrides what it sets. At connect time
 /// these apply *below* everything in ssh_config — a host's own options and
 /// `Host *` blocks always win — with the nearest folder beating its
-/// ancestors. The folder password is not here; it lives in the encrypted vault.
+/// ancestors. The folder password is not here; it lives in the encrypted vault, or in a
+/// password manager that `password_ref` points into.
 #[skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -663,6 +670,8 @@ pub struct FolderAuthSettings {
     /// Agent socket override: a path, `$VAR`/`${VAR}`, `SSH_AUTH_SOCK`, or `none`.
     pub identity_agent: Option<String>,
     pub forward_agent: Option<bool>,
+    /// Password-manager entry offered as the folder's shared password.
+    pub password_ref: Option<ExternalPasswordRef>,
 }
 
 impl FolderAuthSettings {
@@ -698,6 +707,7 @@ impl FolderAuthSettings {
             identities_only: self.identities_only,
             identity_agent: identity_agent.map(str::to_owned),
             forward_agent: self.forward_agent,
+            password_ref: self.password_ref.as_ref().map(ExternalPasswordRef::cleaned),
         }
     }
 }
@@ -1175,6 +1185,9 @@ impl Validate for OpenSshMetadataPatch {
         }
         if let Patch::Set(sequence) = &mut self.login_sequence {
             sequence.validate_at(&join(path, "loginSequence"))?;
+        }
+        if let Patch::Set(entry) = &mut self.password_ref {
+            entry.validate_at(&join(path, "passwordRef"))?;
         }
         if let Patch::Set(routes) = &mut self.proxy_jump_fallbacks {
             validate_jump_routes(&join(path, "proxyJumpFallbacks"), routes, true)?;

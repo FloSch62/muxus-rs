@@ -7,7 +7,7 @@ use super::migration_sql as sql;
 use super::{DbError, DbResult};
 
 /// The newest schema version this build knows (the last TypeScript migration).
-pub const SUPPORTED_SCHEMA_VERSION: i64 = 37;
+pub const SUPPORTED_SCHEMA_VERSION: i64 = 38;
 
 /// One row of `schema_migrations`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,6 +224,12 @@ const MIGRATIONS: &[Migration] = &[
         version: 37,
         name: "host-system-openssh",
         step: Step::Sql(sql::MIGRATION_37),
+    },
+    // Connected password managers, and the entry a host logs in with.
+    Migration {
+        version: 38,
+        name: "password-managers",
+        step: Step::Sql(sql::MIGRATION_38),
     },
 ];
 

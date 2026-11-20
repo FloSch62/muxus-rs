@@ -443,6 +443,23 @@ pub(super) const MIGRATION_37: &str = r#"
         CHECK(system_openssh IN (0, 1));
     "#;
 
+/// Migration 38, `password-managers`: connected password managers, and the entry a host logs
+/// in with. Only references are stored; passwords stay in the manager.
+pub(super) const MIGRATION_38: &str = r#"
+      CREATE TABLE password_manager_sources (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK(length(kind) BETWEEN 1 AND 40),
+        name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 200),
+        config_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(config_json)),
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      ) STRICT;
+
+      ALTER TABLE connection_profiles
+        ADD COLUMN password_ref_json TEXT
+        CHECK(password_ref_json IS NULL OR json_valid(password_ref_json));
+    "#;
+
 /// Migration 22: the kinds connection_profiles admitted before.
 pub(super) const REMOTE_DESKTOP_PREVIOUS_KINDS: &str =
     r#"kind IN ('openssh', 'ssh', 'local', 'serial', 'telnet')"#;

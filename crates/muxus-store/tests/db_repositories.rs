@@ -9,6 +9,7 @@ use muxus_core::api::{
     SessionLogFileSettings, SessionLoggingPolicyInput, TerminalBackspaceKey, TerminalEnterKey,
     TunnelInput, TunnelSshOptions, WorkspaceMultiExecGroup,
 };
+use muxus_core::api::{ExternalPasswordRef, PasswordManagerConfig};
 use muxus_core::js::Patch;
 use muxus_core::management::{ManagementProtocol, SavedManagementRequestInput};
 use muxus_core::paste_pacing::PastePromptWaitSetting;
@@ -136,6 +137,7 @@ mod migrations {
             "scripts",
             "web-hosts",
             "host-system-openssh",
+            "password-managers",
         ];
         let expected: Vec<(i64, String)> = expected
             .iter()
@@ -267,7 +269,7 @@ mod migrations {
         }
 
         let db = Database::open(&path).unwrap();
-        assert_eq!(db.applied_migrations().unwrap().last().unwrap().version, 37);
+        assert_eq!(db.applied_migrations().unwrap().last().unwrap().version, 38);
         let restored = db.saved_host_profile(&telnet_host.id).unwrap().unwrap();
         assert_eq!(restored.name, "Core switch");
         assert_eq!(restored.metadata.group.as_deref(), Some("Lab"));
@@ -417,7 +419,7 @@ mod migrations {
         let db = Database::open(&path).unwrap();
         assert_eq!(
             db.applied_migrations().unwrap().last().unwrap().name,
-            "host-system-openssh"
+            "password-managers"
         );
         assert_eq!(
             db.saved_host_profile(&rdp.id)
@@ -786,6 +788,8 @@ mod migrations {
             .execute_batch(
                 "DELETE FROM schema_migrations WHERE version >= 30;
         DROP TABLE scripts;
+        DROP TABLE password_manager_sources;
+        ALTER TABLE connection_profiles DROP COLUMN password_ref_json;
         ALTER TABLE connection_profiles DROP COLUMN proxy_jump_fallbacks_json;
         ALTER TABLE connection_profiles DROP COLUMN discover_environments;
         ALTER TABLE connection_profiles DROP COLUMN system_openssh;
@@ -817,6 +821,7 @@ mod migrations {
                 (35, "scripts"),
                 (36, "web-hosts"),
                 (37, "host-system-openssh"),
+                (38, "password-managers"),
             ]
             .map(|(version, name)| (version, name.to_owned()))
         );
@@ -1048,7 +1053,7 @@ mod migrations {
         }
 
         let db = Database::open(&path).unwrap();
-        assert_eq!(db.applied_migrations().unwrap().last().unwrap().version, 37);
+        assert_eq!(db.applied_migrations().unwrap().last().unwrap().version, 38);
         let config = db.password_vault_config().unwrap().unwrap().config;
         assert_eq!(config.format_version, 2);
         assert_eq!(
@@ -3022,5 +3027,252 @@ mod workspace_requests {
             .unwrap();
         assert!(explicit.is_locked);
         assert_eq!(explicit.layout, empty);
+    }
+}
+
+/// Migration 38: connected password managers and the entry a host logs in with.
+mod password_managers {
+    use super::*;
+
+    fn entry(source: &str, entry: &str, title: &str) -> ExternalPasswordRef {
+        ExternalPasswordRef {
+            source_id: source.into(),
+            entry_id: entry.into(),
+            title: title.into(),
+            username: None,
+        }
+    }
+
+    #[test]
+    fn keeps_connected_password_managers_by_name() {
+        let (_dir, path) = file_db();
+        let db = Database::open(&path).unwrap();
+        let keepass = db
+            .create_password_manager_source(
+                "keepass",
+                "  work  ",
+                &PasswordManagerConfig {
+                    path: Some("~/Work.kdbx".into()),
+                    key_file: Some("~/work.keyx".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(keepass.name, "work");
+        assert_eq!(keepass.kind, "keepass");
+        db.create_password_manager_source("bitwarden", "Bitwarden", &Default::default())
+            .unwrap();
+        db.create_password_manager_source("pass", "pass", &Default::default())
+            .unwrap();
+        let names: Vec<String> = db
+            .list_password_manager_sources()
+            .unwrap()
+            .into_iter()
+            .map(|row| row.name)
+            .collect();
+        assert_eq!(names, ["Bitwarden", "pass", "work"]);
+        assert_eq!(
+            db.password_manager_source(&keepass.id).unwrap(),
+            Some(keepass.clone())
+        );
+        // Only how the manager is reached is stored.
+        let stored: String = Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT config_json FROM password_manager_sources WHERE id = ?",
+                [&keepass.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, r#"{"path":"~/Work.kdbx","keyFile":"~/work.keyx"}"#);
+    }
+
+    #[test]
+    fn renames_and_removes_a_password_manager() {
+        let db = memory();
+        let source = db
+            .create_password_manager_source("onepassword", "1Password", &Default::default())
+            .unwrap();
+        let updated = db
+            .update_password_manager_source(
+                &source.id,
+                " Team ",
+                &PasswordManagerConfig {
+                    account: Some("team.1password.eu".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.name, "Team");
+        assert_eq!(updated.kind, "onepassword");
+        assert_eq!(updated.config.account.as_deref(), Some("team.1password.eu"));
+        assert_eq!(updated.created_at, source.created_at);
+        assert_eq!(
+            db.update_password_manager_source("missing", "x", &Default::default())
+                .unwrap(),
+            None
+        );
+        assert!(matches!(
+            db.update_password_manager_source(&source.id, "   ", &Default::default()),
+            Err(DbError::Invalid(message)) if message == "name is required"
+        ));
+        assert!(matches!(
+            db.create_password_manager_source("pass", "", &Default::default()),
+            Err(DbError::Invalid(_))
+        ));
+        assert!(db.delete_password_manager_source(&source.id).unwrap());
+        assert!(!db.delete_password_manager_source(&source.id).unwrap());
+        assert_eq!(db.password_manager_source(&source.id).unwrap(), None);
+    }
+
+    #[test]
+    fn links_and_unlinks_the_entry_an_openssh_alias_logs_in_with() {
+        let db = memory();
+        assert_eq!(db.password_ref_for_alias("web1").unwrap(), None);
+        let linked = ExternalPasswordRef {
+            username: Some("root".into()),
+            ..entry("source-1", "entry-1", "web1 root")
+        };
+        let metadata = db
+            .update_open_ssh_metadata(
+                "web1",
+                &OpenSshMetadataPatch {
+                    password_ref: Patch::Set(linked.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(metadata.password_ref, Some(linked.clone()));
+        assert_eq!(
+            db.password_ref_for_alias("web1").unwrap(),
+            Some(linked.clone())
+        );
+        // A patch that does not name the entry keeps it.
+        let recolored = db
+            .update_open_ssh_metadata(
+                "web1",
+                &OpenSshMetadataPatch {
+                    color: Patch::Set("#ef4444".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(recolored.password_ref, Some(linked));
+        let unlinked = db
+            .update_open_ssh_metadata(
+                "web1",
+                &OpenSshMetadataPatch {
+                    password_ref: Patch::Clear,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(unlinked.password_ref, None);
+        assert_eq!(db.password_ref_for_alias("web1").unwrap(), None);
+    }
+
+    #[test]
+    fn links_an_entry_to_a_saved_host_and_stores_the_reference_only() {
+        let (_dir, path) = file_db();
+        let db = Database::open(&path).unwrap();
+        let host = db
+            .save_saved_host_profile(&SavedHostProfileInput {
+                id: None,
+                name: "Build server".into(),
+                profile: telnet("win-build", 23),
+            })
+            .unwrap();
+        let saved = db
+            .update_saved_host_metadata(
+                &host.id,
+                &OpenSshMetadataPatch {
+                    password_ref: Patch::Set(ExternalPasswordRef {
+                        username: Some(String::new()),
+                        ..entry("source-1", "entry-2", "ci@win-build")
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let linked = entry("source-1", "entry-2", "ci@win-build");
+        assert_eq!(saved.metadata.password_ref, Some(linked.clone()));
+        assert_eq!(
+            db.password_ref_for_saved_host(&host.id).unwrap(),
+            Some(linked)
+        );
+        assert_eq!(db.password_ref_for_saved_host("missing").unwrap(), None);
+        // An OpenSSH row is not a saved host.
+        let alias = db
+            .update_open_ssh_metadata(
+                "web1",
+                &OpenSshMetadataPatch {
+                    password_ref: Patch::Set(entry("source-1", "entry-1", "web1")),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            db.password_ref_for_saved_host(&alias.profile_id).unwrap(),
+            None
+        );
+
+        let conn = Connection::open(&path).unwrap();
+        let stored: String = conn
+            .query_row(
+                "SELECT password_ref_json FROM connection_profiles WHERE id = ?",
+                [&host.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored,
+            r#"{"sourceId":"source-1","entryId":"entry-2","title":"ci@win-build"}"#
+        );
+        // What another build or a hand edit left there reads as far as it is a reference.
+        conn.execute(
+            "UPDATE connection_profiles SET password_ref_json = ? WHERE id = ?",
+            [
+                r#"{"sourceId":"source-1","entryId":"entry-2","title":7,"password":"x"}"#,
+                &host.id,
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            db.password_ref_for_saved_host(&host.id).unwrap(),
+            Some(entry("source-1", "entry-2", ""))
+        );
+        conn.execute(
+            "UPDATE connection_profiles SET password_ref_json = ? WHERE id = ?",
+            [r#"{"entryId":"entry-2","title":"no source"}"#, &host.id],
+        )
+        .unwrap();
+        assert_eq!(db.password_ref_for_saved_host(&host.id).unwrap(), None);
+    }
+
+    #[test]
+    fn keeps_the_entry_a_folder_points_at_with_its_defaults() {
+        let db = memory();
+        let auth = FolderAuthSettings {
+            user: Some("ops".into()),
+            password_ref: Some(ExternalPasswordRef {
+                username: Some("ops".into()),
+                ..entry("source-1", "entry-3", "EU ops")
+            }),
+            ..Default::default()
+        };
+        let row = db.upsert_folder_settings("Work/EU", &auth).unwrap();
+        assert_eq!(row.auth, auth);
+        assert_eq!(
+            db.folder_settings_for_path("work/eu")
+                .unwrap()
+                .unwrap()
+                .auth,
+            auth
+        );
+        // The entry is the folder's own: it is not handed down with the other defaults.
+        let merged = muxus_store::db::merge_folder_auth([&auth]);
+        assert_eq!(merged.user.as_deref(), Some("ops"));
+        assert_eq!(merged.password_ref, None);
     }
 }

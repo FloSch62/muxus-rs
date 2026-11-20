@@ -25,7 +25,8 @@
 
 use std::cmp::Ordering;
 
-use icu_collator::options::CollatorOptions;
+use icu_collator::options::{CollatorOptions, Strength};
+use icu_collator::preferences::CollationNumericOrdering;
 use icu_collator::provider::{
     CollationDiacriticsV1, CollationJamoV1, CollationMetadataV1, CollationReorderingV1,
     CollationRootV1, CollationSpecialPrimariesV1, CollationTailoringV1,
@@ -79,9 +80,20 @@ fn root_collator() -> Option<Collator> {
     .ok()
 }
 
+/// The root collation as `new Intl.Collator(undefined, { sensitivity: 'base', numeric: true })`
+/// asks for it: letters only, without regard to case and accents, digits by their value.
+fn base_numeric_collator() -> Option<Collator> {
+    let mut preferences = CollatorPreferences::default();
+    preferences.numeric_ordering = Some(CollationNumericOrdering::True);
+    let mut options = CollatorOptions::default();
+    options.strength = Some(Strength::Primary);
+    Collator::try_new_unstable(&RootCollation, preferences, options).ok()
+}
+
 thread_local! {
     // A collator over static data is cheap to make, but not `Sync`: one per thread.
     static COLLATOR: Option<Collator> = root_collator();
+    static BASE_NUMERIC: Option<Collator> = base_numeric_collator();
 }
 
 /// Compare two strings the way `a.localeCompare(b)` orders them (see the module docs).
@@ -92,9 +104,31 @@ pub fn locale_compare(a: &str, b: &str) -> Ordering {
     })
 }
 
+/// Compare two strings the way `new Intl.Collator(undefined, { sensitivity: 'base', numeric:
+/// true })` does: `web2` before `web10`, and `Lab`, `lab` and `láb` as the same word.
+pub fn base_numeric_compare(a: &str, b: &str) -> Ordering {
+    BASE_NUMERIC.with(|collator| match collator {
+        Some(collator) => collator.as_borrowed().compare(a, b),
+        None => a.to_lowercase().cmp(&b.to_lowercase()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_base_collation_ignores_case_and_accents_and_reads_numbers() {
+        assert!(base_numeric_collator().is_some());
+        assert_eq!(base_numeric_compare("Lab", "láb"), Ordering::Equal);
+        assert_eq!(base_numeric_compare("web2", "web10"), Ordering::Less);
+        assert_eq!(base_numeric_compare("", "Network"), Ordering::Less);
+        assert_eq!(base_numeric_compare("core-sw", "no url"), Ordering::Less);
+        assert_eq!(
+            base_numeric_compare("https://mail", "lab-router"),
+            Ordering::Less
+        );
+    }
 
     fn sorted(items: &[&str]) -> Vec<String> {
         let mut out: Vec<String> = items.iter().map(|s| s.to_string()).collect();

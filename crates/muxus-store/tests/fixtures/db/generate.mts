@@ -122,6 +122,17 @@ const web = db.saveSavedHostProfile({ name: 'Grafana', profile: { kind: 'web', u
 db.updateSavedHostMetadata(ssh.id, { displayName: 'Core router', group: 'Work/EU', loginSequence: { steps: [] }, systemOpenSsh: true, discoverEnvironments: true });
 db.updateSavedHostMetadata(telnet.id, { group: 'Lab', pasteCharDelayMs: 5, pastePromptWait: {}, antiIdle: { intervalSeconds: 60, text: '', enter: true }, enterKey: 'lf', localEcho: true });
 db.updateSavedHostMetadata(web.id, { group: 'Lab', color: '#22c55e' });
+const keepass = db.createPasswordManagerSource({ kind: 'keepass', name: ' KeePass – Work ', config: { path: '~/Passwords/Work.kdbx', keyFile: '~/Passwords/work.keyx' } });
+const bitwarden = db.createPasswordManagerSource({ kind: 'bitwarden', name: 'bitwarden', config: {} });
+db.updatePasswordManagerSource(bitwarden.id, { name: 'Vaultwarden', config: { program: '/opt/bw/bw' } });
+db.createPasswordManagerSource({ kind: 'onepassword', name: '1Password', config: { account: 'my.1password.eu' } });
+const dropped = db.createPasswordManagerSource({ kind: 'pass', name: 'pass', config: {} });
+db.deletePasswordManagerSource(dropped.id);
+db.updateOpenSshMetadata('production', { passwordRef: { sourceId: keepass.id, entryId: 'AAECAwQFBgcICQoLDA0ODw==', title: 'production root', username: 'root' } });
+db.updateOpenSshMetadata('bastion', { passwordRef: { sourceId: dropped.id, entryId: 'servers/bastion', title: 'bastion' } });
+db.updateOpenSshMetadata('bastion', { passwordRef: null });
+db.updateSavedHostMetadata(ssh.id, { passwordRef: { sourceId: keepass.id, entryId: 'EBESExQVFhcYGRobHB0eHw==', title: 'Core router', username: '' } });
+db.updateSavedHostMetadata(rdp.id, { passwordRef: { sourceId: bitwarden.id, entryId: '6c1d0e7e-3f0a-4b1c-9d2e-5a6b7c8d9e0f', title: 'ci@win-build', username: 'ci' } });
 const diskSpace = db.saveScript({ id: 'script-df', name: 'Disk space', body: 'df -h\n' });
 db.saveScript({ name: 'uptime', body: 'uptime\n' });
 db.saveScript({ id: diskSpace.id, name: 'Free space', body: 'df -h /\n' });
@@ -158,7 +169,7 @@ db.saveSessionLoggingPolicy('ssh:production', { enabled: false, captureInput: tr
 db.saveSessionHistorySettings({ storageLocation: '/srv/history', maxTotalBytes: 134217728, minFreeBytes: 0, minFreePercent: 2.5, maxAgeDays: 30 });
 db.saveSessionLogFileSettings({ directory: '/srv/logs', filenamePattern: '{kind}/{host}_{date}.log', timestamps: true });
 
-const eu = db.upsertFolderSettings('Work/EU', { user: 'ops', port: 2200, identityFiles: ['~/.ssh/eu'], identitiesOnly: true, identityAgent: 'none', forwardAgent: false });
+const eu = db.upsertFolderSettings('Work/EU', { user: 'ops', port: 2200, identityFiles: ['~/.ssh/eu'], identitiesOnly: true, identityAgent: 'none', forwardAgent: false, passwordRef: { sourceId: keepass.id, entryId: 'ICEiIyQlJicoKSorLC0uLw==', title: 'EU ops', username: 'ops' } });
 db.setFolderLoginSequence(eu.id, loginSequence);
 db.upsertFolderSettings(' Lab ', { user: 'root' });
 
@@ -191,6 +202,13 @@ const expected = {
   hostInputKeysSaved: db.hostInputKeys({ profileId: telnet.id }),
   hostInputKeysMissing: db.hostInputKeys({ alias: 'missing' }),
   scripts: db.listScripts(),
+  passwordManagerSources: db.listPasswordManagerSources(),
+  passwordManagerSource: db.passwordManagerSource(bitwarden.id) ?? null,
+  passwordManagerSourceRemoved: db.passwordManagerSource(dropped.id) ?? null,
+  passwordRefForAlias: db.passwordRefForAlias('production') ?? null,
+  passwordRefForAliasUnlinked: db.passwordRefForAlias('bastion') ?? null,
+  passwordRefForSavedHost: db.passwordRefForSavedHost(rdp.id) ?? null,
+  passwordRefForSavedHostMissing: db.passwordRefForSavedHost('missing') ?? null,
   savedHosts: db.listSavedHostProfiles(),
   savedHost: db.savedHostProfile(vnc.id),
   workspaceSummaries: db.listWorkspaceSummaries(),
@@ -216,7 +234,7 @@ const expected = {
   desktopIdentity: db.trustedDesktopIdentity('win-build', 3389, 'ssh:bastion'),
   managementRequests: db.listManagementRequests('gnmi', gnmi.id),
   managementShared: db.listManagementRequests('gnmi'),
-  ids: { ssh: ssh.id, telnet: telnet.id, serial: serial.id, rdp: rdp.id, vnc: vnc.id, gnmi: gnmi.id, netconf: netconf.id, web: web.id, tunnel: t1.id },
+  ids: { ssh: ssh.id, telnet: telnet.id, serial: serial.id, rdp: rdp.id, vnc: vnc.id, gnmi: gnmi.id, netconf: netconf.id, web: web.id, tunnel: t1.id, bitwarden: bitwarden.id, pass: dropped.id },
 };
 db.close();
 writeFileSync(path.join(outDir, 'ts-populated.expected.json'), `${JSON.stringify(b64(expected), null, 1)}\n`);

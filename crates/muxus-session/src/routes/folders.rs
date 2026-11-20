@@ -86,6 +86,12 @@ fn check_auth(auth: &FolderAuthSettings) -> Result<(), String> {
     {
         return Err(too_big(1024, "string"));
     }
+    if let Some(entry) = &auth.password_ref {
+        entry
+            .clone()
+            .validate_at("passwordRef")
+            .map_err(|error| error.message)?;
+    }
     Ok(())
 }
 
@@ -112,6 +118,7 @@ pub fn clean_auth(auth: &FolderAuthSettings) -> FolderAuthSettings {
         identities_only: auth.identities_only,
         identity_agent: trimmed(&auth.identity_agent),
         forward_agent: auth.forward_agent,
+        password_ref: auth.password_ref.as_ref().map(|entry| entry.cleaned()),
     }
 }
 

@@ -8,7 +8,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use muxus_core::management::ManagementProtocol;
 use muxus_store::Database;
-use muxus_store::db::{EncryptedCredentialRecord, HostRef};
+use muxus_store::db::{EncryptedCredentialRecord, HostRef, PasswordManagerSourceRow};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
@@ -105,6 +105,60 @@ fn reads_match_the_typescript_database_layer() {
     check(
         "jumpFallbacksForAlias",
         value(db.jump_fallbacks_for_alias("production").unwrap()),
+    );
+    let source = |row: &PasswordManagerSourceRow| {
+        json!({
+            "id": row.id,
+            "kind": row.kind,
+            "name": row.name,
+            "config": row.config,
+            "createdAt": row.created_at,
+            "updatedAt": row.updated_at,
+        })
+    };
+    check(
+        "passwordManagerSources",
+        Value::Array(
+            db.list_password_manager_sources()
+                .unwrap()
+                .iter()
+                .map(source)
+                .collect(),
+        ),
+    );
+    check(
+        "passwordManagerSource",
+        value(
+            db.password_manager_source(&id("bitwarden"))
+                .unwrap()
+                .as_ref()
+                .map(source),
+        ),
+    );
+    check(
+        "passwordManagerSourceRemoved",
+        value(
+            db.password_manager_source(&id("pass"))
+                .unwrap()
+                .as_ref()
+                .map(source),
+        ),
+    );
+    check(
+        "passwordRefForAlias",
+        value(db.password_ref_for_alias("production").unwrap()),
+    );
+    check(
+        "passwordRefForAliasUnlinked",
+        value(db.password_ref_for_alias("bastion").unwrap()),
+    );
+    check(
+        "passwordRefForSavedHost",
+        value(db.password_ref_for_saved_host(&id("rdp")).unwrap()),
+    );
+    check(
+        "passwordRefForSavedHostMissing",
+        value(db.password_ref_for_saved_host("missing").unwrap()),
     );
     check(
         "hostAntiIdleAlias",
@@ -262,7 +316,8 @@ fn reads_match_the_typescript_database_layer() {
 /// Every JSON metadata column of a host, in one string per row.
 const METADATA_JSON_SQL: &str = "SELECT COALESCE(keyword_highlights_json, '') || COALESCE(login_sequence_json, '') \
      || COALESCE(paste_prompt_wait_json, '') || COALESCE(anti_idle_json, '') \
-     || COALESCE(proxy_jump_fallbacks_json, '') FROM connection_profiles ORDER BY id";
+     || COALESCE(proxy_jump_fallbacks_json, '') || COALESCE(password_ref_json, '') \
+     FROM connection_profiles ORDER BY id";
 
 #[test]
 fn stored_json_columns_round_trip_byte_for_byte() {
@@ -301,6 +356,7 @@ fn stored_json_columns_round_trip_byte_for_byte() {
             login_sequence: host.metadata.login_sequence.into(),
             paste_prompt_wait: host.metadata.paste_prompt_wait.into(),
             anti_idle: host.metadata.anti_idle.into(),
+            password_ref: host.metadata.password_ref.into(),
             ..Default::default()
         };
         db.update_saved_host_metadata(&host.id, &patch).unwrap();
@@ -315,6 +371,7 @@ fn stored_json_columns_round_trip_byte_for_byte() {
             paste_prompt_wait: metadata.paste_prompt_wait.into(),
             anti_idle: metadata.anti_idle.into(),
             proxy_jump_fallbacks: metadata.proxy_jump_fallbacks.into(),
+            password_ref: metadata.password_ref.into(),
             ..Default::default()
         };
         db.update_open_ssh_metadata(&alias, &patch).unwrap();

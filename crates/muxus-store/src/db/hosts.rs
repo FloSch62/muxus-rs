@@ -5,9 +5,9 @@
 use std::collections::HashSet;
 
 use muxus_core::api::{
-    AntiIdle, HostKeywordHighlightConfig, LoginSequence, ManagedHostRef, OpenSshMetadataPatch,
-    OpenSshProfileMetadata, SavedHostKind, SavedHostProfile, SavedHostProfileInput,
-    TerminalBackspaceKey, TerminalEnterKey,
+    AntiIdle, ExternalPasswordRef, HostKeywordHighlightConfig, LoginSequence, ManagedHostRef,
+    OpenSshMetadataPatch, OpenSshProfileMetadata, SavedHostKind, SavedHostProfile,
+    SavedHostProfileInput, TerminalBackspaceKey, TerminalEnterKey,
 };
 use muxus_core::js::Patch;
 use muxus_core::management::{
@@ -52,6 +52,7 @@ const METADATA_BY_ALIAS_SQL: &str = "
         profiles.system_openssh,
         profiles.discover_environments,
         profiles.login_sequence_json,
+        profiles.password_ref_json,
         profiles.proxy_jump_fallbacks_json,
         profiles.last_connected_at,
         profiles.connect_count,
@@ -100,6 +101,7 @@ struct MetadataRow {
     system_openssh: bool,
     discover_environments: Option<i64>,
     login_sequence_json: Option<String>,
+    password_ref_json: Option<String>,
     proxy_jump_fallbacks_json: Option<String>,
     last_connected_at: Option<String>,
     connect_count: i64,
@@ -133,6 +135,7 @@ fn metadata_row(row: &Row<'_>) -> rusqlite::Result<MetadataRow> {
         system_openssh: row.get::<_, i64>("system_openssh")? == 1,
         discover_environments: row.get("discover_environments")?,
         login_sequence_json: row.get("login_sequence_json")?,
+        password_ref_json: row.get("password_ref_json")?,
         proxy_jump_fallbacks_json: row.get("proxy_jump_fallbacks_json")?,
         last_connected_at: row.get("last_connected_at")?,
         connect_count: row.get("connect_count")?,
@@ -181,6 +184,7 @@ impl MetadataRow {
             // NULL follows the global setting and is left out.
             discover_environments: self.discover_environments.map(|value| value == 1),
             login_sequence: login_sequence_from_json(self.login_sequence_json.as_deref()),
+            password_ref: password_ref_from_json(self.password_ref_json.as_deref()),
             proxy_jump_fallbacks: if open_ssh {
                 jump_fallbacks_from_json(self.proxy_jump_fallbacks_json.as_deref())
             } else {
@@ -303,6 +307,19 @@ fn keyword_highlights_from_json(value: Option<&str>) -> Option<HostKeywordHighli
 }
 
 /// Stored sequences were validated when written; anything unreadable counts as none set.
+/// The linked password-manager entry of a row (`passwordRefFromJson`): a reference needs
+/// its source and entry; a title that is not text reads as none.
+pub(super) fn password_ref_from_json(value: Option<&str>) -> Option<ExternalPasswordRef> {
+    let stored: Value = serde_json::from_str(value.filter(|value| !value.is_empty())?).ok()?;
+    let text = |key: &str| stored.get(key).and_then(Value::as_str).map(str::to_owned);
+    Some(ExternalPasswordRef {
+        source_id: text("sourceId")?,
+        entry_id: text("entryId")?,
+        title: text("title").unwrap_or_default(),
+        username: text("username").filter(|name| !name.is_empty()),
+    })
+}
+
 pub(super) fn login_sequence_from_json(value: Option<&str>) -> Option<LoginSequence> {
     let parsed: Value = serde_json::from_str(value?).ok()?;
     if !parsed.get("steps").is_some_and(Value::is_array) {
@@ -493,6 +510,7 @@ fn apply_metadata_patch(
             system_openssh = ?,
             discover_environments = ?,
             login_sequence_json = ?,
+            password_ref_json = ?,
             proxy_jump_fallbacks_json = ?,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
@@ -554,6 +572,12 @@ fn apply_metadata_patch(
                 Patch::Set(value) => Some(i64::from(value)),
             },
             login_sequence_column(&patch.login_sequence, current.login_sequence_json.clone())?,
+            // Absent keeps the linked entry, null unlinks it (`setPasswordRef`).
+            match &patch.password_ref {
+                Patch::Keep => current.password_ref_json.clone(),
+                Patch::Clear => None,
+                Patch::Set(entry) => Some(serde_json::to_string(&entry.cleaned())?),
+            },
             match &patch.proxy_jump_fallbacks {
                 // Null or an empty list removes them.
                 Patch::Set(routes) if open_ssh && !routes.is_empty() => {
@@ -706,6 +730,28 @@ impl Database {
     /// Whether one Muxus-owned host connects through the computer's `ssh` program.
     pub fn system_open_ssh_for_saved_host(&self, id: &str) -> DbResult<bool> {
         self.saved_ssh_flag(id, "system_openssh")
+    }
+
+    /// The password-manager entry an OpenSSH alias logs in with, when one is linked.
+    pub fn password_ref_for_alias(&self, alias: &str) -> DbResult<Option<ExternalPasswordRef>> {
+        Ok(metadata_by_alias(&self.lock(), alias)?
+            .and_then(|row| password_ref_from_json(row.password_ref_json.as_deref())))
+    }
+
+    /// The password-manager entry a Muxus-owned host logs in with, when one is linked.
+    pub fn password_ref_for_saved_host(&self, id: &str) -> DbResult<Option<ExternalPasswordRef>> {
+        let stored: Option<Option<String>> = self
+            .lock()
+            .query_row(
+                &format!(
+                    "SELECT password_ref_json FROM connection_profiles
+                     WHERE id = ? AND kind IN {SAVED_HOST_KINDS_SQL}"
+                ),
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(password_ref_from_json(stored.flatten().as_deref()))
     }
 
     /// Jump routes to try, in order, when this OpenSSH alias's ProxyJump fails.
