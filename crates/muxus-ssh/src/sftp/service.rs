@@ -33,6 +33,8 @@ use crate::connection::manager::SshConnectionManager;
 pub const MAX_RECURSIVE_DELETE: usize = 10_000;
 /// The editor is a text editor, not a way to accidentally buffer huge remote artifacts.
 pub const MAX_EDITOR_BYTES: u64 = 8 * 1024 * 1024;
+/// A new file's mode, less the server's umask: what `sftp put` gives a typical file.
+pub const NEW_FILE_MODE: u32 = 0o644;
 /// Pasted clipboard images are readable by their owner only.
 pub const CLIPBOARD_IMAGE_MODE: u32 = 0o600;
 pub const CLIPBOARD_IMAGE_TEMP_DIR: &str = "/tmp";
@@ -781,7 +783,7 @@ async fn atomic_text_save(
     let temp = format!("{file}.muxus-{}.tmp", random_hex::<6>());
     let result: Result<(), Problem> = async {
         let handle = fs
-            .open(&temp, write_exclusive(), mode.map(|mode| mode & 0o7777))
+            .open(&temp, write_exclusive(), Some(temp_file_mode(mode)))
             .await?;
         let written = fs.write_from(&handle, &mut &bytes[..], &mut |_| {}).await;
         if written.is_ok() {
@@ -799,9 +801,16 @@ async fn atomic_text_save(
     result
 }
 
-/// Gives a temporary file the exact mode it was created with. The mode passed to `open` goes
+/// The mode a new temporary file is opened with: that of the file it replaces, else
+/// [`NEW_FILE_MODE`], which the server's umask may narrow.
+fn temp_file_mode(mode: Option<u32>) -> u32 {
+    mode.unwrap_or(NEW_FILE_MODE) & 0o7777
+}
+
+/// Gives a temporary file the exact mode of the file it replaces. The mode passed to `open` goes
 /// through the server's umask, which would turn a 0664 file into 0644 on save. A server that
-/// refuses keeps the umask result, as `sftp put -p` does after its warning.
+/// refuses keeps the umask result, as `sftp put -p` does after its warning. A new file keeps
+/// what the umask left of [`NEW_FILE_MODE`].
 async fn restore_mode(fs: &RemoteFs, handle: &str, temp: &str, mode: Option<u32>) {
     let Some(mode) = mode.map(|mode| mode & 0o7777) else {
         return;
@@ -847,11 +856,7 @@ impl StreamUpload<'_> {
         let result: Result<(), Problem> = async {
             let handle = self
                 .fs
-                .open(
-                    &temp,
-                    write_exclusive(),
-                    self.mode.map(|mode| mode & 0o7777),
-                )
+                .open(&temp, write_exclusive(), Some(temp_file_mode(self.mode)))
                 .await?;
             let total = self.size;
             let mut meter = ProgressMeter::new();

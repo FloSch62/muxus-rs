@@ -118,8 +118,8 @@ async fn stages_a_new_destination_before_renaming_it_into_place() {
     assert_eq!(opens.len(), 1);
     let (temp, flags, mode) = &opens[0];
     assert!(is_staged(temp, "/remote/report.txt", "upload"), "{temp}");
-    // `wx` without a mode: a new file the server creates with its defaults.
-    assert_eq!((flags.as_str(), mode.as_str()), ("wctx", "-"));
+    // `wx` with 0644: a new file, as `sftp put` creates one, less the server's umask.
+    assert_eq!((flags.as_str(), mode.as_str()), ("wctx", "644"));
     assert_eq!(
         renames(&fx, "rename"),
         vec![(temp.clone(), "/remote/report.txt".to_string())]

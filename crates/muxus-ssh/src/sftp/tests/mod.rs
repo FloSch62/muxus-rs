@@ -2,6 +2,8 @@
 //! whose SFTP subsystem serves a scratch directory.
 
 mod lease_socket;
+#[cfg(unix)]
+mod modes;
 mod routes;
 mod upload;
 
