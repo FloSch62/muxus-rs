@@ -13,6 +13,9 @@
 //! - `MUXUS_SETTINGS_SECTION=<id>` (`appearance`, `terminal`, `local-shells`, …)
 //! - `MUXUS_SETTINGS_SCROLL=<px>` scrolls the section down that far
 //! - `MUXUS_SETTINGS_SHORTCUTS=1` opens the keyboard shortcuts editor
+//! - `MUXUS_SETTINGS_PASSWORD_MANAGERS=1` connects a few password managers (a KeePass
+//!   database among them); `=connect` also opens the connect dialog, `=edit` the edit
+//!   dialog of the database and `=unlock` its unlock dialog
 //! - `MUXUS_WINDOW=fullscreen` fills the monitor (as the capture viewport does)
 //! - `MUXUS_DATA_DIR=<dir>` keeps the sandbox there instead of a temp dir
 
@@ -173,6 +176,26 @@ async fn seed_demo(backend: &Backend) {
     }
 }
 
+/// A KeePass database (locked), a pass store and a Bitwarden CLI as this computer has them.
+async fn seed_password_managers(backend: &Backend) {
+    let database = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../muxus-passwords/tests/fixtures/keepassxc-kdbx3.kdbx");
+    for manager in [
+        serde_json::json!({"kind": "keepass", "name": "Work", "config": {"path": database.to_string_lossy()}}),
+        serde_json::json!({"kind": "bitwarden", "config": {}}),
+        serde_json::json!({"kind": "pass", "config": {}}),
+    ] {
+        match serde_json::from_value(manager) {
+            Ok(input) => {
+                if let Err(error) = backend.create_password_manager(input).await {
+                    eprintln!("could not connect a password manager: {error}");
+                }
+            }
+            Err(error) => eprintln!("bad demo password manager: {error}"),
+        }
+    }
+}
+
 fn main() {
     let mode = match std::env::var("MUXUS_THEME").as_deref() {
         Ok("dark") => ThemeMode::Dark,
@@ -189,6 +212,8 @@ fn main() {
         .unwrap_or(0.);
     let shortcuts = std::env::var("MUXUS_SETTINGS_SHORTCUTS").is_ok_and(|value| value == "1");
     let fullscreen = std::env::var("MUXUS_WINDOW").is_ok_and(|value| value == "fullscreen");
+    let password_managers = std::env::var("MUXUS_SETTINGS_PASSWORD_MANAGERS").ok();
+    let seed_managers = password_managers.is_some();
 
     let scratch = scratch_dir();
     let home = scratch.join("home");
@@ -201,6 +226,9 @@ fn main() {
         screenshot_prefs(&mut prefs, mode);
         backend.set_prefs(prefs.clone()).await.expect("seed prefs");
         seed_demo(&backend).await;
+        if seed_managers {
+            seed_password_managers(&backend).await;
+        }
         // Logging is off on a fresh install; the demo turns it on.
         let _ = backend
             .put_session_logging_policy(
@@ -259,6 +287,34 @@ fn main() {
                     view.update(cx, |view, cx| view.open_shortcuts(window, cx));
                 }
             });
+            if let Some(dialog) = password_managers.clone().filter(|dialog| dialog != "1") {
+                // Once the list of managers is in: the dialogs start from it.
+                let view = view.downgrade();
+                let backend = backend.clone();
+                cx.spawn(async move |cx| {
+                    let Ok(listed) = backend.password_managers_list().await else {
+                        return;
+                    };
+                    cx.background_executor()
+                        .timer(Duration::from_millis(800))
+                        .await;
+                    let database = listed.sources.into_iter().find(|source| {
+                        source.kind == muxus_core::api::PasswordManagerKind::Keepass
+                    });
+                    let _ = handle.update(cx, |_, window, cx| {
+                        let _ = view.update(cx, |view, cx| match (dialog.as_str(), database) {
+                            ("edit", Some(database)) => {
+                                view.open_password_manager(Some(database), window, cx)
+                            }
+                            ("unlock", Some(database)) => {
+                                view.open_password_manager_unlock(database, window, cx)
+                            }
+                            _ => view.open_password_manager(None, window, cx),
+                        });
+                    });
+                })
+                .detach();
+            }
             if scroll > 0. {
                 let view = view.downgrade();
                 cx.spawn(async move |cx| {

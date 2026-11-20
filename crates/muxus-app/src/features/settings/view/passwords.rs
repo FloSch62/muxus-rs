@@ -4,8 +4,8 @@
 use std::rc::Rc;
 
 use muxus_core::api::{
-    PasswordVaultCredential, PasswordVaultSecret, PasswordVaultStatus, PasswordVaultUnlockPolicy,
-    VaultSecretInput,
+    PasswordManagerSource, PasswordManagerState, PasswordVaultCredential, PasswordVaultSecret,
+    PasswordVaultStatus, PasswordVaultUnlockPolicy, VaultSecretInput,
 };
 use muxus_session::ApiError;
 use muxus_session::login_sequence::editor::{LoginSequenceOwner, login_sequences_using_secret};
@@ -13,8 +13,8 @@ use muxus_store::prefs::command_buttons::command_button_label;
 use muxus_ui::gpui_kit::base::input::InputState;
 use muxus_ui::gpui_kit::prelude::FluentBuilder;
 use muxus_ui::gpui_kit::{
-    AnyElement, App, Context, Entity, IntoElement, ParentElement, SharedString, Styled, Window,
-    div, px,
+    AnyElement, App, Context, Entity, Focusable, IntoElement, ParentElement, SharedString, Styled,
+    Window, div, px,
 };
 use muxus_ui::label::{label, paragraph};
 use muxus_ui::theme::{ActiveTheme, Status, Theme};
@@ -29,6 +29,10 @@ use super::kit::{
 };
 use super::state::SectionDialog;
 use super::window::{Load, SettingsWindow};
+use crate::features::password_managers;
+use crate::features::password_managers::logic::{
+    DISCONNECT_DESCRIPTION, GROUP_DESCRIPTION, source_caption, source_state, unlocks_in_muxus,
+};
 
 const DESCRIPTION: &str = "An optional vault for SSH passwords and other secrets, protected by a master password. Saved values stay on this machine and are never part of a backup.";
 
@@ -275,7 +279,10 @@ impl SettingsWindow {
                         .render(),
                 );
         }
-        let mut groups = vec![vault_group.render(&theme)];
+        let mut groups = vec![
+            vault_group.render(&theme),
+            self.password_managers_group(&theme, cx),
+        ];
         if status.configured {
             groups.push(self.secrets_group(&theme, &status, &prefs, cx));
             groups.push(self.credentials_group(&theme, &status, cx));
@@ -364,6 +371,212 @@ impl SettingsWindow {
                     ),
             )
             .into_any_element()
+    }
+
+    /// `PasswordManagersGroup`: the password managers Muxus reads login passwords from.
+    fn password_managers_group(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let p = theme.palette;
+        let listed = password_managers::store::listed(cx).cloned();
+        let sources = listed
+            .as_ref()
+            .map(|listed| listed.sources.clone())
+            .unwrap_or_default();
+        let mut section = group(texts::counted_title("Password managers", sources.len()))
+            .description(secondary_text(theme, GROUP_DESCRIPTION))
+            .action(
+                Button::new("password-manager-connect", "Connect")
+                    .start_icon("Add")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_password_manager(None, window, cx)
+                    })),
+            )
+            .flush();
+        if sources.is_empty() {
+            section = section.row(empty_list(
+                theme,
+                if listed.is_none() {
+                    "Loading…"
+                } else {
+                    "None connected."
+                },
+            ));
+        }
+        for (index, source) in sources.iter().enumerate() {
+            let (tone, said) = source_state(source);
+            let unlockable = unlocks_in_muxus(source.kind);
+            let mut buttons = div().flex().flex_none().items_center().gap(px(2.));
+            let id = |part: &str| SharedString::from(format!("password-manager-{part}-{index}"));
+            match source.state {
+                PasswordManagerState::Locked if unlockable => {
+                    let unlock = source.clone();
+                    buttons = buttons.child(Button::new(id("unlock"), "Unlock").on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.open_password_manager_unlock(unlock.clone(), window, cx)
+                        }),
+                    ));
+                }
+                PasswordManagerState::Ready if unlockable => {
+                    let lock = source.id.clone();
+                    buttons = buttons.child(
+                        Button::new(id("lock"), "Lock")
+                            .disabled(self.state.manager_busy)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.lock_password_manager(lock.clone(), cx)
+                            })),
+                    );
+                }
+                PasswordManagerState::SignedOut | PasswordManagerState::Unavailable => {
+                    buttons = buttons.child(Button::new(id("check"), "Check again").on_click(
+                        cx.listener(|this, _, _, cx| {
+                            password_managers::store::refresh(&this.backend, cx)
+                        }),
+                    ));
+                }
+                _ => {}
+            }
+            let (edit, disconnect) = (source.clone(), source.clone());
+            buttons = buttons
+                .child(
+                    IconButton::new(id("edit"), "EditOutlined")
+                        .icon_size(18.)
+                        .tooltip("Edit")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_password_manager(Some(edit.clone()), window, cx)
+                        })),
+                )
+                .child(
+                    IconButton::new(id("disconnect"), "DeleteOutlined")
+                        .icon_size(18.)
+                        .color(ButtonColor::Error)
+                        .tooltip("Disconnect")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.disconnect_password_manager(disconnect.clone(), cx)
+                        })),
+                );
+            let entry = div()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .px(px(16.))
+                .py(px(8.8))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            label(source.name.clone())
+                                .size(BODY2)
+                                .weight(550.)
+                                .line_height(snap(BODY2 * 1.43))
+                                .color(p.text.primary),
+                        )
+                        .child(
+                            label(source_caption(source))
+                                .size(CAPTION)
+                                .line_height(snap(CAPTION * 1.66))
+                                .color(p.text.secondary),
+                        )
+                        .child(div().mt(px(2.)).child(status_text(theme, tone, said))),
+                )
+                .child(buttons)
+                .into_any_element();
+            section = section.row(bordered(theme, index > 0, entry));
+        }
+        section.render(theme)
+    }
+
+    /// Connect a password manager, or change how `source` is reached.
+    pub fn open_password_manager(
+        &mut self,
+        source: Option<PasswordManagerSource>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let installed = password_managers::store::listed(cx)
+            .map(|listed| listed.installed.clone())
+            .unwrap_or_default();
+        let dialog = password_managers::connect::open_password_manager_dialog(
+            self.backend.clone(),
+            source,
+            installed,
+            window,
+            cx,
+        );
+        cx.subscribe_in(&dialog, window, |this, _, _, window, cx| {
+            // Saved or dismissed: either way the dialog is done.
+            this.state.manager_dialog = None;
+            window.focus(&this.focus_handle(cx), cx);
+            cx.notify();
+        })
+        .detach();
+        self.state.manager_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// Unlock a KeePass database or a Bitwarden vault with its own password.
+    pub fn open_password_manager_unlock(
+        &mut self,
+        source: PasswordManagerSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dialog =
+            password_managers::unlock::open_unlock_dialog(self.backend.clone(), source, window, cx);
+        cx.subscribe_in(&dialog, window, |this, _, _, window, cx| {
+            this.state.manager_unlock = None;
+            window.focus(&this.focus_handle(cx), cx);
+            cx.notify();
+        })
+        .detach();
+        self.state.manager_unlock = Some(dialog);
+        cx.notify();
+    }
+
+    fn lock_password_manager(&mut self, id: String, cx: &mut Context<Self>) {
+        self.state.manager_busy = true;
+        let backend = self.backend.clone();
+        self.fetch(
+            cx,
+            async move { backend.lock_password_manager(&id).await },
+            |this, result, cx| {
+                this.state.manager_busy = false;
+                if let Err(error) = result {
+                    this.show_toast(Status::Error, error.to_string(), cx);
+                }
+                password_managers::store::refresh(&this.backend, cx);
+            },
+        );
+    }
+
+    fn disconnect_password_manager(
+        &mut self,
+        source: PasswordManagerSource,
+        cx: &mut Context<Self>,
+    ) {
+        let id = source.id;
+        self.confirm(
+            format!("Disconnect “{}”?", source.name),
+            DISCONNECT_DESCRIPTION,
+            "Disconnect",
+            true,
+            move |this, _, cx| {
+                let backend = this.backend.clone();
+                let id = id.clone();
+                this.fetch(
+                    cx,
+                    async move { backend.delete_password_manager(&id).await },
+                    |this, result, cx| {
+                        if let Err(error) = result {
+                            this.show_toast(Status::Error, error.to_string(), cx);
+                        }
+                        password_managers::store::refresh(&this.backend, cx);
+                    },
+                );
+            },
+            cx,
+        );
     }
 
     fn secrets_group(

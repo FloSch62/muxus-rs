@@ -3,7 +3,9 @@
 //! credentials and a login sequence, or pick the folder hosts move to. All of
 //! them are a rewrite of one group path.
 
-use muxus_core::api::{FolderAuthSettings, FolderSettingsRecord, LoginSequence};
+use muxus_core::api::{
+    ExternalPasswordRef, FolderAuthSettings, FolderSettingsRecord, LoginSequence,
+};
 use muxus_core::js::js_trim;
 use muxus_session::login_sequence::editor::{
     LoginSequenceDraft, inherited_login_sequence, login_sequence_draft, login_sequence_from_draft,
@@ -51,6 +53,8 @@ pub struct FolderDraft {
     pub auth_password: String,
     pub remove_password: bool,
     pub master_password: String,
+    /// Password-manager entry offered as the folder's shared password.
+    pub password_ref: Option<ExternalPasswordRef>,
     pub login_sequence: LoginSequenceDraft,
 }
 
@@ -83,6 +87,7 @@ impl FolderDraft {
             auth_password: String::new(),
             remove_password: false,
             master_password: String::new(),
+            password_ref: None,
             login_sequence: login_sequence_draft(None),
         };
         match state {
@@ -121,6 +126,7 @@ impl FolderDraft {
         self.auth_password.clear();
         self.remove_password = false;
         self.master_password.clear();
+        self.password_ref = settings.and_then(|s| s.auth.password_ref.clone());
         self.login_sequence =
             login_sequence_draft(settings.and_then(|s| s.login_sequence.as_ref()));
     }
@@ -340,6 +346,7 @@ pub fn credentials_write(
         // editor's specific-key mode.
         identity_files: (!key.is_empty()).then(|| vec![key.to_owned()]),
         identities_only: (!key.is_empty()).then_some(true),
+        password_ref: draft.password_ref.clone(),
         ..FolderAuthSettings::default()
     };
     let password = if !draft.auth_password.is_empty() {
@@ -562,6 +569,40 @@ mod tests {
         );
         assert_eq!(title(&state), "Edit “Fabric”");
         assert!(!renaming(&state, &draft));
+    }
+
+    #[test]
+    fn keeps_the_password_manager_entry_a_folder_points_at() {
+        let entry = ExternalPasswordRef {
+            source_id: "source-1".into(),
+            entry_id: "entry-1".into(),
+            title: "Lab ops".into(),
+            username: Some("ops".into()),
+        };
+        let state = FolderDialogState::Edit {
+            path: "Lab/Fabric".into(),
+        };
+        let mut stored = record("Lab/Fabric");
+        stored.auth.password_ref = Some(entry.clone());
+        let mut draft = FolderDraft::new(&state, &FolderPrefs::default(), Some(&stored));
+        assert_eq!(draft.password_ref, Some(entry.clone()));
+        let write = credentials_write("Lab/Fabric", &draft, Some(&stored)).unwrap();
+        assert_eq!(write.auth.password_ref, Some(entry.clone()));
+
+        // Unlinked, the folder keeps its other defaults and loses the entry.
+        draft.password_ref = None;
+        let write = credentials_write("Lab/Fabric", &draft, Some(&stored)).unwrap();
+        assert_eq!(write.auth.password_ref, None);
+        assert_eq!(write.auth.user.as_deref(), Some("ops"));
+
+        // An entry alone is reason enough to store settings for a new folder.
+        let new = FolderDialogState::New { parent_path: None };
+        let mut blank = FolderDraft::new(&new, &FolderPrefs::default(), None);
+        assert_eq!(credentials_write("Lab", &blank, None), None);
+        blank.password_ref = Some(entry.clone());
+        let write = credentials_write("Lab", &blank, None).unwrap();
+        assert_eq!(write.auth.password_ref, Some(entry));
+        assert_eq!(write.password, None);
     }
 
     #[test]

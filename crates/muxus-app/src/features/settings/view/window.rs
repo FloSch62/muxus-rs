@@ -194,6 +194,10 @@ impl SettingsWindow {
         window.focus(&focus, cx);
         let subscriptions = vec![
             cx.subscribe_in(&prefs, window, Self::on_prefs_changed),
+            // The Passwords page lists the connected password managers as they stand.
+            cx.observe_global::<crate::features::password_managers::store::PasswordManagerList>(
+                |_, cx| cx.notify(),
+            ),
             cx.observe_window_appearance(window, |this, _, cx| {
                 let prefs = this.prefs.clone();
                 prefs.update(cx, |model, cx| model.apply_theme(cx));
@@ -301,7 +305,11 @@ impl SettingsWindow {
                     },
                 );
             }
-            SettingsSection::Passwords => self.load_vault(cx),
+            SettingsSection::Passwords => {
+                self.load_vault(cx);
+                // A manager is locked, unlocked and signed in to outside this window too.
+                crate::features::password_managers::store::refresh(&self.backend, cx);
+            }
             SettingsSection::Logging => self.load_logging(cx),
             _ => {}
         }
@@ -1165,6 +1173,8 @@ impl Render for SettingsWindow {
             .child(title_bar)
             .child(div().flex().flex_1().min_h_0().children(nav).child(content))
             .children(dialogs)
+            .children(self.state.manager_dialog.clone())
+            .children(self.state.manager_unlock.clone())
             .children(self.render_rule_colors(cx))
             .children(self.render_color_picker(window, cx))
             .children(shortcuts)

@@ -242,6 +242,10 @@ impl ssh_access::SshForm for HostEditor {
     fn pending(&mut self) -> &mut ssh_access::SshPending {
         &mut self.pending
     }
+
+    fn offers_password_entry(&self) -> bool {
+        true
+    }
 }
 
 impl Form for HostEditor {
@@ -288,6 +292,12 @@ impl HostEditor {
     ) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        // The password managers a linked entry is named after, as they stand now.
+        crate::features::password_managers::store::refresh(&backend, cx);
+        cx.observe_global::<crate::features::password_managers::store::PasswordManagerList>(
+            |_, cx| cx.notify(),
+        )
+        .detach();
         let kind = editor_kind(&target);
         let mut editor = Self {
             backend: backend.clone(),
@@ -862,6 +872,15 @@ impl HostEditor {
     pub fn set_section(&mut self, section: Section, cx: &mut Context<Self>) {
         self.section = section;
         self.menus.close();
+        cx.notify();
+    }
+
+    /// Scroll the open section `offset` px down: what sits below the fold, for a screenshot.
+    pub fn scroll_section(&mut self, offset: f32, cx: &mut Context<Self>) {
+        self.scroll.set_offset(muxus_ui::gpui_kit::point(
+            muxus_ui::gpui_kit::px(0.),
+            muxus_ui::gpui_kit::px(-offset),
+        ));
         cx.notify();
     }
 

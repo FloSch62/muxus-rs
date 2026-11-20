@@ -12,6 +12,7 @@ pub mod launcher;
 pub mod logs;
 pub mod management;
 pub mod notices;
+pub mod password_managers;
 pub mod remote_desktop;
 pub mod scripts;
 pub mod settings;

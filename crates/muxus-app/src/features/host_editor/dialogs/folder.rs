@@ -111,6 +111,12 @@ pub fn open_folder_dialog(
     cx.new(|cx: &mut Context<FolderDialog>| {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        // The password managers a linked entry is named after, as they stand now.
+        crate::features::password_managers::store::refresh(&backend, cx);
+        cx.observe_global::<crate::features::password_managers::store::PasswordManagerList>(
+            |_, cx| cx.notify(),
+        )
+        .detach();
         let draft = FolderDraft::new(&state, &prefs, None);
         let moving = matches!(state, FolderDialogState::MoveHosts { .. });
         let mut dialog = FolderDialog {
@@ -609,6 +615,25 @@ impl Render for FolderDialog {
                         .helper("The password vault is locked — its master password is needed to store this."),
                 );
             }
+            let linked = self.draft.password_ref.clone();
+            let entry_helper = if linked.is_some() {
+                "Used as the shared password, ahead of one saved in the vault."
+            } else {
+                "Or take the shared password from a password-manager entry."
+            };
+            fields = fields.child(
+                crate::features::password_managers::field::password_entry_field(
+                    "folder-password-entry",
+                    linked.as_ref(),
+                    &sanitize_folder_name(&self.draft.name),
+                    Some(entry_helper.to_owned()),
+                    cx,
+                    |this: &mut Self, picked, cx| {
+                        this.draft.password_ref = picked;
+                        cx.notify();
+                    },
+                ),
+            );
             fields = fields
                 .child(div().mt(Theme::spacing(0.5)).child(divider(&theme)))
                 .child(

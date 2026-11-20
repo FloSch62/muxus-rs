@@ -5,9 +5,9 @@ use muxus_core::anti_idle::{
     AntiIdleDraft, anti_idle_draft, anti_idle_from_draft, anti_idle_problem,
 };
 use muxus_core::api::{
-    ConfigForward, ForwardType, HostBlockOptions, HostKeywordHighlightConfig, HostOptionExtra,
-    HostUpsertRequest, OpenSshMetadataPatch, SavedHostProfile, SavedHostProfileInput, SshHostEntry,
-    saved_host_hop_id,
+    ConfigForward, ExternalPasswordRef, ForwardType, HostBlockOptions, HostKeywordHighlightConfig,
+    HostOptionExtra, HostUpsertRequest, OpenSshMetadataPatch, SavedHostProfile,
+    SavedHostProfileInput, SshHostEntry, saved_host_hop_id,
 };
 use muxus_core::input_modes::{
     TerminalInputModes, apply_terminal_input_modes_patch, host_terminal_input_modes,
@@ -141,6 +141,8 @@ pub struct HostDraft {
     pub console_compatibility: bool,
     /// Connect with the computer's `ssh` program instead of the built-in client.
     pub system_open_ssh: bool,
+    /// Password-manager entry the host logs in with; a reference, never the password.
+    pub password_ref: Option<ExternalPasswordRef>,
     /// Look for containers, clusters and VMs on connect; `Default` follows Settings.
     pub discover_environments: EnvironmentDiscoveryDraft,
     /// Target config file; empty keeps the block's file (or the root for new hosts).
@@ -211,6 +213,7 @@ pub fn blank_draft(prefill_target: &str, group: &str, storage: Storage) -> HostD
         disable_sftp: false,
         console_compatibility: false,
         system_open_ssh: false,
+        password_ref: None,
         discover_environments: EnvironmentDiscoveryDraft::Default,
         file: String::new(),
         hostname: match &parsed {
@@ -324,6 +327,7 @@ pub fn draft_from_entry(entry: &SshHostEntry, duplicate: bool) -> HostDraft {
             .and_then(|m| m.console_compatibility)
             .unwrap_or(false),
         system_open_ssh: metadata.and_then(|m| m.system_open_ssh).unwrap_or(false),
+        password_ref: metadata.and_then(|m| m.password_ref.clone()),
         discover_environments: environment_discovery_draft(
             metadata.and_then(|m| m.discover_environments),
         ),
@@ -400,6 +404,7 @@ pub fn draft_from_saved_ssh_profile(
         disable_sftp: metadata.disable_sftp.unwrap_or(false),
         console_compatibility: metadata.console_compatibility.unwrap_or(false),
         system_open_ssh: metadata.system_open_ssh.unwrap_or(false),
+        password_ref: metadata.password_ref.clone(),
         discover_environments: environment_discovery_draft(metadata.discover_environments),
         file: String::new(),
         hostname: profile.target.clone(),
@@ -694,6 +699,8 @@ pub fn draft_metadata_patch(draft: &HostDraft) -> OpenSshMetadataPatch {
         )),
         keyword_highlights: highlights_patch(&draft.keyword_highlights),
         login_sequence: optional_patch(&login_sequence_from_draft(&draft.login_sequence)),
+        // No entry unlinks the one that was there.
+        password_ref: optional_patch(&draft.password_ref),
         icon: Patch::Keep,
         // ssh_config cannot hold fallback routes, so Muxus keeps them for the
         // alias; a Muxus host has them in its profile instead.
@@ -875,6 +882,35 @@ mod tests {
         })
         .unwrap();
         assert!(problem.contains("Muxus app data"), "{problem}");
+    }
+
+    #[test]
+    fn keeps_the_linked_password_manager_entry_and_unlinks_it_when_there_is_none() {
+        let linked = ExternalPasswordRef {
+            source_id: "source-1".into(),
+            entry_id: "entry-1".into(),
+            title: "web1".into(),
+            username: Some("root".into()),
+        };
+        let mut host = entry();
+        host.metadata = Some(OpenSshProfileMetadata {
+            password_ref: Some(linked.clone()),
+            ..host.metadata.clone().unwrap_or_default()
+        });
+        for duplicate in [false, true] {
+            let draft = draft_from_entry(&host, duplicate);
+            assert_eq!(draft.password_ref, Some(linked.clone()));
+            assert_eq!(
+                draft_metadata_patch(&draft).password_ref,
+                Patch::Set(linked.clone())
+            );
+        }
+        // A host without an entry says so, which unlinks one that was there.
+        for storage in [Storage::Openssh, Storage::Muxus] {
+            let blank = blank_draft("", "", storage);
+            assert_eq!(blank.password_ref, None);
+            assert_eq!(draft_metadata_patch(&blank).password_ref, Patch::Clear);
+        }
     }
 
     #[test]

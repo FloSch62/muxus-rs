@@ -93,6 +93,20 @@ pub struct SectionState {
     pub font_input_focused: bool,
     /// The vault is being deleted.
     pub vault_busy: bool,
+    /// The dialog that connects a password manager or edits a connected one.
+    pub manager_dialog: Option<
+        muxus_ui::gpui_kit::Entity<
+            crate::features::password_managers::connect::PasswordManagerDialog,
+        >,
+    >,
+    /// The dialog that unlocks a connected password manager.
+    pub manager_unlock: Option<
+        muxus_ui::gpui_kit::Entity<
+            crate::features::password_managers::unlock::PasswordManagerUnlockDialog,
+        >,
+    >,
+    /// A password manager is being locked.
+    pub manager_busy: bool,
     /// Installed WSL distributions (Windows), read when Local shells opens.
     pub wsl: Option<super::window::Load<Vec<muxus_core::api::WslDistribution>>>,
     pub update: super::about::UpdateState,
@@ -146,6 +160,9 @@ impl SectionState {
     /// Close the topmost popover or dialog; true when there was one.
     pub fn close_dialog(&mut self, _cx: &mut App) -> bool {
         if self.color_picker.take().is_some() || self.rule_colors.take().is_some() {
+            return true;
+        }
+        if self.manager_dialog.take().is_some() || self.manager_unlock.take().is_some() {
             return true;
         }
         self.dialog.take().is_some()

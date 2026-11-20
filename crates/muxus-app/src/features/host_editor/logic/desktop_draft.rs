@@ -1,6 +1,8 @@
 //! RDP and VNC hosts (`client/src/components/host-editor/desktop-draft.ts`).
 
-use muxus_core::api::{OpenSshMetadataPatch, SavedHostProfile, SavedHostProfileInput};
+use muxus_core::api::{
+    ExternalPasswordRef, OpenSshMetadataPatch, SavedHostProfile, SavedHostProfileInput,
+};
 use muxus_core::js::js_trim;
 use muxus_core::protocol::{RdpProfile, SavedHostSessionProfile, SshGateway, VncProfile};
 
@@ -72,6 +74,8 @@ pub struct DesktopHostDraft {
     pub share_clipboard: bool,
     pub resize_remote: bool,
     pub view_only: bool,
+    /// Password-manager entry the logon takes its password from.
+    pub password_ref: Option<ExternalPasswordRef>,
 }
 
 pub fn blank_desktop_draft(prefill_target: &str, group: &str) -> DesktopHostDraft {
@@ -89,6 +93,7 @@ pub fn blank_desktop_draft(prefill_target: &str, group: &str) -> DesktopHostDraf
         share_clipboard: true,
         resize_remote: false,
         view_only: false,
+        password_ref: None,
     }
 }
 
@@ -110,6 +115,7 @@ pub fn desktop_draft_from_profile(
     };
     let group = saved.metadata.group.clone().unwrap_or_default();
     let color = saved.metadata.color.clone();
+    let password_ref = saved.metadata.password_ref.clone();
     let port = |port: u16, kind: DesktopKind| {
         if port == kind.default_port() {
             String::new()
@@ -131,6 +137,7 @@ pub fn desktop_draft_from_profile(
             share_clipboard: profile.share_clipboard != Some(false),
             resize_remote: false,
             view_only: false,
+            password_ref,
         },
         SavedHostSessionProfile::Vnc(profile) => DesktopHostDraft {
             name,
@@ -145,6 +152,7 @@ pub fn desktop_draft_from_profile(
             share_clipboard: profile.share_clipboard != Some(false),
             resize_remote: profile.resize_remote == Some(true),
             view_only: profile.view_only == Some(true),
+            password_ref,
         },
         _ => return None,
     })
@@ -222,6 +230,8 @@ pub fn desktop_draft_metadata_patch(draft: &DesktopHostDraft) -> OpenSshMetadata
     OpenSshMetadataPatch {
         group: group_patch(&draft.group),
         color: optional_patch(&draft.color),
+        // No entry unlinks the one that was there.
+        password_ref: optional_patch(&draft.password_ref),
         ..OpenSshMetadataPatch::default()
     }
 }
@@ -312,6 +322,36 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
         }
+    }
+
+    #[test]
+    fn keeps_the_linked_password_manager_entry_and_unlinks_it_when_there_is_none() {
+        use muxus_core::js::Patch;
+        // No password-manager entry is linked.
+        let draft = desktop_draft_from_profile(&rdp_host(3389), false).unwrap();
+        assert_eq!(draft.password_ref, None);
+        let patch = desktop_draft_metadata_patch(&draft);
+        assert_eq!(patch.group, Patch::Set("Lab".into()));
+        assert_eq!(patch.color, Patch::Set("#3b82f6".into()));
+        assert_eq!(patch.password_ref, Patch::Clear);
+
+        let entry = ExternalPasswordRef {
+            source_id: "source-1".into(),
+            entry_id: "entry-1".into(),
+            title: "ci@win-build".into(),
+            username: Some("ci".into()),
+        };
+        let mut linked = rdp_host(3389);
+        linked.metadata.password_ref = Some(entry.clone());
+        for duplicate in [false, true] {
+            let draft = desktop_draft_from_profile(&linked, duplicate).unwrap();
+            assert_eq!(draft.password_ref, Some(entry.clone()));
+            assert_eq!(
+                desktop_draft_metadata_patch(&draft).password_ref,
+                Patch::Set(entry.clone())
+            );
+        }
+        assert_eq!(blank_desktop_draft("", "").password_ref, None);
     }
 
     #[test]

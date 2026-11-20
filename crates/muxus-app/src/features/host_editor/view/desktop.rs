@@ -1,6 +1,8 @@
 //! RDP and VNC sections (`RemoteDesktopHostEditorContent.tsx`) and the SSH
 //! gateway picker they share with the management editor (`SshGatewayField.tsx`).
 
+use crate::features::password_managers::field::password_entry_field;
+use muxus_core::js::js_trim;
 use std::rc::Rc;
 
 use muxus_core::api::SavedHostKind;
@@ -310,10 +312,32 @@ impl HostEditor {
                     .placeholder("Optional"),
             );
         }
+        let linked = self.desktop.password_ref.clone();
+        let suggestion = if self.desktop.host.is_empty() {
+            self.desktop.name.clone()
+        } else {
+            self.desktop.host.clone()
+        };
+        let helper =
+            (rdp && linked.is_some() && js_trim(&self.desktop.username).is_empty()).then(|| {
+                "Enter the user name above as well: the entry supplies only the password."
+                    .to_owned()
+            });
         col.child(para(
-            "Muxus asks for the password when it connects. Tick “Remember this password” there to keep it in the encrypted password vault.",
+            "Muxus asks for the password when it connects. Tick “Remember this password” there to keep it in the encrypted password vault, or take it from a password manager:",
             body2(),
             theme.palette.text.secondary,
+        ))
+        .child(password_entry_field(
+            "desktop-password-entry",
+            linked.as_ref(),
+            &suggestion,
+            helper,
+            cx,
+            |this: &mut Self, picked, cx| {
+                this.desktop.password_ref = picked;
+                this.changed(cx);
+            },
         ))
         .into_any_element()
     }

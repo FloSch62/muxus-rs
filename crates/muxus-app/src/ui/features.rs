@@ -172,9 +172,51 @@ pub fn install(backend: &Backend, cx: &mut App) {
         },
         cx,
     );
+    // "Choose from a password manager…" in a host or folder field opens the entry picker
+    // over the active window.
+    muxus_app::features::password_managers::store::set_password_entry_hook(
+        |request, cx| {
+            with_active_shell(cx, move |shell, window, cx| {
+                shell.open_password_entry_picker(request, window, cx)
+            });
+        },
+        cx,
+    );
 }
 
 impl AppShell {
+    /// The entry picker for a host or folder field that asked for a password-manager entry.
+    pub fn open_password_entry_picker(
+        &mut self,
+        request: muxus_app::features::password_managers::store::PickRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use muxus_app::features::password_managers::picker::{
+            PasswordEntryPickerEvent, open_password_entry_picker,
+        };
+        let Some(backend) = self.data.backend() else {
+            return;
+        };
+        let picker =
+            open_password_entry_picker(backend, request.value, request.suggestion, window, cx);
+        let on_pick = std::cell::RefCell::new(Some(request.on_pick));
+        self.mount_overlay(
+            "password-entry",
+            picker,
+            window,
+            cx,
+            move |this, _, event: &PasswordEntryPickerEvent, window, cx| {
+                if let PasswordEntryPickerEvent::Picked(entry) = event
+                    && let Some(callback) = on_pick.borrow_mut().take()
+                {
+                    callback(entry.clone(), cx);
+                }
+                this.close_overlay("password-entry", window, cx);
+            },
+        );
+    }
+
     /// The vault's secret dialog for a field that asked for a new secret.
     pub fn open_new_secret(
         &mut self,

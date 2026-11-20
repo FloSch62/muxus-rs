@@ -11,7 +11,11 @@
 //! - `MUXUS_EDITOR_SCENE`: `general` (db-primary, the default), `route`,
 //!   `forwards`, `advanced`, `auth`, `appearance`, `login`, `logging`,
 //!   `highlighting`, `serial` (lab-console, line settings), `telnet`
-//!   (core-switch), `rdp` (win-build), `vnc`, `new` (Add host), `new-gnmi`
+//!   (core-switch), `rdp` (win-build), `vnc`, `new` (Add host), `new-gnmi`,
+//!   `auth-linked` (db-primary logging in with a KeePass entry), `rdp-logon` (win-build
+//!   with one), and the entry picker over the editor: `picker` (an unlocked database),
+//!   `picker-locked`, `picker-empty` (no password manager connected)
+//! - `MUXUS_EDITOR_SCROLL=<px>` scrolls the section down that far
 //! - `MUXUS_WINDOW=fullscreen` fills the monitor
 //! - `MUXUS_DATA_DIR=<dir>` keeps the sandbox there instead of a temp dir
 
@@ -20,6 +24,9 @@ use std::path::PathBuf;
 use muxus_app::features::host_editor::demo::{DemoSandbox, seed};
 use muxus_app::features::host_editor::view::{
     HostEditor, HostEditorTarget, NewHost, Section, open_host_editor,
+};
+use muxus_app::features::password_managers::picker::{
+    PasswordEntryPicker, open_password_entry_picker,
 };
 use muxus_app::hosts::managed::ManagedHost;
 use muxus_core::api::{SavedHostKind, X11Defaults, X11Source, X11Status};
@@ -39,6 +46,7 @@ fn scratch_dir() -> PathBuf {
 
 struct Scene {
     editor: Entity<HostEditor>,
+    picker: Option<Entity<PasswordEntryPicker>>,
 }
 
 impl Render for Scene {
@@ -48,6 +56,61 @@ impl Render for Scene {
             .size_full()
             .bg(theme.palette.background_default)
             .child(self.editor.clone())
+            .children(self.picker.clone())
+    }
+}
+
+/// Connect the KeePass database KeePassXC wrote and link its "web1" entry to db-primary
+/// and to win-build; `unlocked` leaves the database open.
+async fn seed_password_manager(backend: &muxus_session::Backend, unlocked: bool) {
+    let database = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../muxus-passwords/tests/fixtures/keepassxc-kdbx3.kdbx");
+    let source = backend
+        .create_password_manager(
+            serde_json::from_value(serde_json::json!({
+                "kind": "keepass", "name": "Work", "config": {"path": database.to_string_lossy()},
+            }))
+            .expect("a password manager"),
+        )
+        .await
+        .expect("connect the database");
+    backend
+        .unlock_password_manager(&source.id, "master-pw-1")
+        .await
+        .expect("unlock the database");
+    let entries = backend
+        .password_manager_entries(&source.id, false)
+        .await
+        .expect("list the entries");
+    let entry = entries
+        .iter()
+        .find(|entry| entry.title == "web1")
+        .expect("web1");
+    let linked = serde_json::json!({
+        "passwordRef": {
+            "sourceId": source.id, "entryId": entry.id, "title": entry.title,
+            "username": entry.username,
+        },
+    });
+    backend
+        .patch_ssh_host_metadata(
+            "db-primary",
+            serde_json::from_value(linked.clone()).expect("a patch"),
+        )
+        .await
+        .expect("link db-primary");
+    let saved = backend.saved_hosts().await.expect("saved hosts").profiles;
+    if let Some(rdp) = saved.iter().find(|host| host.name == "win-build") {
+        backend
+            .patch_saved_host_metadata(&rdp.id, serde_json::from_value(linked).expect("a patch"))
+            .await
+            .expect("link win-build");
+    }
+    if !unlocked {
+        backend
+            .lock_password_manager(&source.id)
+            .await
+            .expect("lock the database");
     }
 }
 
@@ -55,6 +118,10 @@ fn main() {
     let dark = std::env::var("MUXUS_THEME").as_deref() == Ok("dark");
     let scene = std::env::var("MUXUS_EDITOR_SCENE").unwrap_or_else(|_| "general".into());
     let fullscreen = std::env::var("MUXUS_WINDOW").is_ok_and(|value| value == "fullscreen");
+    let scroll: f32 = std::env::var("MUXUS_EDITOR_SCROLL")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0.);
 
     let scratch = scratch_dir();
     let _ = std::fs::remove_dir_all(&scratch);
@@ -73,6 +140,13 @@ fn main() {
         prefs.command_buttons = Vec::new();
         prefs.keyword_highlights = Vec::new();
         backend.set_prefs(prefs).await.expect("seed prefs");
+        match scene.as_str() {
+            "auth-linked" | "rdp-logon" | "picker-locked" => {
+                seed_password_manager(&backend, false).await
+            }
+            "picker" => seed_password_manager(&backend, true).await,
+            _ => {}
+        }
         (
             backend.ssh_config().await.expect("read the ssh config"),
             backend
@@ -105,7 +179,10 @@ fn main() {
         "route" => (HostEditorTarget::Edit(ssh("db-primary")), Section::Route),
         "forwards" => (HostEditorTarget::Edit(ssh("db-primary")), Section::Forwards),
         "advanced" => (HostEditorTarget::Edit(ssh("db-primary")), Section::Advanced),
-        "auth" => (HostEditorTarget::Edit(ssh("db-primary")), Section::Auth),
+        "auth" | "auth-linked" | "picker" | "picker-locked" | "picker-empty" => {
+            (HostEditorTarget::Edit(ssh("db-primary")), Section::Auth)
+        }
+        "rdp-logon" => (HostEditorTarget::Edit(profile("win-build")), Section::Logon),
         "appearance" => (
             HostEditorTarget::Edit(ssh("db-primary")),
             Section::Appearance,
@@ -170,7 +247,28 @@ fn main() {
                             },
                         });
                     });
-                    cx.new(|_| Scene { editor })
+                    let picker = scene.starts_with("picker").then(|| {
+                        open_password_entry_picker(
+                            backend.clone(),
+                            None,
+                            Some("web1".into()),
+                            window,
+                            cx,
+                        )
+                    });
+                    if scroll > 0. {
+                        let editor = editor.downgrade();
+                        cx.spawn(async move |cx| {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(1500))
+                                .await;
+                            let _ = editor.update(cx, |editor, cx| {
+                                editor.scroll_section(scroll, cx);
+                            });
+                        })
+                        .detach();
+                    }
+                    cx.new(|_| Scene { editor, picker })
                 });
             if handle.is_err() {
                 eprintln!("the window did not open");

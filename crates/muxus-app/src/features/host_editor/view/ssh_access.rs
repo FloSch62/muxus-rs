@@ -1,6 +1,7 @@
 //! The SSH access sections the host editor and the tunnel editor share
 //! (`host-editor/AuthSection.tsx`, `RouteSection.tsx`).
 
+use crate::features::password_managers::field::password_entry_field;
 use std::rc::Rc;
 
 use muxus_core::api::{SshKeysResponse, saved_host_hop, saved_host_hop_id};
@@ -63,6 +64,10 @@ pub trait SshForm: Form {
     /// The saved host being edited, which cannot be its own jump host.
     fn self_profile_id(&self) -> Option<String>;
     fn pending(&mut self) -> &mut SshPending;
+    /// Offer to log in with a password-manager entry; only saved hosts keep one.
+    fn offers_password_entry(&self) -> bool {
+        false
+    }
 }
 
 pub fn auth_section<V: SshForm>(
@@ -121,6 +126,39 @@ pub fn auth_section<V: SshForm>(
 
     if current == AuthMode::Key {
         col = col.child(key_files(view, window, cx));
+    }
+
+    if view.offers_password_entry() {
+        let draft = view.ssh_draft();
+        let linked = draft.password_ref.clone();
+        let suggestion = if draft.hostname.is_empty() {
+            draft.alias_text.clone()
+        } else {
+            draft.hostname.clone()
+        };
+        let helper = draft.system_open_ssh.then(|| {
+            "Not used while this host connects with the system OpenSSH program, which asks for the password itself."
+                .to_owned()
+        });
+        col = col.child(divider(&theme)).child(
+            stack(1.5)
+                .child(caption_intro(
+                    &theme,
+                    "Password from a password manager",
+                    "When this host asks for a password, Muxus reads it from the entry you choose instead of prompting. Keys and the agent are still tried first unless you picked password login above.",
+                ))
+                .child(password_entry_field(
+                    "host-password-entry",
+                    linked.as_ref(),
+                    &suggestion,
+                    helper,
+                    cx,
+                    |this: &mut V, picked, cx| {
+                        this.ssh_draft_mut().password_ref = picked;
+                        this.ssh_changed(cx);
+                    },
+                )),
+        );
     }
 
     col = col.child(divider(&theme));
