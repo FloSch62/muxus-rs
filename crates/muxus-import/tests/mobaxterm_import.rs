@@ -592,3 +592,18 @@ fn writes_jump_hosts_as_chained_host_blocks_for_openssh_config() {
         })
     );
 }
+
+/// `tests/unit/shared/text-decoding.test.ts`, "keeps MobaXterm folder names
+/// intact through parsing".
+#[test]
+fn keeps_ansi_folder_names_intact_through_parsing() {
+    let mut bytes = b"[Bookmarks_1]\r\nSubRep=Sessions ".to_vec();
+    bytes.push(0xbb);
+    bytes.extend_from_slice(b" Lab Antwerp D0\r\nlab=#109#0%lab.example.com%22%root%%rest\r\n");
+    let parsed = parse_mobaxterm_sessions(&muxus_import::review::decode_import_file(&bytes))
+        .expect("parsed");
+    assert_eq!(
+        ssh(&parsed.sessions[0]).folder.as_deref(),
+        Some("Sessions » Lab Antwerp D0")
+    );
+}

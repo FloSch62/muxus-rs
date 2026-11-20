@@ -29,5 +29,6 @@ pub mod session_log_file;
 pub mod session_transcript;
 pub mod shell_integration;
 pub mod stream;
+pub mod text_decoding;
 pub mod update_version;
 pub mod validate;

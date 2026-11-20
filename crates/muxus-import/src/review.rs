@@ -196,10 +196,11 @@ impl ImportVendor {
     }
 }
 
-/// `File.text()`: UTF-8 with replacement characters, without a leading BOM.
+/// A chosen file's text: UTF-8 without a leading BOM, or Windows-1252 when
+/// the bytes are not UTF-8 (`decodeImportedText`). MobaXterm writes its files
+/// in the Windows ANSI code page.
 pub fn decode_import_file(bytes: &[u8]) -> String {
-    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
-    String::from_utf8_lossy(bytes).into_owned()
+    muxus_core::text_decoding::decode_imported_text(bytes)
 }
 
 fn format_megabytes(bytes: usize) -> String {

@@ -400,9 +400,11 @@ fn files_are_checked_and_decoded_like_the_browser() {
         "That SecureCRT file is larger than 20 MB."
     );
     assert_eq!(
-        decode_import_file(b"\xEF\xBB\xBF[Bookmarks]\xFF"),
-        "[Bookmarks]\u{FFFD}"
+        decode_import_file(b"\xEF\xBB\xBF[Bookmarks]"),
+        "[Bookmarks]"
     );
+    // Bytes that are not UTF-8 are a Windows ANSI file, never U+FFFD.
+    assert_eq!(decode_import_file(b"[Bookmarks]\xBB\xE9"), "[Bookmarks]»é");
     assert_eq!(
         ImportVendor::SecureCrt.read_error(),
         "Could not read that SecureCRT file."

@@ -171,8 +171,12 @@ async fn run_powershell(script: &str) -> Option<String> {
 async fn read_portable_ini(app_data: Option<&std::path::Path>) -> Option<MobaXtermSessionSource> {
     let filename = app_data?.join("MobaXterm").join("MobaXterm.ini");
     let bytes = tokio::fs::read(&filename).await.ok()?;
-    let content = String::from_utf8_lossy(&bytes).into_owned();
-    if js::js_trim(&content).is_empty() || content.len() > MAX_MOBAXTERM_FILE_BYTES {
+    if bytes.len() > MAX_MOBAXTERM_FILE_BYTES {
+        return None;
+    }
+    // MobaXterm writes the file in the Windows ANSI code page.
+    let content = muxus_core::text_decoding::decode_imported_text(&bytes);
+    if js::js_trim(&content).is_empty() {
         return None;
     }
     Some(MobaXtermSessionSource {
@@ -228,6 +232,26 @@ mod tests {
             source.source,
             folder.join("MobaXterm.ini").to_string_lossy()
         );
+    }
+
+    #[test]
+    fn reads_an_ansi_portable_ini_as_windows_1252() {
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        let folder = scratch.path().join("MobaXterm");
+        std::fs::create_dir_all(&folder).expect("folder");
+        let mut bytes = b"[Bookmarks_1]\r\nSubRep=Sessions ".to_vec();
+        bytes.push(0xbb);
+        bytes.extend_from_slice(b" Lab\r\nlab=#109#0%lab.example.test%22%root%%\r\n");
+        std::fs::write(folder.join("MobaXterm.ini"), bytes).expect("ini");
+        let discovery = LocalDiscovery {
+            windows: true,
+            app_data: Some(scratch.path().to_owned()),
+            read_registry: false,
+        };
+        let source = runtime()
+            .block_on(read_local_mobaxterm_sessions_with(&discovery))
+            .expect("source");
+        assert!(source.content.contains("SubRep=Sessions » Lab\r\n"));
     }
 
     #[test]
