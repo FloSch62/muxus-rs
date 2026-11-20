@@ -29,6 +29,9 @@ pub struct SftpServices {
     pub listings: Entity<SftpListings>,
     pub uploads: Entity<SftpUploads>,
     pub local_copies: Entity<super::local_copies::LocalCopies>,
+    /// What downloads that stopped early received, so that the next download of the file
+    /// asks only for the rest.
+    pub downloads: super::download::SharedInterruptedDownloads,
 }
 
 impl Global for SftpServices {}
@@ -44,6 +47,7 @@ pub fn init(backend: Backend, notify: Notify, cx: &mut App) {
         listings,
         uploads,
         local_copies,
+        downloads: Default::default(),
     });
 }
 
@@ -56,6 +60,17 @@ pub fn services(cx: &App) -> SftpServices {
 pub fn notify(status: Status, message: impl Into<SharedString>, cx: &mut App) {
     let notify = cx.global::<SftpServices>().notify.clone();
     notify(status, message.into(), None, cx);
+}
+
+/// `showToast` with details, such as the items a download skipped.
+pub fn notify_with_details(
+    status: Status,
+    message: impl Into<SharedString>,
+    details: Option<String>,
+    cx: &mut App,
+) {
+    let notify = cx.global::<SftpServices>().notify.clone();
+    notify(status, message.into(), details.map(Into::into), cx);
 }
 
 /// `errorDetails`: the status and body of a failed call, when they say more

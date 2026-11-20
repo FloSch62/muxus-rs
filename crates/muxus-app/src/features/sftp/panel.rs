@@ -15,11 +15,11 @@ use std::time::Duration;
 
 use muxus_core::api::{SftpEntry, SftpEntryType, SftpListResponse};
 use muxus_session::ApiError;
+use muxus_ssh::sftp::ByteProgress;
 use muxus_ssh::sftp::upload::{
     ConfirmRequest, DropPayload, UploadProgress, clean_relative_path, collect_drop,
     join_remote_path, upload_summary,
 };
-use muxus_ssh::sftp::{CancelSignal, ProgressMeter};
 use muxus_ui::color::alpha;
 use muxus_ui::gpui_kit::base::input::{InputEvent, InputState};
 use muxus_ui::gpui_kit::{
@@ -34,21 +34,35 @@ use muxus_ui::icon::icon;
 use muxus_ui::label::label;
 use muxus_ui::theme::{ActiveTheme, Status, Theme, fonts};
 use muxus_ui::widgets::menu::{self, MenuItem};
+use muxus_ui::widgets::table::{SortDirection, TableSortLabel};
 use muxus_ui::widgets::{Checkbox, IconButton};
 
 use super::dialogs::{ConfirmOptions, DialogQueue, PromptOptions, QueueOf};
-use super::download::{downloaded_message, local_file_name, save_into_folder};
-use super::format::{format_mtime, format_size, parent_path, sort_entries};
+use super::download::{
+    DownloadDeps, DownloadOptions, DownloadQuestion, DownloadResume, DownloadTarget,
+    create_folder_in, download_from_remote, download_summary, download_with_progress, folder_name,
+    local_file_name, save_into_folder,
+};
+use super::format::{format_mtime, format_size, parent_path};
 use super::icons::file_type_icon;
 use super::placement::{
-    DEFAULT_SFTP_PANEL_WIDTH, NARROW_PANEL_WIDTH, clamp_sftp_panel_width, initial_sftp_path,
+    COMPACT_PANEL_WIDTH, DEFAULT_SFTP_PANEL_WIDTH, NARROW_PANEL_WIDTH, clamp_sftp_panel_width,
+    empty_sftp_listing_label, initial_sftp_path, visible_sftp_entries,
 };
 use super::selection::{
     SftpSelectGesture, SftpSelection, select_all_sftp_entries, select_sftp_entry,
     selected_sftp_entries, sftp_context_selection, sftp_entry_count, sftp_select_gesture,
+    visible_sftp_selection,
 };
-use super::services::{SftpListings, SftpServices, notify, notify_error, services};
-use super::transfer::{TransferDirection, TransferPhase, TransferProgress, TransferProgressState};
+use super::services::{
+    SftpListings, SftpServices, notify, notify_error, notify_with_details, services,
+};
+use super::sort::{SftpSort, SftpSortKey, next_sftp_sort, sorted_sftp_entries};
+use super::transfer::{
+    StopMessages, StopReason, StoppedTransfer, TransferDirection, TransferPhase, TransferProgress,
+    TransferProgressState, TransferStop, stopped_transfer,
+};
+use crate::features::settings::SettingsPrefs;
 use muxus_ui::widgets::form_field::FormField;
 use muxus_ui::widgets::progress::CircularProgress;
 
@@ -137,7 +151,24 @@ struct Listing {
 struct Transfer {
     id: u64,
     state: TransferProgressState,
-    cancel: CancelSignal,
+    stop: TransferStop,
+    /// What to say when Cancel or a lost connection stops it.
+    messages: StopMessages,
+}
+
+/// Whether the file browser downloads this kind of entry: files, and folders with everything
+/// in them.
+fn downloadable(entry: &SftpEntry) -> bool {
+    matches!(entry.kind, SftpEntryType::File | SftpEntryType::Dir)
+}
+
+/// "items" once a folder is among them.
+fn download_noun(targets: &[SftpEntry]) -> &'static str {
+    if targets.iter().any(|entry| entry.kind == SftpEntryType::Dir) {
+        "items"
+    } else {
+        "files"
+    }
 }
 
 struct ResizeDrag {
@@ -176,6 +207,17 @@ pub struct SftpPanel {
     transfer: Option<Transfer>,
     next_transfer_id: u64,
     listing: Listing,
+    /// The column the listing is sorted by. It is kept across refreshes and folder changes,
+    /// and starts at Name again when the browser is reopened or moved.
+    sort: SftpSort,
+    filter_input: Entity<InputState>,
+    /// The name filter as typed.
+    filter: String,
+    /// `showHiddenFiles` where no shared preferences are installed.
+    show_hidden: bool,
+    /// The listing in `sort` order.
+    listed: Vec<SftpEntry>,
+    /// The rows on show: `listed` without hidden files and the names the filter leaves out.
     entries: Vec<SftpEntry>,
     columns: Option<Columns>,
     fetch: Option<Task<()>>,
@@ -216,13 +258,23 @@ impl SftpPanel {
             options.follow_terminal_folder,
         );
         let path_input = cx.new(|cx| InputState::new(window, cx).default_value(starting.clone()));
+        let filter_input = cx.new(|cx| InputState::new(window, cx));
         let listings = services(cx).listings;
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe_in(&path_input, window, |this, input, event, window, cx| {
                 if let InputEvent::PressEnter { .. } = event {
                     let typed = input.read(cx).value().trim().to_string();
                     if !typed.is_empty() {
                         this.navigate(typed, window, cx);
+                    }
+                }
+            }),
+            cx.subscribe(&filter_input, |this, input, event, cx| {
+                if let InputEvent::Change = event {
+                    let typed = input.read(cx).value().to_string();
+                    if typed != this.filter {
+                        this.filter = typed;
+                        this.refresh_visible(cx);
                     }
                 }
             }),
@@ -234,6 +286,11 @@ impl SftpPanel {
                 }
             }),
         ];
+        // The hidden-files button is shared by every file browser: beside the terminal, in
+        // the sidebar and in its own window.
+        if let Some(prefs) = SettingsPrefs::global(cx) {
+            subscriptions.push(cx.observe(&prefs, |this, _, cx| this.refresh_visible(cx)));
+        }
         let mut panel = Self {
             options,
             path: starting,
@@ -247,6 +304,11 @@ impl SftpPanel {
             transfer: None,
             next_transfer_id: 1,
             listing: Listing::default(),
+            sort: SftpSort::default(),
+            filter_input,
+            filter: String::new(),
+            show_hidden: true,
+            listed: Vec::new(),
             entries: Vec::new(),
             columns: None,
             fetch: None,
@@ -269,8 +331,9 @@ impl SftpPanel {
                     .uploads
                     .update(cx, |uploads, _| uploads.detach_browser(&conn));
             }
+            // Closing the browser stops its transfer without a message.
             if let Some(transfer) = &this.transfer {
-                transfer.cancel.cancel();
+                transfer.stop.stop(StopReason::Closed);
             }
         })
         .detach();
@@ -432,8 +495,91 @@ impl SftpPanel {
         self.shown_path = None;
         self.pending_input = None;
         self.selection = SftpSelection::default();
+        self.clear_filter(window, cx);
         self.load(cx);
         cx.notify();
+    }
+
+    /// The column the listing is sorted by.
+    pub fn sort(&self) -> SftpSort {
+        self.sort
+    }
+
+    /// A click on a column header (`onSortChange(nextSftpSort(sort, key))`).
+    pub fn sort_by(&mut self, key: SftpSortKey, cx: &mut Context<Self>) {
+        self.sort = next_sftp_sort(self.sort, key);
+        let entries = self
+            .listing
+            .data
+            .as_ref()
+            .map(|data| data.entries.as_slice())
+            .unwrap_or_default();
+        self.listed = sorted_sftp_entries(entries, self.sort);
+        self.refresh_visible(cx);
+    }
+
+    /// The name filter as typed.
+    pub fn filter(&self) -> &str {
+        &self.filter
+    }
+
+    /// Type into the name filter.
+    pub fn set_filter(&mut self, filter: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.filter = filter.to_string();
+        self.filter_input.update(cx, |input, cx| {
+            input.set_value(filter.to_string(), window, cx)
+        });
+        self.refresh_visible(cx);
+    }
+
+    fn clear_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.filter.is_empty() || !self.filter_input.read(cx).value().is_empty() {
+            self.set_filter("", window, cx);
+        }
+    }
+
+    /// Whether names starting with a dot are listed (`showHiddenFiles`).
+    pub fn shows_hidden_files(&self, cx: &App) -> bool {
+        SettingsPrefs::global(cx).map_or(self.show_hidden, |prefs| {
+            prefs.read(cx).prefs().show_hidden_files
+        })
+    }
+
+    /// The eye button: list or hide dotfiles in every file browser.
+    pub fn set_show_hidden_files(&mut self, show: bool, cx: &mut Context<Self>) {
+        self.show_hidden = show;
+        if let Some(prefs) = SettingsPrefs::global(cx) {
+            prefs.update(cx, |prefs, cx| {
+                prefs.update(cx, |state| state.show_hidden_files = show)
+            });
+        }
+        self.refresh_visible(cx);
+    }
+
+    /// Bring the rows on show in line with the listing, the filter and the hidden-files
+    /// button. Rows that are no longer shown drop out of the selection and close their menu,
+    /// so a bulk action cannot reach files the user cannot see.
+    fn refresh_visible(&mut self, cx: &mut Context<Self>) {
+        let show_hidden = self.shows_hidden_files(cx);
+        self.entries = visible_sftp_entries(&self.listed, show_hidden, &self.filter);
+        self.columns = None;
+        let names = self.entry_names();
+        if let Some(selection) = visible_sftp_selection(&self.selection, &names) {
+            self.selection = selection;
+        }
+        if self
+            .menu
+            .as_ref()
+            .is_some_and(|(_, entry)| !names.contains(&entry.name))
+        {
+            self.menu = None;
+        }
+        cx.notify();
+    }
+
+    /// What the listing says once no row is on show (`emptySftpListingLabel`).
+    pub fn empty_label(&self) -> &'static str {
+        empty_sftp_listing_label(&self.listed, &self.filter)
     }
 
     /// `refresh`: every browser of the connection lists again.
@@ -466,6 +612,7 @@ impl SftpPanel {
             // key has no data until it answers).
             self.listing.data = None;
             self.listing.error = None;
+            self.listed.clear();
             self.entries.clear();
             self.columns = None;
         }
@@ -511,6 +658,7 @@ impl SftpPanel {
                     Err(error) => {
                         this.listing.error = Some(error.message);
                         this.listing.data = None;
+                        this.listed.clear();
                         this.entries.clear();
                         this.columns = None;
                     }
@@ -530,9 +678,9 @@ impl SftpPanel {
             self.pending_input = Some(response.path.clone());
             cx.notify();
         }
-        self.entries = sort_entries(&response.entries);
-        self.columns = None;
+        self.listed = sorted_sftp_entries(&response.entries, self.sort);
         self.listing.data = Some(response);
+        self.refresh_visible(cx);
     }
 
     fn home(&self) -> String {
@@ -611,13 +759,69 @@ impl SftpPanel {
         if let Some(transfer) = &mut self.transfer {
             transfer.state.phase = TransferPhase::Cancelling;
             transfer.state.bytes_per_second = 0.;
-            transfer.cancel.cancel();
+            transfer.stop.stop(StopReason::Cancelled);
             cx.notify();
         }
     }
 
+    /// The session this browser shows lost its connection. A transfer under way stops and
+    /// says so: the browser closes with its session, before the transfer's own error could
+    /// arrive.
+    pub fn connection_lost(&mut self, cx: &mut Context<Self>) {
+        let Some(transfer) = self
+            .transfer
+            .take_if(|transfer| !transfer.stop.is_stopped())
+        else {
+            return;
+        };
+        transfer.stop.stop(StopReason::ConnectionLost);
+        // Dropped with what it received, which the next download of the file continues.
+        self.work = None;
+        self.busy = false;
+        notify(Status::Error, transfer.messages.connection_lost, cx);
+        cx.notify();
+    }
+
+    /// The transfer under way, as the progress bar shows it.
+    pub fn transfer_state(&self) -> Option<&TransferProgressState> {
+        self.transfer.as_ref().map(|transfer| &transfer.state)
+    }
+
+    /// The rows on show, in their order.
+    pub fn entries(&self) -> &[SftpEntry] {
+        &self.entries
+    }
+
+    /// The title of the question the panel is asking, such as the one before a folder
+    /// download.
+    pub fn question(&self) -> Option<&str> {
+        self.dialogs.title()
+    }
+
+    /// Answer the confirmation the panel is asking, as its buttons do.
+    pub fn answer_question(
+        &mut self,
+        confirmed: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dialogs.answer_confirm(confirmed, window, cx);
+    }
+
+    /// Say why a transfer stopped with `error`: cancelled after Cancel, the lost connection,
+    /// or the failure itself (`reportStoppedTransfer`).
+    fn report_stopped(error: &ApiError, stop: &TransferStop, messages: StopMessages, cx: &mut App) {
+        match stopped_transfer(error, stop, messages) {
+            StoppedTransfer::Cancelled(message) => notify(Status::Info, message, cx),
+            StoppedTransfer::ConnectionLost(message) => notify(Status::Error, message, cx),
+            StoppedTransfer::Failed => notify_error(error, cx),
+            StoppedTransfer::Silent => {}
+        }
+    }
+
     /// `fetchFile`: download `file` with progress, then hand the bytes and the
-    /// remote modification time to `deliver`.
+    /// remote modification time to `deliver`. What an interrupted download of the file
+    /// received is continued.
     fn fetch_file(
         &mut self,
         entry: SftpEntry,
@@ -632,7 +836,11 @@ impl SftpPanel {
         }
         let id = self.next_transfer_id;
         self.next_transfer_id += 1;
-        let cancel = CancelSignal::new();
+        let stop = TransferStop::new();
+        let messages = StopMessages {
+            cancelled: format!("Cancelled download of {}", entry.name),
+            connection_lost: format!("Download of {} stopped: connection lost", entry.name),
+        };
         self.busy = true;
         self.transfer = Some(Transfer {
             id,
@@ -641,54 +849,44 @@ impl SftpPanel {
                 entry.name.clone(),
                 entry.size,
             ),
-            cancel: cancel.clone(),
+            stop: stop.clone(),
+            messages: messages.clone(),
         });
         cx.notify();
-        let backend = services(cx).backend;
+        let SftpServices {
+            backend, downloads, ..
+        } = services(cx);
         let conn = self.options.conn_id.clone();
         let name = entry.name.clone();
         self.work = Some(cx.spawn_in(window, async move |this, cx| {
-            let progress_state = |progress: muxus_ssh::sftp::ByteProgress| TransferProgressState {
-                direction: TransferDirection::Download,
-                name: name.clone(),
-                loaded: progress.loaded,
-                total: progress.total,
-                bytes_per_second: progress.bytes_per_second,
-                phase: TransferPhase::Transferring,
-                file_index: Some(1),
-                file_count: Some(1),
-            };
-            let result: Result<(Vec<u8>, Option<i64>), ApiError> = async {
-                let stream = backend.sftp_download(&conn, &file).await?;
-                let total = stream.size;
-                let mtime = stream.mtime_ms;
-                let mut meter = ProgressMeter::new();
-                let mut bytes = Vec::new();
-                if let Some(progress) = meter.report(0, total, true) {
-                    let state = progress_state(progress);
-                    let _ = this.update(cx, |this, cx| this.show_transfer(id, state, cx));
-                }
-                loop {
-                    if cancel.is_cancelled() {
-                        return Err(ApiError::with_code(499, "Transfer cancelled", "aborted"));
-                    }
-                    // Dropping the stream on cancel stops the transfer.
-                    let Some(chunk) = stream.next_chunk().await else {
-                        break;
+            let mut resume = DownloadResume::new(&file, &downloads, &stop);
+            let mut mtime = None;
+            let result = download_with_progress(
+                async |range| backend.sftp_download_from(&conn, &file, range).await,
+                &mut resume,
+                &stop,
+                |stream| mtime = stream.mtime_ms,
+                &mut |progress: ByteProgress| {
+                    let state = TransferProgressState {
+                        direction: TransferDirection::Download,
+                        name: name.clone(),
+                        loaded: progress.loaded,
+                        total: progress.total,
+                        bytes_per_second: progress.bytes_per_second,
+                        phase: TransferPhase::Transferring,
+                        file_index: Some(1),
+                        file_count: Some(1),
                     };
-                    bytes.extend_from_slice(&chunk?);
-                    if let Some(progress) = meter.report(bytes.len() as u64, total, false) {
-                        let state = progress_state(progress);
-                        let _ = this.update(cx, |this, cx| this.show_transfer(id, state, cx));
-                    }
-                }
-                Ok((bytes, mtime))
-            }
+                    let _ = this.update(cx, |this, cx| this.show_transfer(id, state, cx));
+                },
+            )
             .await;
+            // Stopped early, it leaves what the file received for its next download.
+            drop(resume);
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match result {
-                    Ok((bytes, mtime)) => {
+                    Ok(bytes) => {
                         let size = bytes.len() as u64;
                         this.show_transfer(
                             id,
@@ -709,15 +907,7 @@ impl SftpPanel {
                     }
                     Err(error) => {
                         this.transfer = None;
-                        if error.code.as_deref() == Some("aborted") {
-                            notify(
-                                Status::Info,
-                                format!("Cancelled download of {}", entry.name),
-                                cx,
-                            );
-                        } else {
-                            notify_error(&error, cx);
-                        }
+                        Self::report_stopped(&error, &stop, messages, cx);
                     }
                 }
                 cx.notify();
@@ -738,18 +928,19 @@ impl SftpPanel {
         );
     }
 
-    /// `downloadFiles`: several files at once, into one folder picked up front, so the app
-    /// does not ask where to save each file. One file asks where to save it, as before.
+    /// `downloadFiles`: several files, or folders with everything in them, into one folder
+    /// picked up front, so the app does not ask where to save each file. One file asks where
+    /// to save it, as before.
     fn download_files(
         &mut self,
-        files: Vec<SftpEntry>,
+        items: Vec<SftpEntry>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(first) = files.first().cloned() else {
+        let Some(first) = items.first().cloned() else {
             return;
         };
-        if files.len() == 1 {
+        if items.len() == 1 && first.kind == SftpEntryType::File {
             self.download(first, window, cx);
             return;
         }
@@ -758,11 +949,11 @@ impl SftpPanel {
             return;
         }
         // Taken now: a followed terminal can change folders while the folder is picked.
-        let targets: Vec<(SftpEntry, String)> = files
+        let targets: Vec<DownloadTarget> = items
             .into_iter()
-            .map(|entry| {
-                let file = self.remote_path(&entry);
-                (entry, file)
+            .map(|entry| DownloadTarget {
+                path: self.remote_path(&entry),
+                entry,
             })
             .collect();
         let folder = crate::util::file_dialog::pick_paths(
@@ -774,128 +965,117 @@ impl SftpPanel {
             },
             cx,
         );
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let Some(folder) = folder.await.and_then(|paths| paths.into_iter().next()) else {
                 return;
             };
-            let _ = this.update(cx, |this, cx| this.download_into(targets, folder, cx));
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.download_into(targets, folder, window, cx)
+            });
         })
         .detach();
     }
 
-    /// Download `targets` one after the other into `folder`, numbering names already there.
-    fn download_into(
+    /// Download `targets` into `folder`: files beside the folders recreated there, numbering
+    /// names already taken (`downloadFromRemote`).
+    pub fn download_into(
         &mut self,
-        targets: Vec<(SftpEntry, String)>,
+        targets: Vec<DownloadTarget>,
         folder: PathBuf,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(first) = targets.first() else {
+            return;
+        };
         if self.busy {
             Self::warn_busy(cx);
             return;
         }
-        let count = targets.len();
         let id = self.next_transfer_id;
         self.next_transfer_id += 1;
-        let cancel = CancelSignal::new();
+        let stop = TransferStop::new();
+        let messages = StopMessages {
+            cancelled: "Download cancelled".into(),
+            connection_lost: "Download stopped: connection lost".into(),
+        };
         self.busy = true;
         self.transfer = Some(Transfer {
             id,
             state: TransferProgressState {
-                file_count: Some(count),
+                file_index: Some(0),
+                file_count: Some(0),
                 ..TransferProgressState::starting(
                     TransferDirection::Download,
-                    targets[0].0.name.clone(),
-                    targets[0].0.size,
+                    first.entry.name.clone(),
+                    None,
                 )
             },
-            cancel: cancel.clone(),
+            stop: stop.clone(),
+            messages: messages.clone(),
         });
         cx.notify();
-        let backend = services(cx).backend;
+        let SftpServices {
+            backend, downloads, ..
+        } = services(cx);
         let conn = self.options.conn_id.clone();
-        self.work = Some(cx.spawn(async move |this, cx| {
-            let result: Result<u64, ApiError> = async {
-                let mut written = 0;
-                for (index, (entry, file)) in targets.iter().enumerate() {
-                    let state = |loaded: u64, total: Option<u64>, speed: f64, phase| {
-                        TransferProgressState {
-                            direction: TransferDirection::Download,
-                            name: entry.name.clone(),
-                            loaded,
-                            total,
-                            bytes_per_second: speed,
-                            phase,
-                            file_index: Some(index + 1),
-                            file_count: Some(count),
-                        }
-                    };
-                    let preparing = state(0, entry.size, 0., TransferPhase::Preparing);
-                    let _ = this.update(cx, |this, cx| this.show_transfer(id, preparing, cx));
-                    let stream = backend.sftp_download(&conn, file).await?;
-                    let total = stream.size;
-                    let mut meter = ProgressMeter::new();
-                    let mut bytes = Vec::new();
-                    loop {
-                        if cancel.is_cancelled() {
-                            return Err(ApiError::with_code(499, "Transfer cancelled", "aborted"));
-                        }
-                        // Dropping the stream on cancel stops the transfer.
-                        let Some(chunk) = stream.next_chunk().await else {
-                            break;
-                        };
-                        bytes.extend_from_slice(&chunk?);
-                        if let Some(progress) = meter.report(bytes.len() as u64, total, false) {
-                            let progress = state(
-                                progress.loaded,
-                                progress.total,
-                                progress.bytes_per_second,
-                                TransferPhase::Transferring,
-                            );
-                            let _ =
-                                this.update(cx, |this, cx| this.show_transfer(id, progress, cx));
-                        }
-                    }
-                    written += bytes.len() as u64;
-                    let (folder, name) = (folder.clone(), entry.name.clone());
-                    cx.background_executor()
-                        .spawn(async move { save_into_folder(&folder, &name, &bytes) })
-                        .await
-                        .map_err(|error| {
-                            ApiError::internal(format!("Could not save {}: {error}", entry.name))
-                        })?;
-                }
-                Ok(written)
-            }
+        self.work = Some(cx.spawn_in(window, async move |this, cx| {
+            let deps = PanelDownloads {
+                backend,
+                stop: stop.clone(),
+                panel: this.clone(),
+                cx: cx.clone(),
+            };
+            let progress_cx = cx.clone();
+            let progress_panel = this.clone();
+            let result = download_from_remote(
+                &conn,
+                &targets,
+                &folder,
+                DownloadOptions {
+                    stop: &stop,
+                    interrupted: &downloads,
+                    on_progress: &mut |state: &TransferProgressState| {
+                        let state = state.clone();
+                        let _ = progress_panel.update(&mut progress_cx.clone(), |this, cx| {
+                            this.show_transfer(id, state, cx)
+                        });
+                    },
+                    deps: &deps,
+                },
+            )
             .await;
+            let place = folder_name(&folder);
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 match result {
-                    Ok(bytes) => {
-                        this.show_transfer(
-                            id,
-                            TransferProgressState {
-                                direction: TransferDirection::Download,
-                                name: format!("{count} files"),
-                                loaded: bytes,
-                                total: Some(bytes),
-                                bytes_per_second: 0.,
-                                phase: TransferPhase::Complete,
-                                file_index: Some(count),
-                                file_count: Some(count),
-                            },
+                    // Declined, or cancelled: what was saved until then stays.
+                    Ok(None) => this.transfer = None,
+                    Ok(Some(result)) if result.cancelled => {
+                        this.transfer = None;
+                        notify(
+                            Status::Info,
+                            download_summary(&result, place.as_deref()),
                             cx,
                         );
-                        notify(Status::Success, downloaded_message(count, &folder), cx);
+                    }
+                    Ok(Some(result)) => {
+                        let status = if result.skipped.is_empty() {
+                            Status::Success
+                        } else {
+                            Status::Warning
+                        };
+                        notify_with_details(
+                            status,
+                            download_summary(&result, place.as_deref()),
+                            (!result.skipped.is_empty()).then(|| result.skipped.join("\n")),
+                            cx,
+                        );
                         this.settle_transfer(id, cx);
                     }
                     Err(error) => {
                         this.transfer = None;
-                        if error.code.as_deref() == Some("aborted") {
-                            notify(Status::Info, "Download cancelled", cx);
-                        } else {
-                            notify_error(&error, cx);
-                        }
+                        Self::report_stopped(&error, &stop, messages, cx);
                     }
                 }
                 cx.notify();
@@ -910,12 +1090,18 @@ impl SftpPanel {
         }
         let id = self.next_transfer_id;
         self.next_transfer_id += 1;
-        let cancel = CancelSignal::new();
+        let stop = TransferStop::new();
+        let messages = StopMessages {
+            cancelled: "Upload cancelled".into(),
+            connection_lost: "Upload stopped: connection lost".into(),
+        };
+        let cancel = stop.signal().clone();
         self.busy = true;
         self.transfer = Some(Transfer {
             id,
             state: TransferProgressState::starting(TransferDirection::Upload, "files", None),
-            cancel: cancel.clone(),
+            stop: stop.clone(),
+            messages: messages.clone(),
         });
         cx.notify();
         let SftpServices { backend, .. } = services(cx);
@@ -988,11 +1174,7 @@ impl SftpPanel {
                     }
                     Err(error) => {
                         this.transfer = None;
-                        if error.code.as_deref() == Some(super::terminal_upload::UPLOAD_CANCELLED) {
-                            notify(Status::Info, "Upload cancelled", cx);
-                        } else {
-                            notify_error(&error, cx);
-                        }
+                        Self::report_stopped(&error, &stop, messages, cx);
                     }
                 }
                 cx.notify();
@@ -1584,35 +1766,48 @@ impl SftpPanel {
             )
     }
 
+    /// The actions under the path: New folder, Upload, Download and Open in editor, then the
+    /// name filter with the hidden-files button. A panel too narrow for both, such as the
+    /// browser docked in the sidebar, gives the filter a row of its own.
     fn render_actions(
         &self,
         theme: &Theme,
         narrow: bool,
+        compact: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let p = theme.palette;
         let busy = self.busy;
         let single = self.single_entry();
         let selected = self.selected_entries();
-        let selected_files: Vec<SftpEntry> = selected
+        let downloads: Vec<SftpEntry> = selected
             .iter()
-            .filter(|entry| entry.kind == SftpEntryType::File)
+            .filter(|e| downloadable(e))
             .cloned()
             .collect();
         let file_selected = single
             .as_ref()
             .is_some_and(|entry| entry.kind == SftpEntryType::File);
-        let download_label = if selected_files.len() > 1 {
-            format!("Download {} selected files", selected_files.len())
+        let download_label = if downloads.len() > 1 {
+            format!(
+                "Download {} selected {}",
+                downloads.len(),
+                download_noun(&downloads)
+            )
+        } else if downloads
+            .first()
+            .is_some_and(|entry| entry.kind == SftpEntryType::Dir)
+        {
+            "Download selected folder".into()
         } else {
-            "Download selected file".into()
+            "Download selected file".to_string()
         };
         let caption = theme.typography.caption;
-        let mut row = div()
+        let mut buttons = div()
             .flex()
             .items_center()
             .gap(px(2.))
-            .px(px(6.))
-            .pb(px(6.))
+            .min_w_0()
             .child(
                 IconButton::new("sftp-mkdir", "CreateNewFolderOutlined")
                     .tooltip("New folder")
@@ -1626,6 +1821,19 @@ impl SftpPanel {
                     .on_click(cx.listener(|this, _, window, cx| this.pick_upload(window, cx))),
             )
             .child(
+                IconButton::new("sftp-download", "DownloadOutlined")
+                    .tooltip(download_label)
+                    .disabled(busy || downloads.is_empty())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let items: Vec<SftpEntry> = this
+                            .selected_entries()
+                            .into_iter()
+                            .filter(downloadable)
+                            .collect();
+                        this.download_files(items, window, cx);
+                    })),
+            )
+            .child(
                 IconButton::new("sftp-edit", "EditOutlined")
                     .tooltip("Open selected file in editor")
                     .disabled(busy || !file_selected)
@@ -1635,39 +1843,82 @@ impl SftpPanel {
                             this.open_file(path, cx);
                         }
                     })),
-            )
-            .child(
-                IconButton::new("sftp-download", "DownloadOutlined")
-                    .tooltip(download_label)
-                    .disabled(busy || selected_files.is_empty())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        let files: Vec<SftpEntry> = this
-                            .selected_entries()
-                            .into_iter()
-                            .filter(|entry| entry.kind == SftpEntryType::File)
-                            .collect();
-                        this.download_files(files, window, cx);
-                    })),
-            )
-            .child(div().flex_1());
-        if selected.len() > 1 {
-            row = row.child(
-                label(format!("{} selected", selected.len()))
-                    .size(caption.size)
-                    .line_height(caption.line_height)
-                    .color(theme.palette.text.secondary)
-                    .no_truncate(),
             );
-        } else if !narrow {
-            row = row.child(
-                label("Drag in to upload · drag out to download")
-                    .size(caption.size)
-                    .line_height(caption.line_height)
-                    .color(theme.palette.text.disabled)
-                    .no_truncate(),
+        if selected.len() > 1 {
+            buttons = buttons.child(
+                div().ml(px(4.)).min_w_0().child(
+                    label(format!("{} selected", selected.len()))
+                        .size(caption.size)
+                        .line_height(caption.line_height)
+                        .color(p.text.secondary),
+                ),
+            );
+        } else if !compact {
+            // `flex: 1 1 0`: the hint gives way to the filter before the buttons do.
+            buttons = buttons.flex_1().child(
+                div().ml(px(4.)).flex_1().min_w_0().child(
+                    label("Drag in to upload · drag out to download")
+                        .size(caption.size)
+                        .line_height(caption.line_height)
+                        .color(p.text.disabled),
+                ),
             );
         }
-        row
+        let show_hidden = self.shows_hidden_files(cx);
+        let filter = div()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .min_w_0()
+            // Esc empties the filter before it reaches anything else.
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" && !this.filter.is_empty() {
+                    this.clear_filter(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(
+                FormField::input("sftp-filter", &self.filter_input)
+                    .compact(12. * 1.4375 + 17., 12.)
+                    .placeholder("Filter by name")
+                    .start(icon("Search", 16., p.action.active))
+                    .flexible(),
+            )
+            .child(
+                IconButton::new(
+                    "sftp-hidden",
+                    if show_hidden {
+                        "VisibilityOutlined"
+                    } else {
+                        "VisibilityOffOutlined"
+                    },
+                )
+                .tooltip(if show_hidden {
+                    "Hide hidden files"
+                } else {
+                    "Show hidden files"
+                })
+                .on_click(
+                    cx.listener(move |this, _, _, cx| this.set_show_hidden_files(!show_hidden, cx)),
+                ),
+            );
+        let row = div().flex().px(px(6.)).pb(px(6.));
+        if narrow {
+            row.flex_col()
+                .gap(px(6.))
+                .child(buttons)
+                .child(filter.w_full())
+        } else {
+            // `flex: 1 1 140px` up to 232px, kept at the end of the row (`ml: auto`).
+            row.items_center().gap(px(2.)).child(buttons).child(
+                filter
+                    .ml_auto()
+                    .flex_grow(1.)
+                    .flex_shrink(1.)
+                    .flex_basis(px(140.))
+                    .max_w(px(232.)),
+            )
+        }
     }
 
     fn render_table(
@@ -1694,13 +1945,24 @@ impl SftpPanel {
         } else {
             p.background_default
         };
-        let head_cell = |text: &'static str| {
-            label(text)
-                .size(12.)
-                .weight(550.)
-                .line_height(22.286)
-                .color(p.text.secondary)
-                .no_truncate()
+        let sort = self.sort;
+        // A click sorts by the column, a second one reverses it; on hover, an unsorted
+        // column's faint arrow shows where a click starts.
+        let sort_label = |id: &'static str, key: SftpSortKey, text: &'static str| {
+            let direction = |sort: SftpSort| {
+                if sort.descending {
+                    SortDirection::Desc
+                } else {
+                    SortDirection::Asc
+                }
+            };
+            TableSortLabel::new(id, text, (sort.key == key).then(|| direction(sort)))
+                .idle(direction(next_sftp_sort(sort, key)))
+                .arrow(14., 2.)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.sort_by(key, cx)
+                }))
         };
         let mut header = div()
             .flex()
@@ -1716,16 +1978,18 @@ impl SftpPanel {
                     .px(px(CELL_PX))
                     .flex()
                     .items_center()
-                    .child(head_cell("Name")),
+                    .child(sort_label("sftp-sort-name", SftpSortKey::Name, "Name")),
             )
             .child(
+                // The arrow sits in the left padding, so the narrow column keeps its width.
                 div()
                     .w(px(columns.size))
-                    .px(px(CELL_PX))
+                    .pl(px(4.))
+                    .pr(px(CELL_PX))
                     .flex()
                     .items_center()
                     .justify_end()
-                    .child(head_cell("Size")),
+                    .child(sort_label("sftp-sort-size", SftpSortKey::Size, "Size").reversed()),
             );
         if !narrow {
             header = header.child(
@@ -1734,7 +1998,11 @@ impl SftpPanel {
                     .px(px(CELL_PX))
                     .flex()
                     .items_center()
-                    .child(head_cell("Modified")),
+                    .child(sort_label(
+                        "sftp-sort-modified",
+                        SftpSortKey::Modified,
+                        "Modified",
+                    )),
             );
         }
 
@@ -1750,7 +2018,7 @@ impl SftpPanel {
                 .w(px(table_width))
                 .child(icon("FolderOffOutlined", 26., p.text.disabled))
                 .child(
-                    label("Empty directory")
+                    label(self.empty_label())
                         .size(caption.size)
                         .line_height(caption.line_height)
                         .color(p.text.secondary)
@@ -1943,9 +2211,9 @@ impl SftpPanel {
             vec![entry.clone()]
         };
         let is_file = targets.len() == 1 && entry.kind == SftpEntryType::File;
-        let files: Vec<SftpEntry> = targets
+        let downloads: Vec<SftpEntry> = targets
             .iter()
-            .filter(|target| target.kind == SftpEntryType::File)
+            .filter(|target| downloadable(target))
             .cloned()
             .collect();
         let local = super::local_open::can_open_locally();
@@ -1997,9 +2265,9 @@ impl SftpPanel {
                 );
             }
         }
-        if !files.is_empty() {
-            let download = if files.len() > 1 {
-                format!("Download {} files", files.len())
+        if !downloads.is_empty() {
+            let download = if downloads.len() > 1 {
+                format!("Download {} {}", downloads.len(), download_noun(&downloads))
             } else {
                 "Download".into()
             };
@@ -2008,7 +2276,7 @@ impl SftpPanel {
                     .icon("DownloadOutlined")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         close(this, cx);
-                        this.download_files(files.clone(), window, cx);
+                        this.download_files(downloads.clone(), window, cx);
                     }))
                     .into_any_element(),
             );
@@ -2211,6 +2479,75 @@ impl SftpPanel {
     }
 }
 
+/// What a folder download needs of the panel: the backend, the question before it starts,
+/// and the local folder, written off the UI thread.
+struct PanelDownloads {
+    backend: muxus_session::Backend,
+    stop: TransferStop,
+    panel: muxus_ui::gpui_kit::WeakEntity<SftpPanel>,
+    cx: muxus_ui::gpui_kit::AsyncWindowContext,
+}
+
+impl DownloadDeps for PanelDownloads {
+    async fn list(&self, conn_id: &str, path: &str) -> Result<SftpListResponse, ApiError> {
+        self.backend.sftp_list(conn_id, path).await
+    }
+
+    async fn download(
+        &self,
+        conn_id: &str,
+        path: &str,
+        resume: &mut DownloadResume,
+        on_progress: &mut dyn FnMut(ByteProgress),
+    ) -> Result<Vec<u8>, ApiError> {
+        download_with_progress(
+            async |range| self.backend.sftp_download_from(conn_id, path, range).await,
+            resume,
+            &self.stop,
+            |_| {},
+            on_progress,
+        )
+        .await
+    }
+
+    async fn confirm(&self, question: DownloadQuestion) -> bool {
+        let asked = self
+            .panel
+            .update_in(&mut self.cx.clone(), |this, window, cx| {
+                this.dialogs.confirm(
+                    ConfirmOptions {
+                        title: question.title,
+                        description: Some(question.description),
+                        confirm_label: question.confirm_label,
+                        ..ConfirmOptions::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+        match asked {
+            Ok(answer) => answer.await.confirmed,
+            Err(_) => false,
+        }
+    }
+
+    async fn create_folder(&self, parent: &Path, name: &str) -> std::io::Result<PathBuf> {
+        let (parent, name) = (parent.to_path_buf(), name.to_string());
+        self.cx
+            .background_executor()
+            .spawn(async move { create_folder_in(&parent, &name) })
+            .await
+    }
+
+    async fn save(&self, folder: &Path, name: &str, bytes: Vec<u8>) -> std::io::Result<String> {
+        let (folder, name) = (folder.to_path_buf(), name.to_string());
+        self.cx
+            .background_executor()
+            .spawn(async move { save_into_folder(&folder, &name, &bytes) })
+            .await
+    }
+}
+
 /// A file row being dragged out of the window.
 struct DraggedFile {
     conn_id: String,
@@ -2363,6 +2700,7 @@ impl Render for SftpPanel {
             width - 1.
         };
         let narrow = inline_size < NARROW_PANEL_WIDTH;
+        let compact = inline_size < COMPACT_PANEL_WIDTH;
         let conn = self.options.conn_id.clone();
         let terminal_upload = services(cx).uploads.read(cx).get(&conn).cloned();
 
@@ -2398,7 +2736,7 @@ impl Render for SftpPanel {
         root = root
             .child(self.render_header(&theme, cx))
             .child(self.render_toolbar(cx))
-            .child(self.render_actions(&theme, narrow, cx));
+            .child(self.render_actions(&theme, narrow, compact, cx));
         if let Some(transfer) = &self.transfer {
             root = root.child(
                 div().mx(px(6.)).mb(px(6.)).child(

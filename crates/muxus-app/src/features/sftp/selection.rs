@@ -118,6 +118,38 @@ pub fn select_all_sftp_entries(order: &[String]) -> SftpSelection {
     }
 }
 
+/// The selection without names the listing no longer shows, such as rows a filter hides, so a
+/// later Shift-click run cannot bring them back either. `None` while every selected entry is
+/// still shown: the selection stays as it is.
+pub fn visible_sftp_selection(
+    selection: &SftpSelection,
+    order: &[String],
+) -> Option<SftpSelection> {
+    let shown: HashSet<&str> = order.iter().map(String::as_str).collect();
+    let all_shown =
+        |names: &HashSet<String>| names.iter().all(|name| shown.contains(name.as_str()));
+    let anchor_shown = selection
+        .anchor
+        .as_ref()
+        .is_none_or(|anchor| all_shown(&anchor.base));
+    if all_shown(&selection.names) && anchor_shown {
+        return None;
+    }
+    let keep = |from: &HashSet<String>| -> HashSet<String> {
+        from.iter()
+            .filter(|name| shown.contains(name.as_str()))
+            .cloned()
+            .collect()
+    };
+    Some(SftpSelection {
+        names: keep(&selection.names),
+        anchor: selection.anchor.as_ref().map(|anchor| SftpAnchor {
+            name: anchor.name.clone(),
+            base: keep(&anchor.base),
+        }),
+    })
+}
+
 /// The selected entries in listing order; names gone since the last refresh drop out.
 pub fn selected_sftp_entries<'a>(
     entries: &'a [SftpEntry],
@@ -253,6 +285,45 @@ mod tests {
         assert_eq!(
             names(&select_sftp_entry(&anchored, "c.txt", Extend, &order())),
             ["c.txt"]
+        );
+    }
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    const LISTED: [&str; 5] = [".ssh", "logs", ".bashrc", "a.txt", "b.txt"];
+    const SHOWN: [&str; 3] = ["logs", "a.txt", "b.txt"];
+
+    #[test]
+    fn drops_selected_entries_the_listing_no_longer_shows() {
+        let all = select_all_sftp_entries(&strings(&LISTED));
+        let visible = visible_sftp_selection(&all, &strings(&SHOWN)).expect("a pruned selection");
+        assert_eq!(names(&visible), ["a.txt", "b.txt", "logs"]);
+    }
+
+    #[test]
+    fn keeps_the_selection_as_it_is_while_every_selected_entry_is_shown() {
+        let selection = select_sftp_entry(&empty(), "a.txt", Only, &strings(&LISTED));
+        assert_eq!(visible_sftp_selection(&selection, &strings(&SHOWN)), None);
+        assert_eq!(visible_sftp_selection(&empty(), &[]), None);
+    }
+
+    #[test]
+    fn keeps_a_hidden_entry_out_of_a_later_shift_click_run() {
+        let first = select_sftp_entry(&empty(), "a.txt", Only, &strings(&LISTED));
+        let anchored = select_sftp_entry(&first, ".bashrc", Toggle, &strings(&LISTED));
+        let visible =
+            visible_sftp_selection(&anchored, &strings(&SHOWN)).expect("a pruned selection");
+        assert_eq!(names(&visible), ["a.txt"]);
+        assert_eq!(
+            names(&select_sftp_entry(
+                &visible,
+                "b.txt",
+                Extend,
+                &strings(&SHOWN)
+            )),
+            ["a.txt", "b.txt"]
         );
     }
 

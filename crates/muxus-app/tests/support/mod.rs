@@ -13,13 +13,15 @@ use gpui::TestAppContext;
 use muxus_core::protocol::{AuthPromptResponse, TerminalClientMessage, TerminalServerMessage};
 use muxus_session::{Backend, BackendOptions, RuntimeChoice, SessionEvent, SessionHandle};
 use muxus_ssh::testing::server::{ServerSpec, TestServer, start as start_sshd};
-use muxus_ssh::testing::sftp_server::{SftpServerOptions, register};
+use muxus_ssh::testing::sftp_server::{SftpServerOptions, SftpServerState, register};
 use muxus_ui::gpui_kit::App;
 
 pub struct Fixture {
     pub backend: Backend,
     pub conn_id: String,
     pub remote: PathBuf,
+    /// How the remote root is served, and what was asked of it.
+    pub sftp: std::sync::Arc<SftpServerState>,
     pub home: PathBuf,
     pub server: TestServer,
     pub session: SessionHandle,
@@ -47,7 +49,7 @@ impl Fixture {
         let remote = scratch.path().join("remote");
         std::fs::create_dir_all(&remote).unwrap();
         seed(&remote);
-        register(
+        let sftp = register(
             &remote,
             SftpServerOptions {
                 home: "/".into(),
@@ -80,6 +82,7 @@ impl Fixture {
             backend,
             conn_id,
             remote,
+            sftp,
             home,
             server,
             session,

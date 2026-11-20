@@ -3,12 +3,9 @@
 //! times and remote path helpers of `SftpPanel.tsx`.
 
 use std::cell::RefCell;
-use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use chrono::{Local, TimeZone};
-use muxus_core::api::{SftpEntry, SftpEntryType};
-use muxus_core::collate::locale_compare;
 
 pub use muxus_core::js::to_fixed;
 
@@ -111,23 +108,6 @@ pub fn base_name(path: &str) -> String {
     }
 }
 
-/// Folders first, then by name as `localeCompare` orders them.
-pub fn sort_entries(entries: &[SftpEntry]) -> Vec<SftpEntry> {
-    let mut sorted = entries.to_vec();
-    sorted.sort_by(|a, b| {
-        let (a_dir, b_dir) = (a.kind == SftpEntryType::Dir, b.kind == SftpEntryType::Dir);
-        if a_dir != b_dir {
-            return if a_dir {
-                Ordering::Less
-            } else {
-                Ordering::Greater
-            };
-        }
-        locale_compare(&a.name, &b.name)
-    });
-    sorted
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,27 +167,5 @@ mod tests {
         assert_eq!(parent_path("relative"), "/");
         assert_eq!(base_name("/home/deploy/a.txt"), "a.txt");
         assert_eq!(base_name("/"), "/");
-    }
-
-    #[test]
-    fn folders_sort_first() {
-        let entry = |name: &str, kind| SftpEntry {
-            name: name.into(),
-            kind,
-            size: None,
-            mtime_ms: None,
-            mode: None,
-            owner: None,
-            group: None,
-            download_ticket: None,
-        };
-        let sorted = sort_entries(&[
-            entry("README.md", SftpEntryType::File),
-            entry("logs", SftpEntryType::Dir),
-            entry("deploy.sh", SftpEntryType::File),
-            entry("backups", SftpEntryType::Dir),
-        ]);
-        let names: Vec<_> = sorted.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, ["backups", "logs", "deploy.sh", "README.md"]);
     }
 }

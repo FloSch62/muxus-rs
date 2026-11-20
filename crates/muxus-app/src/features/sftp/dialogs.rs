@@ -160,6 +160,14 @@ impl DialogQueue {
         !self.queue.is_empty()
     }
 
+    /// The title of the question in front.
+    pub fn title(&self) -> Option<&str> {
+        match self.queue.front()? {
+            Request::Confirm { options, .. } => Some(&options.title),
+            Request::Prompt { options, .. } => Some(&options.title),
+        }
+    }
+
     fn opened<V: 'static>(&mut self, window: &mut Window, cx: &mut Context<V>) {
         if self.queue.len() == 1 {
             self.restore = window.focused(cx);
@@ -247,7 +255,8 @@ impl DialogQueue {
         cx.notify();
     }
 
-    fn answer_confirm<V: 'static>(
+    /// Answer the confirmation in front, as its buttons do.
+    pub fn answer_confirm<V: 'static>(
         &mut self,
         confirmed: bool,
         window: &mut Window,

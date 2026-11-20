@@ -137,6 +137,8 @@ pub struct DockedTab {
     pub terminal_cwd: Option<String>,
     /// `sftpFollowTerminal !== false`.
     pub follow_terminal_folder: bool,
+    /// The tab's session lost its connection (`tabLostConnection`).
+    pub lost_connection: bool,
 }
 
 /// What the docked browser asks of the app, with the tab it was showing.
@@ -159,6 +161,8 @@ pub struct DockedFileBrowser {
     /// The latest active tab, adopted whenever the browser is on screen.
     active: Option<DockedTab>,
     panel: Option<(String, Entity<SftpPanel>, Subscription)>,
+    /// The tab the panel was made for.
+    panel_tab: Option<String>,
     sidebar_on_left: bool,
 }
 
@@ -171,6 +175,7 @@ impl DockedFileBrowser {
             held: None,
             active: None,
             panel: None,
+            panel_tab: None,
             sidebar_on_left: true,
         }
     }
@@ -204,6 +209,14 @@ impl DockedFileBrowser {
             self.held = Some(self.active.clone());
         }
         let tab = self.held.clone().flatten();
+        // A lost connection also closes the browser: its transfer hears of it first, so it
+        // reports the loss.
+        if let (Some(tab), Some((_, panel, _))) = (&tab, &self.panel)
+            && tab.lost_connection
+            && self.panel_tab.as_deref() == Some(tab.tab_id.as_str())
+        {
+            panel.update(cx, |panel, cx| panel.connection_lost(cx));
+        }
         let wanted = tab
             .as_ref()
             .filter(|tab| tab.facts.sftp_available != Some(false))
@@ -250,9 +263,13 @@ impl DockedFileBrowser {
                         })
                     });
                     self.panel = Some((conn, panel, subscription));
+                    self.panel_tab = Some(tab.tab_id.clone());
                 }
             }
-            None => self.panel = None,
+            None => {
+                self.panel = None;
+                self.panel_tab = None;
+            }
         }
         cx.notify();
     }

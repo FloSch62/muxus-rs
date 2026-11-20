@@ -8,6 +8,9 @@
 //! (preferences, the sidebar view, each tab's `sftpOpen`) belongs to the app;
 //! it reaches them through [`FileBrowserStores`].
 
+use muxus_core::api::SftpEntry;
+use muxus_core::js::js_trim;
+
 /// `fileBrowserPosition` preference: beside each tab's terminal (`Pane`) or docked in the
 /// window sidebar behind the rail's file tab (`Sidebar`).
 pub use muxus_store::prefs::state::FileBrowserPosition;
@@ -155,9 +158,47 @@ pub fn initial_sftp_path(
     }
 }
 
-/// A panel narrower than this hides the modification times and the drag hint
-/// (`@container (max-width: 359px)`), as the browser docked in the sidebar is.
+/// The rows on show: dotfiles only when asked for, and names containing `filter`, ignoring
+/// case (`visibleSftpEntries`).
+pub fn visible_sftp_entries(
+    entries: &[SftpEntry],
+    show_hidden: bool,
+    filter: &str,
+) -> Vec<SftpEntry> {
+    let needle = js_trim(filter).to_lowercase();
+    entries
+        .iter()
+        .filter(|entry| {
+            (show_hidden || !entry.name.starts_with('.'))
+                && entry.name.to_lowercase().contains(&needle)
+        })
+        .cloned()
+        .collect()
+}
+
+/// What the listing says once no row is on show, so a filter or hidden files never pass for
+/// an empty folder; any name still matching is then hidden (`emptySftpListingLabel`).
+pub fn empty_sftp_listing_label(entries: &[SftpEntry], filter: &str) -> &'static str {
+    if entries.is_empty() {
+        return "Empty directory";
+    }
+    if visible_sftp_entries(entries, true, filter).is_empty() {
+        return "No files match";
+    }
+    if js_trim(filter).is_empty() {
+        "Only hidden files"
+    } else {
+        "Only hidden files match"
+    }
+}
+
+/// A panel narrower than this hides the modification times and puts the filter on a row of
+/// its own (`@container (max-width: 359px)`), as the browser docked in the sidebar is.
 pub const NARROW_PANEL_WIDTH: f32 = 360.;
+
+/// A panel narrower than this has no room for the drag hint between the toolbar buttons and
+/// the filter (`@container (max-width: 479px)`), as at the default width.
+pub const COMPACT_PANEL_WIDTH: f32 = 480.;
 
 #[cfg(test)]
 mod tests {
@@ -409,5 +450,90 @@ mod tests {
     #[test]
     fn falls_back_to_the_requested_initial_path_before_a_terminal_directory_is_reported() {
         assert_eq!(initial_sftp_path("/uploads", None, true), "/uploads");
+    }
+
+    fn entry(name: &str, kind: muxus_core::api::SftpEntryType) -> SftpEntry {
+        SftpEntry {
+            name: name.into(),
+            kind,
+            size: None,
+            mtime_ms: None,
+            mode: None,
+            owner: None,
+            group: None,
+            download_ticket: None,
+        }
+    }
+
+    fn listing() -> Vec<SftpEntry> {
+        use muxus_core::api::SftpEntryType::{Dir, File};
+        vec![
+            entry(".ssh", Dir),
+            entry("logs", Dir),
+            entry(".bashrc", File),
+            entry("Report.TXT", File),
+            entry("notes.txt", File),
+        ]
+    }
+
+    fn names(entries: &[SftpEntry]) -> Vec<&str> {
+        entries.iter().map(|entry| entry.name.as_str()).collect()
+    }
+
+    #[test]
+    fn lists_every_entry_dotfiles_included_by_default() {
+        assert_eq!(visible_sftp_entries(&listing(), true, ""), listing());
+    }
+
+    #[test]
+    fn leaves_out_names_starting_with_a_dot_while_hidden_files_are_hidden() {
+        assert_eq!(
+            names(&visible_sftp_entries(&listing(), false, "")),
+            ["logs", "Report.TXT", "notes.txt"]
+        );
+    }
+
+    #[test]
+    fn keeps_names_containing_the_filter_ignoring_case_in_listing_order() {
+        assert_eq!(
+            names(&visible_sftp_entries(&listing(), true, "TXT")),
+            ["Report.TXT", "notes.txt"]
+        );
+        assert_eq!(
+            names(&visible_sftp_entries(&listing(), true, " rep ")),
+            ["Report.TXT"]
+        );
+    }
+
+    #[test]
+    fn filters_only_the_entries_on_show() {
+        assert!(visible_sftp_entries(&listing(), false, "bash").is_empty());
+        assert_eq!(
+            names(&visible_sftp_entries(&listing(), true, "bash")),
+            [".bashrc"]
+        );
+    }
+
+    #[test]
+    fn tells_an_empty_folder_from_a_filter_that_matches_nothing() {
+        assert_eq!(empty_sftp_listing_label(&[], ""), "Empty directory");
+        assert_eq!(empty_sftp_listing_label(&[], "log"), "Empty directory");
+        assert_eq!(
+            empty_sftp_listing_label(&listing(), "zzz"),
+            "No files match"
+        );
+    }
+
+    #[test]
+    fn says_when_only_hidden_files_are_left_or_only_hidden_files_match() {
+        use muxus_core::api::SftpEntryType::{Dir, File};
+        assert_eq!(
+            empty_sftp_listing_label(&[entry(".ssh", Dir), entry(".bashrc", File)], " "),
+            "Only hidden files"
+        );
+        assert_eq!(
+            empty_sftp_listing_label(&listing(), "BASH"),
+            "Only hidden files match"
+        );
     }
 }

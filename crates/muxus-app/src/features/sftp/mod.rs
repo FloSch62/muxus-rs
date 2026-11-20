@@ -19,6 +19,7 @@ pub mod panel;
 pub mod placement;
 pub mod selection;
 pub mod services;
+pub mod sort;
 pub mod terminal_drop;
 pub mod terminal_upload;
 pub mod transfer;

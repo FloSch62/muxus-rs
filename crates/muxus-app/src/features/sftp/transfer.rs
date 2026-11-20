@@ -2,8 +2,12 @@
 //! and the bar itself (`components/TransferProgress.tsx`): name, progress,
 //! bytes and speed, with Cancel while it can still stop.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Duration;
 
+use muxus_session::ApiError;
+use muxus_ssh::sftp::CancelSignal;
 use muxus_ssh::sftp::upload::UploadProgress;
 // The `IntoElement` derive names its paths `gpui::`.
 pub use muxus_ssh::sftp::upload::TransferPhase;
@@ -124,6 +128,124 @@ impl TransferProgressState {
     pub fn file_line(&self) -> Option<String> {
         let count = self.file_count.unwrap_or(1);
         (count > 1).then(|| format!("File {} of {count}", self.file_index.unwrap_or(0)))
+    }
+}
+
+/// Why a transfer was stopped before its end (the reason its `AbortSignal` carries).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopReason {
+    /// The progress bar's Cancel: only it reads as cancelled (`TRANSFER_CANCELLED`).
+    Cancelled,
+    /// The transfer's session lost the connection (`CONNECTION_LOST`).
+    ConnectionLost,
+    /// Any other reason, as when its file browser closes.
+    Closed,
+}
+
+/// The code of the error a stopped download ends with (`AbortError`); a stopped upload ends
+/// with [`UPLOAD_CANCELLED`](super::terminal_upload::UPLOAD_CANCELLED).
+pub const TRANSFER_ABORTED: &str = "aborted";
+
+/// A transfer's stop request with its reason (the `AbortController` of the TypeScript client).
+/// The first reason given stays.
+#[derive(Clone, Debug, Default)]
+pub struct TransferStop {
+    signal: CancelSignal,
+    reason: Rc<Cell<Option<StopReason>>>,
+}
+
+impl TransferStop {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn stop(&self, reason: StopReason) {
+        if self.reason.get().is_none() {
+            self.reason.set(Some(reason));
+            self.signal.cancel();
+        }
+    }
+
+    pub fn reason(&self) -> Option<StopReason> {
+        self.reason.get()
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.reason.get().is_some()
+    }
+
+    /// The signal the backend's transfers check.
+    pub fn signal(&self) -> &CancelSignal {
+        &self.signal
+    }
+
+    /// Completes once the transfer was stopped.
+    pub async fn stopped(&self) {
+        self.signal.cancelled().await
+    }
+
+    /// The error a stopped transfer ends with (`signal.throwIfAborted()`).
+    pub fn check(&self) -> Result<(), ApiError> {
+        match self.reason.get() {
+            Some(reason) => Err(abort_error(reason)),
+            None => Ok(()),
+        }
+    }
+}
+
+/// What a transfer stopped for `reason` fails with.
+pub fn abort_error(reason: StopReason) -> ApiError {
+    let message = match reason {
+        StopReason::ConnectionLost => "Connection lost",
+        StopReason::Cancelled | StopReason::Closed => "Transfer cancelled",
+    };
+    ApiError::with_code(499, message, TRANSFER_ABORTED)
+}
+
+/// Whether `error` only says that the transfer was stopped (`isAbortError`).
+pub fn is_abort_error(error: &ApiError) -> bool {
+    error.status == 499
+        && matches!(
+            error.code.as_deref(),
+            Some(TRANSFER_ABORTED | super::terminal_upload::UPLOAD_CANCELLED)
+        )
+}
+
+/// What to tell the user about a transfer that stopped with an error.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StoppedTransfer {
+    /// Cancelled after Cancel: an information.
+    Cancelled(String),
+    /// The session lost its connection: an error.
+    ConnectionLost(String),
+    /// The failure itself.
+    Failed,
+    /// Stopped for another reason, as when its file browser closes: nothing.
+    Silent,
+}
+
+/// The messages of one kind of transfer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StopMessages {
+    pub cancelled: String,
+    pub connection_lost: String,
+}
+
+/// Say why a transfer stopped with `error`: cancelled after Cancel, the lost connection, or
+/// the failure itself. Stopped for any other reason, as when its file browser closes, it
+/// stops without a message (`reportStoppedTransfer`).
+pub fn stopped_transfer(
+    error: &ApiError,
+    stop: &TransferStop,
+    messages: StopMessages,
+) -> StoppedTransfer {
+    match stop.reason() {
+        Some(StopReason::Cancelled) => StoppedTransfer::Cancelled(messages.cancelled),
+        Some(StopReason::ConnectionLost) => {
+            StoppedTransfer::ConnectionLost(messages.connection_lost)
+        }
+        Some(StopReason::Closed) if is_abort_error(error) => StoppedTransfer::Silent,
+        _ => StoppedTransfer::Failed,
     }
 }
 
@@ -354,6 +476,115 @@ mod tests {
             file_index: Some(2),
             file_count: Some(3),
         }
+    }
+
+    fn messages() -> StopMessages {
+        StopMessages {
+            cancelled: "Upload cancelled".into(),
+            connection_lost: "Upload stopped: connection lost".into(),
+        }
+    }
+
+    fn stopped_for(reason: Option<StopReason>) -> TransferStop {
+        let stop = TransferStop::new();
+        if let Some(reason) = reason {
+            stop.stop(reason);
+        }
+        stop
+    }
+
+    /// What a stopped upload fails with, whatever the reason.
+    fn aborted() -> ApiError {
+        ApiError::with_code(
+            499,
+            "Upload cancelled",
+            super::super::terminal_upload::UPLOAD_CANCELLED,
+        )
+    }
+
+    #[test]
+    fn reads_as_cancelled_only_after_cancel() {
+        assert_eq!(
+            stopped_transfer(
+                &aborted(),
+                &stopped_for(Some(StopReason::Cancelled)),
+                messages()
+            ),
+            StoppedTransfer::Cancelled("Upload cancelled".into())
+        );
+    }
+
+    #[test]
+    fn says_nothing_when_its_file_browser_closed() {
+        assert_eq!(
+            stopped_transfer(
+                &aborted(),
+                &stopped_for(Some(StopReason::Closed)),
+                messages()
+            ),
+            StoppedTransfer::Silent
+        );
+        assert_eq!(
+            stopped_transfer(
+                &abort_error(StopReason::Closed),
+                &stopped_for(Some(StopReason::Closed)),
+                messages()
+            ),
+            StoppedTransfer::Silent
+        );
+    }
+
+    #[test]
+    fn says_so_when_the_connection_was_lost() {
+        assert_eq!(
+            stopped_transfer(
+                &aborted(),
+                &stopped_for(Some(StopReason::ConnectionLost)),
+                messages()
+            ),
+            StoppedTransfer::ConnectionLost("Upload stopped: connection lost".into())
+        );
+    }
+
+    #[test]
+    fn shows_a_failure_also_one_that_arrives_as_the_browser_closes() {
+        let denied = ApiError::internal("permission denied");
+        assert_eq!(
+            stopped_transfer(&denied, &stopped_for(None), messages()),
+            StoppedTransfer::Failed
+        );
+        let no_program = ApiError::internal("no program opens this file");
+        assert_eq!(
+            stopped_transfer(
+                &no_program,
+                &stopped_for(Some(StopReason::Closed)),
+                messages()
+            ),
+            StoppedTransfer::Failed
+        );
+        // An abort the transfer did not ask for is a failure too.
+        assert_eq!(
+            stopped_transfer(&aborted(), &stopped_for(None), messages()),
+            StoppedTransfer::Failed
+        );
+    }
+
+    #[test]
+    fn a_stop_keeps_its_first_reason_and_fails_what_checks_it() {
+        let stop = TransferStop::new();
+        assert!(!stop.is_stopped());
+        assert!(stop.check().is_ok());
+        assert!(!stop.signal().is_cancelled());
+
+        stop.stop(StopReason::ConnectionLost);
+        stop.stop(StopReason::Cancelled);
+
+        assert_eq!(stop.reason(), Some(StopReason::ConnectionLost));
+        assert!(stop.signal().is_cancelled());
+        let error = stop.check().unwrap_err();
+        assert_eq!(error.message, "Connection lost");
+        assert!(is_abort_error(&error));
+        assert!(!is_abort_error(&ApiError::internal("Connection lost")));
     }
 
     #[test]

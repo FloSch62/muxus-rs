@@ -21,7 +21,7 @@ use muxus_app::features::sftp::window::{SftpWindowLaunch, open_sftp_window};
 use muxus_app::keymap::bindings::KeybindingOverrides;
 use muxus_app::keymap::hints::chord_label;
 use muxus_app::model::SessionProfile;
-use muxus_app::state::tabs::{TabPatch, TabStatus, TerminalTab};
+use muxus_app::state::tabs::{TabPatch, TabStatus, TerminalTab, tab_lost_connection};
 use muxus_term::drop_paths::{DroppedPathStyle, ShellQuoting};
 use muxus_term::file_drop::DropSessionStatus;
 use muxus_ui::gpui_kit::{
@@ -256,6 +256,13 @@ impl AppShell {
                 }
             }
         }
+        // A lost connection also closes the browser: its transfer hears of it first, so it
+        // reports the loss.
+        for (tab_id, (_, panel, _)) in &self.sftp.panels {
+            if tab_lost_connection(&self.tabs.tabs, tab_id) {
+                panel.update(cx, |panel, cx| panel.connection_lost(cx));
+            }
+        }
         self.sftp.panels.retain(|tab_id, (conn, _, _)| {
             wanted
                 .get(tab_id)
@@ -375,6 +382,7 @@ impl AppShell {
                 terminal_cwd: tab.terminal_cwd.clone(),
                 follow_terminal_folder: tab.sftp_follow_terminal != Some(false)
                     && tab.system_open_ssh != Some(true),
+                lost_connection: tab_lost_connection(&self.tabs.tabs, &tab.id),
             });
             let docked = match &self.sftp.docked {
                 Some((docked, _)) => docked.clone(),

@@ -405,6 +405,15 @@ pub fn is_multi_exec_target(tab: &TerminalTab) -> bool {
             .is_some_and(SessionProfile::is_terminal)
 }
 
+/// Whether the tab's session lost its connection, which its terminal reports as "connection
+/// lost": a dropped connection, not an ended shell, a reconnect or a closed tab.
+pub fn tab_lost_connection(tabs: &[TerminalTab], tab_id: &str) -> bool {
+    tabs.iter()
+        .find(|tab| tab.id == tab_id)
+        .and_then(|tab| tab.disconnect_reason)
+        .is_some_and(|reason| reason != DisconnectReason::Completed)
+}
+
 /// Serial consoles own the device exclusively, so a second session on the same
 /// port would only fail; everything else can be dialed again
 /// (`canReopen` in `client/src/session-actions.ts`).
@@ -1777,6 +1786,74 @@ mod tests {
         assert_eq!(telnet_tab.fresh_transport, None);
         assert_eq!(telnet_tab.failure_reason, None);
         assert_eq!(telnet_tab.disconnect_reason, None);
+    }
+
+    #[test]
+    fn counts_a_dropped_connection_not_an_ended_shell_a_reconnect_or_a_closed_tab() {
+        let mut state = store();
+        let id = state.open(ssh("router"), "Router");
+        let set = |state: &mut TabsState, patch: TabPatch| state.update(&id, patch);
+        let lost = |state: &TabsState| tab_lost_connection(&state.tabs, &id);
+
+        set(
+            &mut state,
+            TabPatch {
+                status: Some(TabStatus::Connected),
+                conn_id: Some(Some("conn-1".into())),
+                ..TabPatch::default()
+            },
+        );
+        assert!(!lost(&state));
+
+        // Updated as the terminal does when the transport drops.
+        set(
+            &mut state,
+            TabPatch {
+                status: Some(TabStatus::Interrupted),
+                conn_id: Some(None),
+                disconnect_reason: Some(Some(DisconnectReason::Disconnected)),
+                ..TabPatch::default()
+            },
+        );
+        assert!(lost(&state));
+        set(
+            &mut state,
+            TabPatch {
+                status: Some(TabStatus::Closed),
+                disconnect_reason: Some(Some(DisconnectReason::Failed)),
+                ..TabPatch::default()
+            },
+        );
+        assert!(lost(&state));
+
+        set(
+            &mut state,
+            TabPatch {
+                disconnect_reason: Some(Some(DisconnectReason::Completed)),
+                ..TabPatch::default()
+            },
+        );
+        assert!(!lost(&state));
+
+        set(
+            &mut state,
+            TabPatch {
+                disconnect_reason: Some(Some(DisconnectReason::Disconnected)),
+                ..TabPatch::default()
+            },
+        );
+        state.reconnect(&[id.as_str()], None);
+        assert!(!lost(&state));
+
+        set(
+            &mut state,
+            TabPatch {
+                disconnect_reason: Some(Some(DisconnectReason::Disconnected)),
+                ..TabPatch::default()
+            },
+        );
+        state.close(&id);
+        assert!(!lost(&state));
     }
 
     #[test]

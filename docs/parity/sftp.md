@@ -8,7 +8,8 @@ Feature folder: `crates/muxus-app/src/features/sftp/` (`pub mod sftp` in
 `read_local_file`, `save_local_file`).
 
 ```bash
-CARGO_TARGET_DIR=target-ui-b cargo test -p muxus-app --lib sftp::    # 162 tests
+CARGO_TARGET_DIR=target-ui-b cargo test -p muxus-app --lib sftp::    # 232 tests
+CARGO_TARGET_DIR=target-ui-b cargo test -p muxus-app --test ui_sftp   # the panel on a live SFTP server
 CARGO_TARGET_DIR=target-ui-b cargo build -p muxus-app --example sftp
 hack/shot.sh --env MUXUS_WINDOW=fullscreen --env MUXUS_SCENE=sftp out.png -- target-ui-b/debug/examples/sftp
 ```
@@ -24,10 +25,15 @@ with web-01's `/home/deploy` from `hack/demo-env.mjs` (entries dated
 | Feature | TypeScript source | Status | Note |
 |---|---|---|---|
 | File and folder icon resolver | client/src/file-icon-resolver.ts | done | `icons.rs`; test file ported plus pattern edge cases |
-| Size, speed, mtime formatting, parent path, entry order | components/TransferProgress.tsx, SftpPanel.tsx | done | `format.rs`; JS `toFixed` rounding, `localeCompare` order |
+| Size, speed, mtime formatting, parent path | components/TransferProgress.tsx, SftpPanel.tsx | done | `format.rs`; JS `toFixed` rounding |
+| Column sort (name, size, modified; folders first, ties by name; a click reverses, another column starts A to Z or largest and newest) | client/src/sftp-sort.ts | done | `sort.rs`; sftp-sort.test.ts ported; names in `localeCompare` order |
+| Rows on show (hidden files, name filter) and the empty-listing label | client/src/sftp-panel-state.ts | done | `placement.rs` (`visible_sftp_entries`, `empty_sftp_listing_label`); test file ported |
 | Browser placement (pane/sidebar, show/toggle/move, unavailable reasons) | client/src/file-browser.ts | done | `placement.rs` over a `FileBrowserStores` trait the app implements; file-browser.test.ts ported |
 | Panel width, initial path | sftp-panel-width.ts, sftp-panel-state.ts | done | both test files ported |
 | Transfer progress state and labels | transfer-progress.ts, TransferProgress.tsx | done | `transfer.rs` |
+| Why a transfer stopped (Cancel, a lost connection, the closing browser, a failure) | transfer-progress.ts (`TRANSFER_CANCELLED`, `CONNECTION_LOST`, `reportStoppedTransfer`), state/tabs.ts (`tabLostConnection`) | done | `transfer.rs`: `TransferStop` carries the reason an `AbortSignal` does, `stopped_transfer` says what to show; transfer-progress.test.ts ported. `state::tabs::tab_lost_connection` with its test |
+| Continuing interrupted downloads (what a download received, by remote path, 256 MiB in all, newest kept; dropped by Cancel) | sftp-download.ts (`downloadResume`), api/transfers.ts (`downloadBlobWithProgress`) | done | `download.rs`: `InterruptedDownloads` in `SftpServices` (the window's memory, as in the client), `DownloadResume`, `download_with_progress`; the cases of sftp-download.test.ts and transfers.test.ts ported. The bytes are kept when the download's task is dropped too, as when its browser closes |
+| Folder downloads (the walk, 10,000 entries and 10 GiB limits, the question with totals, skipped links, special files and names, numbered folders, one progress for the job, Cancel keeping what was saved, summaries) | sftp-download.ts (`downloadFromRemote`, `downloadSummary`) | done | `download.rs` over a `DownloadDeps` trait; sftp-download.test.ts ported against real folders. See "Known differences" for refused names and browsers without a folder picker |
 | Terminal uploads (one per connection, phases, cancel, settle, browser count) | terminal-upload.ts, state/sftp-uploads.ts | done | `terminal_upload.rs` + `services::SftpUploads`; the "uploads started from a terminal" cases of sftp-upload.test.ts ported (the upload itself is muxus-ssh's, tested there) |
 | Local copy sync (ask, auto-upload box, conflict, connection gone, cancel, fold saves) | local-copy-sync.ts, state/local-copies.ts | done | `local_copies.rs`; all of local-copy-sync.test.ts ported |
 | Local open: chooser per platform | client/src/local-open.ts, electron/src/main.ts (`choose-program`) | done | Windows system chooser, the Linux program list, the macOS program picker (`chooseLocalProgram`: the native file picker, then `open -a <app> <file>`). On Linux, Browse… takes a `.desktop` file as well as an executable, with the Electron messages for one that cannot be read or describes no program (`check_picked_program`, tested); picked executables start in the home folder with the launch environment. The macOS branch is runtime `cfg!` code that builds and is type-checked on Linux but has not run on a Mac; GPUI's picker cannot start in `/Applications` or filter to `.app` bundles as Electron's dialog does |
@@ -43,8 +49,12 @@ with web-01's `/home/deploy` from `hack/demo-env.mjs` (entries dated
 | Feature | TypeScript source | Status | Note |
 |---|---|---|---|
 | File browser panel (header, toolbar, path field, actions, table, empty state, error, spinner, follow box, context menu with Compare with… (v0.15), rename/new folder/delete, upload picker, drop-in upload with overlay, download with progress and cancel, resize grip) | components/SftpPanel.tsx | done | `panel.rs`. Download asks where to save after the transfer (Electron's download dialog). Following the terminal's folder is idempotent: the shell syncs it on every render, which used to cancel the listing in flight and leave the old rows (`tests/ui_sftp.rs`). Without a file chooser portal, saves fall back to a free path in Downloads and pickers say so (`util/file_dialog.rs`) |
+| Sortable column headers (arrow on the sorted column, a faint one on hover showing where a click starts) | SftpPanel.tsx (`TableSortLabel`) | done | `muxus_ui::widgets::table::TableSortLabel` with the panel's 14px arrow, before the label in the right-aligned Size column; the sort is the panel's state, kept across refreshes and folders |
+| Name filter and the hidden-files button (Esc and a folder change clear the filter; hidden rows leave the selection and close their menu; the filter gets a row of its own in a narrow panel; the drag hint needs 480px) | SftpPanel.tsx, state/prefs.ts (`showHiddenFiles`) | done | `showHiddenFiles` is in `muxus-store` (default on, migration and backup with their tests) and shared by every file browser through `SettingsPrefs`. Actions in the client's order: New folder, Upload, Download, Open in editor |
+| Downloading folders from the toolbar, the row menu and a selection ("Download 3 selected items") | SftpPanel.tsx (`downloadFiles`) | done | one file still asks where to save it; anything else asks for a folder once |
+| Stopped transfers: Cancel says cancelled, a lost connection says so (*Upload stopped: connection lost*), a closing browser says nothing | SftpPanel.tsx, layout/AppShell.tsx, layout/Sidebar.tsx (`tabId`) | done | the shell and the docked browser tell the panel of the lost connection before it goes with its session (`SftpPanel::connection_lost`) |
 | Drag out to download | SftpPanel.tsx (`DownloadURL`) | done | the file is fetched by its drag ticket when the drag starts and offered to the desktop as a file when the pointer leaves the window, finished or not: the download goes to a hidden `.<name>.part` beside the copy and takes the copy's name once complete (`create_pending_local_copy`, tested), so a drop made before then finds no file instead of half of one (Chromium's `DownloadURL` let the target wait for the download; GPUI hands the desktop a path). A ticket lasts as long as its connection, one per remote file across listings, all dropped when the connection closes, a system OpenSSH login as well as a built-in connection (6f67638; `muxus-ssh` `SftpService`, the sftp-upload tests ported) |
-| Selecting several files (click, Ctrl/Cmd-click, Shift-click run from the anchor, Ctrl/Cmd+A, Esc, click below the rows, Delete / Cmd+Backspace), "N selected" caption, row menu acting on the selection (Compare with… only for a single file), bulk download into one folder with numbered names, one confirmation for a bulk delete | sftp-selection.ts, sftp-download.ts, SftpPanel.tsx (98411a3) | done | `selection.rs`, `download.rs` (both test files ported), `panel.rs`; the folder is picked with the desktop's folder chooser, files are written with `create_new` so nothing is replaced. `tests/ui_sftp.rs` drives the selection |
+| Selecting several files (click, Ctrl/Cmd-click, Shift-click run from the anchor, Ctrl/Cmd+A, Esc, click below the rows, Delete / Cmd+Backspace), "N selected" caption, row menu acting on the selection (Compare with… only for a single file), bulk download into one folder with numbered names, one confirmation for a bulk delete | sftp-selection.ts, sftp-download.ts, SftpPanel.tsx (98411a3) | done | `selection.rs`, `download.rs` (both test files ported), `panel.rs`; the folder is picked with the desktop's folder chooser, files are written with `create_new` so nothing is replaced. `tests/ui_sftp.rs` drives the selection, the sort, the filter, a folder download and a download that continues on the next connection |
 | Listing cache and refresh | api/queries.ts `useSftpList` | done | `services::SftpListings`: 15 s stale time, one retry, refresh per connection |
 | File type icons | components/FileTypeIcon.tsx | done | Inter 800 stands in for the folder labels' 850 |
 | Transfer progress bar | components/TransferProgress.tsx | done | indeterminate bar animated |
@@ -77,6 +87,23 @@ Crops of the reference: the panel is `1040,93,380,787`, the editor
 | remote-editor.png, panel | 1.67% | — | as sftp.png |
 
 The sidebar and window scenes have no reference shots; they were checked by eye.
+
+## Known differences
+
+- **Names the local folder refuses.** Chromium's File System Access API turns down `aux.c`,
+  `con.txt`, `desktop.ini` and `x.lnk` in a picked folder on every system, and the client skips
+  them. A native folder takes these names except where Windows keeps them for devices
+  (`con`, `prn`, `aux`, `nul`, `com1`–`com9`, `lpt1`–`lpt9`, whatever follows the first dot).
+  Those are refused before anything is opened (`reserved_on_windows`), and a name the system
+  itself turns down (too long, for one) is skipped the same way, listed as *name not allowed
+  locally*.
+- **Browsers without a folder picker.** Firefox and Safari cannot write into a folder, so the
+  client sends files to the browser's downloads there and leaves folders out. The desktop
+  always has a folder chooser; without a portal it says so and nothing is downloaded.
+- **The download's cache headers** (`Cache-Control: no-store`) and Electron's answer to
+  `file-system-access-restricted` have nothing to port: downloads are read straight from the
+  SFTP session, and folders are picked with the desktop's chooser.
+- **An upload's error is shown at once** without the `Connection: close` the HTTP route needed.
 
 ## Needs from other crates
 
