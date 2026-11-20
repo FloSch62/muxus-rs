@@ -30,7 +30,7 @@ A crate may depend only on crates in lower layers. `cargo xtask layering` enforc
 |---|---|---|
 | L0 | `muxus-core` | `shared/src` |
 | L1 | `muxus-store` | `server/src/persistence`, `server/src/security` (secret storage), settings/prefs |
-| L2 | `muxus-ssh`, `muxus-local`, `muxus-telnet`, `muxus-serial`, `muxus-rdp`, `muxus-vnc`, `muxus-mgmt`, `muxus-import`, `muxus-term`, `muxus-os` | `server/src/{ssh,forwards,x11,local,telnet,serial,remote-desktop,management}`, client import modules, `client/src/terminal`; `muxus-os`: the Windows/macOS calls Node and Electron made (`os.cpus()`, `app.setJumpList`) |
+| L2 | `muxus-ssh`, `muxus-local`, `muxus-telnet`, `muxus-serial`, `muxus-rdp`, `muxus-vnc`, `muxus-mgmt`, `muxus-import`, `muxus-passwords`, `muxus-term`, `muxus-os` | `server/src/{ssh,forwards,x11,local,telnet,serial,remote-desktop,management,password-managers}`, client import modules, `client/src/terminal`; `muxus-os`: the Windows/macOS calls Node and Electron made (`os.cpus()`, `app.setJumpList`) |
 | L3 | `muxus-session` | `server/src/{ws,routes,session-logging,login-sequence,diagnostics,stats}` |
 | L4 | `muxus-ui` | `client/src/theme.ts`, the shared MUI look |
 | L5 | `muxus-term-view`, `muxus-webview` | `client/src/components/TerminalViewImpl.tsx` and its addons; `electron/src/web-windows.ts` |
