@@ -7,6 +7,7 @@ use crate::config::{
 use crate::connection::profile::SshProfile;
 use crate::folder_auth::{FolderAuthDefaults, FolderPasswordRef};
 use crate::types::{ConfigForward, saved_host_hop_id};
+use muxus_core::api::ExternalPasswordRef;
 
 const MAX_JUMP_DEPTH: usize = 8;
 
@@ -20,7 +21,9 @@ pub struct ChainHop {
     pub port: u16,
     /// Display label for prompts when this is an intermediate hop.
     pub hop_label: Option<String>,
-    /// Folder passwords in the vault this hop may fall back to, nearest first.
+    /// The password-manager entry this host itself logs in with.
+    pub password_ref: Option<ExternalPasswordRef>,
+    /// Folder passwords this hop may fall back to, nearest first.
     pub folder_passwords: Option<Vec<FolderPasswordRef>>,
     /// Target only: the host key an ssh:// link pinned, in canonical form.
     pub host_key_fingerprint: Option<String>,
@@ -42,6 +45,8 @@ impl ChainHop {
 pub type FolderLookup<'a> = &'a (dyn Fn(&str) -> Option<FolderAuthDefaults> + Send + Sync);
 /// Saved Muxus SSH hosts by profile ID.
 pub type SavedProfileLookup<'a> = &'a (dyn Fn(&str) -> Option<SshProfile> + Send + Sync);
+/// The password-manager entry linked to an alias or to a saved profile ID.
+pub type PasswordRefLookup<'a> = &'a (dyn Fn(&str) -> Option<ExternalPasswordRef> + Send + Sync);
 
 /// Lookups the dial plan needs from the store.
 #[derive(Default, Clone, Copy)]
@@ -52,6 +57,10 @@ pub struct ChainSources<'a> {
     pub profile_folder_auth: Option<FolderLookup<'a>>,
     /// Saved Muxus SSH hosts by profile ID.
     pub saved_profile: Option<SavedProfileLookup<'a>>,
+    /// The password-manager entry linked to an ssh_config alias.
+    pub password_ref_for_host: Option<PasswordRefLookup<'a>>,
+    /// The password-manager entry linked to a saved profile, by its ID.
+    pub password_ref_for_profile: Option<PasswordRefLookup<'a>>,
 }
 
 /// Why a dial plan could not be built.
@@ -138,6 +147,15 @@ impl Walker<'_> {
                 .as_deref()
                 .and_then(|id| self.sources.profile_folder_auth.and_then(|f| f(id)))
         };
+        let password_ref = if from_config {
+            self.sources
+                .password_ref_for_host
+                .and_then(|f| f(&spec.host))
+        } else {
+            owner_id
+                .as_deref()
+                .and_then(|id| self.sources.password_ref_for_profile.and_then(|f| f(id)))
+        };
         let configured_base = if from_config {
             resolve_host(
                 self.doc,
@@ -206,6 +224,7 @@ impl Walker<'_> {
             .unwrap_or(resolved.port);
         self.chain.push(ChainHop {
             hop_label: (!is_final).then(|| spec.host.clone()),
+            password_ref,
             folder_passwords: folder.map(|f| f.passwords),
             host_key_fingerprint: if is_final {
                 self.profile.host_key_fingerprint.clone()

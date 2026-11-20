@@ -17,7 +17,8 @@ pub mod transport;
 pub use chain::{ChainHop, DialPlanError, build_chain, mux_key};
 pub use io::{
     AuthPromptInfo, AuthPromptPurpose, AuthPromptResponse, BoxFuture, Cancelled, ConnectIo,
-    HostKeyChallenge, HostKeyState, PasswordVault, PromptField, VaultError, VaultStatus,
+    ExternalPasswordRef, HostKeyChallenge, HostKeyState, LinkedPasswords, PasswordVault,
+    PromptField, VaultError, VaultStatus,
 };
 pub use leases::{ConnectionLeaseOwner, TransportLease};
 pub use manager::{

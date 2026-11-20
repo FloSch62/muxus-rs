@@ -19,7 +19,7 @@ use super::deadline::PausableDeadline;
 use super::health::{
     KeepaliveOptions, ObservedStream, TransportActivity, TransportHealth, ssh_keepalive_options,
 };
-use super::io::{ConnectIo, HostKeyChallenge, HostKeyState, PasswordVault};
+use super::io::{ConnectIo, HostKeyChallenge, HostKeyState, LinkedPasswords, PasswordVault};
 use crate::algorithms::{
     AlgorithmSettings, connection_algorithms, host_key_algorithms_preferring_known,
 };
@@ -622,6 +622,7 @@ impl ConnectError {
 pub(crate) struct DialContext {
     pub io: Arc<dyn ConnectIo>,
     pub vault: Option<Arc<dyn PasswordVault>>,
+    pub password_managers: Option<Arc<dyn LinkedPasswords>>,
     pub known_hosts: KnownHostsStore,
     pub env: LocalEnv,
     pub env_lookup: EnvLookup,
@@ -798,6 +799,7 @@ pub(crate) async fn dial_hop(
             hop: hop.clone(),
             io: cx.io.clone(),
             vault: cx.vault.clone(),
+            password_managers: cx.password_managers.clone(),
             deadline: deadline.clone(),
             agent: agent.clone(),
             env: cx.env.clone(),

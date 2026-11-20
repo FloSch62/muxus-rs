@@ -19,7 +19,7 @@ use super::chain::{
     mux_key,
 };
 use super::health::TransportHealth;
-use super::io::{ConnectIo, PasswordVault};
+use super::io::{ConnectIo, ExternalPasswordRef, LinkedPasswords, PasswordVault};
 use super::jump_hops::{JUMP_HOP_IDLE, JumpHop, JumpHopOptions, JumpHopRegistry};
 use super::leases::{
     ConnectionLeaseOwner, ConnectionLeaseRegistry, LeaseableConnection, TransportLease,
@@ -56,6 +56,11 @@ pub struct ManagerOptions {
     pub known_hosts: KnownHostsStore,
     pub load_config: Arc<dyn Fn() -> ConfigDocument + Send + Sync>,
     pub vault: Option<Arc<dyn PasswordVault>>,
+    /// External password managers that linked entries are read from.
+    pub password_managers: Option<Arc<dyn LinkedPasswords>>,
+    /// The password-manager entry linked to an ssh_config alias, and to a saved host by ID.
+    pub password_ref_for_host: Option<Lookup<Option<ExternalPasswordRef>>>,
+    pub password_ref_for_profile: Option<Lookup<Option<ExternalPasswordRef>>>,
     /// Current database-owned SSH profile, keyed by stable profile ID.
     pub saved_ssh_profile: Option<Lookup<Option<SshProfile>>>,
     /// Folder-inherited connection defaults per alias (Muxus sidebar folders).
@@ -95,6 +100,9 @@ impl ManagerOptions {
             env,
             env_lookup: Arc::new(|name: &str| std::env::var(name).ok()),
             vault: None,
+            password_managers: None,
+            password_ref_for_host: None,
+            password_ref_for_profile: None,
             saved_ssh_profile: None,
             folder_auth: None,
             profile_folder_auth: None,
@@ -842,6 +850,14 @@ impl SshConnectionManager {
         let saved_fn = saved
             .as_ref()
             .map(|f| f.as_ref() as &(dyn Fn(&str) -> Option<SshProfile> + Send + Sync));
+        let host_entry = o.password_ref_for_host.clone();
+        let profile_entry = o.password_ref_for_profile.clone();
+        let host_entry_fn = host_entry
+            .as_ref()
+            .map(|f| f.as_ref() as &(dyn Fn(&str) -> Option<ExternalPasswordRef> + Send + Sync));
+        let profile_entry_fn = profile_entry
+            .as_ref()
+            .map(|f| f.as_ref() as &(dyn Fn(&str) -> Option<ExternalPasswordRef> + Send + Sync));
         build_chain(
             doc,
             profile,
@@ -849,6 +865,8 @@ impl SshConnectionManager {
                 folder_auth: folder_fn,
                 profile_folder_auth: profile_folder_fn,
                 saved_profile: saved_fn,
+                password_ref_for_host: host_entry_fn,
+                password_ref_for_profile: profile_entry_fn,
             },
         )
     }
@@ -1587,6 +1605,7 @@ impl SshConnectionManager {
         DialContext {
             io,
             vault: o.vault.clone(),
+            password_managers: o.password_managers.clone(),
             known_hosts: o.known_hosts.clone(),
             env: o.env.clone(),
             env_lookup: o.env_lookup.clone(),

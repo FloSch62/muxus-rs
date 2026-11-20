@@ -10,6 +10,7 @@ use crate::folder_auth::folder_auth_option_lines;
 use crate::types::{
     FolderAuthSettings, ForwardType, RequestTty, StrictHostKeyChecking, saved_host_hop,
 };
+use muxus_core::api::ExternalPasswordRef;
 
 fn chain(f: &Fixture, content: &str, profile: SshProfile) -> Vec<ChainHop> {
     build_chain(&f.doc(content), &profile, ChainSources::default()).unwrap()
@@ -315,7 +316,7 @@ fn with_saved(
         ChainSources {
             saved_profile: Some(&lookup),
             profile_folder_auth: folder,
-            folder_auth: None,
+            ..Default::default()
         },
     )
 }
@@ -442,6 +443,7 @@ fn applies_the_saved_jump_host_folder_defaults_not_its_config_block() {
             passwords: vec![FolderPasswordRef {
                 account: "acct".into(),
                 label: "Folder".into(),
+                entry: None,
             }],
         })
     };
@@ -461,7 +463,8 @@ fn applies_the_saved_jump_host_folder_defaults_not_its_config_block() {
         c[0].folder_passwords,
         Some(vec![FolderPasswordRef {
             account: "acct".into(),
-            label: "Folder".into()
+            label: "Folder".into(),
+            entry: None,
         }])
     );
 }
@@ -768,6 +771,7 @@ fn folder_defaults(
         passwords: vec![FolderPasswordRef {
             account: account.into(),
             label: label.into(),
+            entry: None,
         }],
     }
 }
@@ -813,7 +817,8 @@ fn applies_each_hop_its_own_folder_and_passwords_ride_on_the_hop() {
         c[1].folder_passwords,
         Some(vec![FolderPasswordRef {
             account: "acct-app".into(),
-            label: "Folder app".into()
+            label: "Folder app".into(),
+            entry: None,
         }])
     );
 }
@@ -882,6 +887,7 @@ fn applies_folder_defaults_to_saved_muxus_profiles_without_reading_ssh_config() 
             passwords: vec![FolderPasswordRef {
                 account: "acct".into(),
                 label: "Folder".into(),
+                entry: None,
             }],
         })
     };
@@ -903,10 +909,86 @@ fn applies_folder_defaults_to_saved_muxus_profiles_without_reading_ssh_config() 
         c[0].folder_passwords,
         Some(vec![FolderPasswordRef {
             account: "acct".into(),
-            label: "Folder".into()
+            label: "Folder".into(),
+            entry: None,
         }])
     );
     assert_eq!(c[0].resolved.hostname, "db.example.test");
     assert!(c[0].resolved.identity_files[0].ends_with("/folder_key"));
     assert_eq!(c[0].resolved.identity_files.len(), 1);
+}
+
+// --- password-manager entries linked to hosts ---
+
+fn linked(entry: &str) -> ExternalPasswordRef {
+    ExternalPasswordRef {
+        source_id: "source-1".into(),
+        entry_id: entry.into(),
+        title: entry.into(),
+        username: None,
+    }
+}
+
+#[test]
+fn gives_each_hop_the_entry_linked_to_its_own_alias() {
+    let f = Fixture::new();
+    let doc = f.doc(&lines(&[
+        "Host app",
+        "  HostName app.internal",
+        "  ProxyJump bastion",
+        "Host bastion",
+        "  HostName bastion.example.com",
+    ]));
+    let by_alias = |alias: &str| match alias {
+        "app" => Some(linked("app-entry")),
+        "bastion" => Some(linked("bastion-entry")),
+        _ => None,
+    };
+    // A saved host's entry is never taken for an alias of the same name.
+    let by_profile = |_: &str| Some(linked("profile-entry"));
+    let c = build_chain(
+        &doc,
+        &p("app"),
+        ChainSources {
+            password_ref_for_host: Some(&by_alias),
+            password_ref_for_profile: Some(&by_profile),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(c[0].password_ref, Some(linked("bastion-entry")));
+    assert_eq!(c[1].password_ref, Some(linked("app-entry")));
+
+    // No lookup, no entry.
+    let plain = build_chain(&doc, &p("app"), ChainSources::default()).unwrap();
+    assert!(plain.iter().all(|hop| hop.password_ref.is_none()));
+}
+
+#[test]
+fn gives_a_saved_host_and_a_saved_jump_host_the_entry_linked_to_their_ids() {
+    let f = Fixture::new();
+    let doc = f.doc("Host db.example.test\n  User config-user");
+    let hosts = saved_hosts();
+    let saved_lookup = |id: &str| hosts.get(id).cloned();
+    let by_alias = |_: &str| Some(linked("alias-entry"));
+    let by_profile = |id: &str| Some(linked(&format!("{id}-entry")));
+    let c = build_chain(
+        &doc,
+        &SshProfile {
+            use_config: Some(false),
+            profile_id: Some("saved-1".into()),
+            proxy_jump: Some(vec![saved_host_hop("bastion")]),
+            ..p("db.example.test")
+        },
+        ChainSources {
+            saved_profile: Some(&saved_lookup),
+            password_ref_for_host: Some(&by_alias),
+            password_ref_for_profile: Some(&by_profile),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(c.len(), 2);
+    assert_eq!(c[0].password_ref, Some(linked("bastion-entry")));
+    assert_eq!(c[1].password_ref, Some(linked("saved-1-entry")));
 }

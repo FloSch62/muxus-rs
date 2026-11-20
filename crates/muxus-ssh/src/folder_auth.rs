@@ -9,12 +9,15 @@ use base64::Engine;
 use crate::config::OptionLine;
 use crate::folder_paths::folder_chain;
 use crate::types::FolderAuthSettings;
+use muxus_core::api::ExternalPasswordRef;
 
-/// A folder password candidate in the encrypted vault.
+/// A folder password candidate: in the encrypted vault, or an entry in a password manager.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FolderPasswordRef {
     pub account: String,
     pub label: String,
+    /// The password-manager entry the folder points at; used before a vault copy.
+    pub entry: Option<ExternalPasswordRef>,
 }
 
 /// Folder-inherited connection defaults for one dial target.
@@ -22,7 +25,7 @@ pub struct FolderPasswordRef {
 pub struct FolderAuthDefaults {
     /// Lowest-priority ssh_config option lines; see `resolve_host`'s `fallback`.
     pub option_lines: Vec<OptionLine>,
-    /// Vault password candidates, nearest folder first.
+    /// Password candidates, nearest folder first.
     pub passwords: Vec<FolderPasswordRef>,
 }
 
@@ -121,6 +124,7 @@ pub fn folder_auth_for_group<S: FolderAuthSource + ?Sized>(
             .map(|row| FolderPasswordRef {
                 account: folder_password_account(&row.id),
                 label: folder_password_label(&row.path),
+                entry: row.auth.password_ref.clone(),
             })
             .collect(),
     })

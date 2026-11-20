@@ -232,12 +232,49 @@ fn resolver_collapses_the_ancestor_chain_nearest_first_and_lists_all_passwords()
         vec![
             FolderPasswordRef {
                 account: folder_password_account("row-eu"),
-                label: "Folder Prod/EU".into()
+                label: "Folder Prod/EU".into(),
+                entry: None,
             },
             FolderPasswordRef {
                 account: folder_password_account("row-prod"),
-                label: "Folder Prod".into()
+                label: "Folder Prod".into(),
+                entry: None,
             },
+        ]
+    );
+}
+
+#[test]
+fn resolver_offers_the_password_manager_entry_a_folder_points_at() {
+    let entry = muxus_core::api::ExternalPasswordRef {
+        source_id: "source-1".into(),
+        entry_id: "entry-eu".into(),
+        title: "EU ops".into(),
+        username: Some("ops".into()),
+    };
+    let mut source = Source::new(&[("web", "Prod/EU")]);
+    source
+        .settings
+        .get_mut("prod/eu")
+        .unwrap()
+        .auth
+        .password_ref = Some(entry.clone());
+    let defaults = folder_auth_resolver(Arc::new(source))("web").unwrap();
+    // The entry belongs to its folder: the parent's password stays what it was.
+    assert_eq!(
+        defaults
+            .passwords
+            .iter()
+            .map(|password| (password.label.as_str(), password.entry.clone()))
+            .collect::<Vec<_>>(),
+        [("Folder Prod/EU", Some(entry)), ("Folder Prod", None)]
+    );
+    // It is a way to log in, not an ssh_config option.
+    assert_eq!(
+        by_key(&defaults),
+        vec![
+            ("user".into(), "root".into()),
+            ("port".into(), "2222".into())
         ]
     );
 }

@@ -7,6 +7,9 @@ use std::pin::Pin;
 /// A boxed, sendable future (the callback traits are object safe).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+use std::sync::Arc;
+
+pub use muxus_core::api::ExternalPasswordRef;
 pub use muxus_core::protocol::{
     AuthPromptField as PromptField, AuthPromptInfo, AuthPromptPurpose, AuthPromptResponse,
     HostKeyChallenge, RememberPasswordOffer, TrustState as HostKeyState,
@@ -34,6 +37,19 @@ pub trait ConnectIo: Send + Sync {
     fn prompt(&self, info: AuthPromptInfo) -> BoxFuture<'_, Result<AuthPromptResponse, Cancelled>>;
     /// Ask the user to accept a new or changed host key.
     fn host_key(&self, challenge: HostKeyChallenge) -> BoxFuture<'_, Result<bool, Cancelled>>;
+}
+
+/// The external password managers linked entries are read from (KeePass, 1Password,
+/// Bitwarden, …). The session layer implements it over the managers connected in Settings.
+pub trait LinkedPasswords: Send + Sync {
+    /// The entry's password for a login in progress. A locked manager is unlocked through
+    /// `io`'s own prompt; anything else that goes wrong is said through `io` and gives
+    /// `None`, so the login falls back to the next saved password or to asking.
+    fn password_for<'a>(
+        &'a self,
+        entry: &'a ExternalPasswordRef,
+        io: Arc<dyn ConnectIo>,
+    ) -> BoxFuture<'a, Result<Option<String>, Cancelled>>;
 }
 
 /// Lock state of the password vault.

@@ -808,6 +808,7 @@ fn folder_options(sandbox: &Sandbox, vault: Arc<MemoryVault>) -> ManagerOptions 
             passwords: vec![FolderPasswordRef {
                 account: folder_password_account("row-lab"),
                 label: "Folder Lab".into(),
+                entry: None,
             }],
         })
     }));

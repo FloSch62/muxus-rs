@@ -19,8 +19,9 @@ use russh::{MethodKind, MethodSet};
 use super::chain::ChainHop;
 use super::deadline::PausableDeadline;
 use super::io::{
-    AuthPromptInfo, AuthPromptPurpose, AuthPromptResponse, Cancelled, ConnectIo, PasswordVault,
-    PromptField, RememberPasswordOffer, VaultError,
+    AuthPromptInfo, AuthPromptPurpose, AuthPromptResponse, Cancelled, ConnectIo,
+    ExternalPasswordRef, LinkedPasswords, PasswordVault, PromptField, RememberPasswordOffer,
+    VaultError,
 };
 use super::transport::ClientHandler;
 use crate::certificates::{
@@ -227,11 +228,21 @@ fn possessive_password(label: &str) -> bool {
         .any(|marker| trimmed.strip_suffix(marker).is_some_and(|h| !h.is_empty()))
 }
 
+/// Where a saved password may come from, in the order the ladder tries them.
+enum SavedPasswordSource {
+    /// An entry in an external password manager.
+    Entry(ExternalPasswordRef),
+    /// A password in Muxus's own vault.
+    Vault { account: String, label: String },
+}
+
 /// Everything the ladder needs for one hop.
 pub(crate) struct AuthContext {
     pub hop: ChainHop,
     pub io: Arc<dyn ConnectIo>,
     pub vault: Option<Arc<dyn PasswordVault>>,
+    /// External password managers that linked entries are read from.
+    pub password_managers: Option<Arc<dyn LinkedPasswords>>,
     pub deadline: Arc<PausableDeadline>,
     pub agent: Option<Arc<ResponsiveAgent>>,
     pub env: LocalEnv,
@@ -903,33 +914,66 @@ impl AuthLadder {
         if self.saved_password_attempted {
             return Ok(None);
         }
-        let Some(vault) = self.cx.vault.clone() else {
-            return Ok(None);
-        };
-        // The host's own saved password wins; folder passwords are the shared default the host
-        // falls back to, nearest folder first.
-        let source = if credential.existing {
-            Some((credential.account.clone(), credential.label.clone()))
-        } else {
-            self.cx
-                .hop
-                .folder_passwords
-                .iter()
-                .flatten()
-                .find(|folder| vault.has_ssh_password(&folder.account))
-                .map(|folder| (folder.account.clone(), folder.label.clone()))
-        };
-        let Some((account, label)) = source else {
-            return Ok(None);
-        };
-        self.saved_password_attempted = true;
-        let saved = self.saved_password(&vault, &account, &label).await?;
-        if saved.is_some() {
-            self.cx
-                .io
-                .status(&format!("Using the saved password for {label}."), true);
+        // The host's own password wins: its linked password-manager entry, then its saved
+        // vault password. Folder passwords are the shared default the host falls back to,
+        // nearest folder first.
+        let managers = self.cx.password_managers.clone();
+        let vault = self.cx.vault.clone();
+        let mut sources = Vec::new();
+        if let (Some(entry), Some(_)) = (&self.cx.hop.password_ref, &managers) {
+            sources.push(SavedPasswordSource::Entry(entry.clone()));
         }
-        Ok(saved)
+        if credential.existing {
+            sources.push(SavedPasswordSource::Vault {
+                account: credential.account.clone(),
+                label: credential.label.clone(),
+            });
+        }
+        for folder in self.cx.hop.folder_passwords.iter().flatten() {
+            match (&folder.entry, &managers) {
+                (Some(entry), Some(_)) => sources.push(SavedPasswordSource::Entry(entry.clone())),
+                _ if vault
+                    .as_ref()
+                    .is_some_and(|vault| vault.has_ssh_password(&folder.account)) =>
+                {
+                    sources.push(SavedPasswordSource::Vault {
+                        account: folder.account.clone(),
+                        label: folder.label.clone(),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        for source in sources {
+            self.saved_password_attempted = true;
+            match source {
+                SavedPasswordSource::Entry(entry) => {
+                    let Some(managers) = &managers else { continue };
+                    // Reading may wait on the manager's own approval or unlock prompt.
+                    let read = self
+                        .interact(managers.password_for(&entry, self.cx.io.clone()))
+                        .await;
+                    match read {
+                        Ok(Some(password)) => return Ok(Some(password)),
+                        // An entry that cannot be read leaves the next saved password its turn.
+                        Ok(None) => continue,
+                        Err(Cancelled) => return Err(self.cancel()),
+                    }
+                }
+                SavedPasswordSource::Vault { account, label } => {
+                    let Some(vault) = &vault else { continue };
+                    let saved = self.saved_password(vault, &account, &label).await?;
+                    if saved.is_some() {
+                        self.cx
+                            .io
+                            .status(&format!("Using the saved password for {label}."), true);
+                    }
+                    return Ok(saved);
+                }
+            }
+        }
+        Ok(None)
     }
 
     fn capture_password_candidate(

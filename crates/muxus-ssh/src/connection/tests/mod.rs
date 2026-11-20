@@ -3,6 +3,7 @@
 mod algorithms;
 mod auth;
 mod fallbacks;
+mod linked_passwords;
 mod mux;
 mod security_keys;
 mod session;
