@@ -7,7 +7,7 @@ default-members = ["crates/muxus-app"]
 version = "0.16.0"
 edition = "2024"
 license = "MIT"
-rust-version = "1.99"
+rust-version = "1.100"
 repository = "https://github.com/FloSch62/muxus"
 
 # Each crate declares its own third-party dependencies in its own Cargo.toml.

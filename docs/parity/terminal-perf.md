@@ -357,12 +357,12 @@ DOOM-fire's stream at 72 MB/s on its own, `throughput` with a captured stream), 
 DOOM-fire below xterm.js; parsing off the UI thread would be the next step. kitty-doom is bound
 by the program and the pty.
 
-## Back on the published engine (0.84.0)
+## Back on the published engine (0.84)
 
 Upstream took the patch series in `par-term-emu-core-rust` 0.82.0 (the throughput rework, the
 running terminal's scrollback size, image removal from the scrollback, xterm.js's buffer
 resize, kitty animation frames and the sequence fixes), so the vendored copy and the
-`[patch.crates-io]` entry are gone and `muxus-term` depends on 0.84.0 from crates.io. Upstream
+`[patch.crates-io]` entry are gone and `muxus-term` depends on 0.84.1 from crates.io. Upstream
 keeps the resize and the per-code-point emoji widths behind switches; `Emulator::new` turns on
 both (`set_xterm_resize`, `set_codepoint_widths`). Two changes stayed local and are dropped:
 

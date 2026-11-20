@@ -4,6 +4,7 @@ description = "Network device management: gNMI, gNOI, gNSI, NETCONF"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -37,7 +38,6 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 tokio-stream = "0.1"
 tokio-util = "0.7"
 tonic = { version = "0.14", default-features = false, features = ["codegen"] }
-tonic-prost = "0.14"
 tower-service = "0.3"
 tracing = "0.1"
 webpki-roots = "1"
@@ -48,6 +48,7 @@ h2 = "0.4"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 tonic = { version = "0.14", default-features = false, features = ["codegen", "server", "router"] }
+tonic-prost = "0.14"
 
 [build-dependencies]
 prost = "0.14"

@@ -4,6 +4,7 @@ description = "Theme tokens and shared widgets that reproduce the Muxus look in 
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 build = "build.rs"
 
