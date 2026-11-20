@@ -12,8 +12,12 @@ pub const TREE_ROW_GAP: f32 = 1.0;
 /// geometry: the host tree only mounts the rows near the viewport and sizes the
 /// spacers for the rest from it.
 pub const TREE_ROW_PITCH: f32 = TREE_ROW_HEIGHT + TREE_ROW_GAP;
-pub const TREE_INDENT_STEP: f32 = 14.0;
+pub const TREE_INDENT_STEP: f32 = 18.0;
 pub const TREE_BASE_INSET: f32 = 8.0;
+/// Width of a folder's expand chevron plus the gap after it. Host rows have no
+/// chevron and leave this much space instead, so a host's icon lines up with
+/// the folder icons at its level and sits clearly inside its parent.
+pub const TREE_CHEVRON_SLOT: f32 = 20.0;
 /// Label type: 13px at weight 450 with -0.1px tracking; folders use 550.
 pub const TREE_LABEL_SIZE: f32 = 13.0;
 pub const TREE_LABEL_WEIGHT: f32 = 450.0;
@@ -63,7 +67,7 @@ mod tests {
     #[test]
     fn indents_and_clamps() {
         assert_eq!(indent_px(0), 8.0);
-        assert_eq!(indent_px(2), 36.0);
+        assert_eq!(indent_px(2), 44.0);
         assert_eq!(indent_px(9), indent_px(MAX_INDENT_DEPTH));
     }
 
@@ -80,7 +84,7 @@ mod tests {
                     color: None
                 },
                 IndentGuide {
-                    x: 28.0,
+                    x: 32.0,
                     width: 2.0,
                     color: Some("#ef4444".into())
                 },

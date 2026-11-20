@@ -26,7 +26,7 @@ use muxus_app::sidebar::row_clicks::{
     HostActivation, HostClickOutcome, SidebarOpenGesture, click_opens_row, host_click_outcome,
 };
 use muxus_app::sidebar::row_style::{
-    TREE_ROW_GAP, TREE_ROW_HEIGHT, TREE_ROW_PITCH, indent_guides, indent_px,
+    TREE_CHEVRON_SLOT, TREE_ROW_GAP, TREE_ROW_HEIGHT, TREE_ROW_PITCH, indent_guides, indent_px,
 };
 use muxus_app::sidebar::tree_navigation::focus_after_change;
 use muxus_app::sidebar::tree_selection::{
@@ -1018,11 +1018,17 @@ impl SessionSidebar {
                 let live = self.live.get(&key).copied().unwrap_or_default();
                 let title: SharedString = host.display_name().to_string().into();
                 let group_name: SharedString = format!("host-row-{key}").into();
-                let mut icon_box = div().relative().flex().flex_none().child(icon(
-                    host_kind_icon_name(host.kind()),
-                    16.,
-                    color.unwrap_or(p.text.secondary),
-                ));
+                // No chevron on a host: its icon starts where a folder's icon does.
+                let mut icon_box = div()
+                    .relative()
+                    .flex()
+                    .flex_none()
+                    .ml(px(TREE_CHEVRON_SLOT))
+                    .child(icon(
+                        host_kind_icon_name(host.kind()),
+                        16.,
+                        color.unwrap_or(p.text.secondary),
+                    ));
                 if live.connected + live.connecting > 0 {
                     let dot = if live.connected > 0 {
                         p.success.main
@@ -1373,7 +1379,7 @@ impl SessionSidebar {
 }
 
 /// `treeRowSx`: the shared geometry of every tree row (26px, 1px gaps, 6px
-/// corners, 8px + 14px-per-level indent, indent guides).
+/// corners, 8px + 18px-per-level indent, indent guides).
 pub(crate) fn row_shell(
     id: ElementId,
     depth: usize,
