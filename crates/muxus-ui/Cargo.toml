@@ -9,7 +9,7 @@ rust-version.workspace = true
 build = "build.rs"
 
 [dependencies]
-gpui-kit = { version = "=0.9.1", features = ["assets", "tree-sitter-languages"] }
+gpui-kit = { version = "=0.10.0", features = ["assets", "tree-sitter-languages"] }
 rust-embed = { version = "8.7.2", features = ["interpolate-folder-path"] }
 # Accent folding for the Autocomplete filter (`stripDiacritics`).
 unicode-normalization = "0.1"

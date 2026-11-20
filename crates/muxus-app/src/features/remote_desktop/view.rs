@@ -400,7 +400,7 @@ impl RemoteDesktopView {
         self.dialed.as_ref().unwrap_or(&self.profile)
     }
 
-    /// The pointer the server last asked for. GPUI 0.3.11 can neither show an image cursor
+    /// The pointer the server last asked for. GPUI 0.3.12 can neither show an image cursor
     /// nor hide the pointer, so the view keeps the system arrow over the desktop.
     pub fn cursor(&self) -> &DesktopCursor {
         &self.cursor
