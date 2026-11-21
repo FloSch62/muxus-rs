@@ -133,6 +133,14 @@ db.updateOpenSshMetadata('bastion', { passwordRef: { sourceId: dropped.id, entry
 db.updateOpenSshMetadata('bastion', { passwordRef: null });
 db.updateSavedHostMetadata(ssh.id, { passwordRef: { sourceId: keepass.id, entryId: 'EBESExQVFhcYGRobHB0eHw==', title: 'Core router', username: '' } });
 db.updateSavedHostMetadata(rdp.id, { passwordRef: { sourceId: bitwarden.id, entryId: '6c1d0e7e-3f0a-4b1c-9d2e-5a6b7c8d9e0f', title: 'ci@win-build', username: 'ci' } });
+const lab = db.saveSharedSessionSource({ name: ' Lab hosts ', url: 'https://portal.example.com/lab.mxtsessions', folder: 'Lab/Shared', refreshMinutes: 60 });
+db.applySharedSessions(lab.id, [
+  { id: 'shared-host-1', name: 'leaf1', profile: { kind: 'ssh', target: 'leaf1.lab', useConfig: false, user: 'admin', port: 2222, proxyJump: ['bastion'] }, group: 'Lab/Shared/Fabric', color: '#3b82f6', icon: 'router' },
+  { id: 'shared-host-2', name: 'console', profile: { kind: 'telnet', host: 'console.lab', port: 2001 }, group: 'Lab/Shared' },
+  { id: 'shared-host-3', name: 'jump', profile: { kind: 'ssh', target: 'jump.lab', useConfig: false }, group: 'Elsewhere' },
+], new Date('2026-07-24T12:00:00.000Z'));
+const drive = db.saveSharedSessionSource({ id: 'shared-drive', name: 'Drive', url: '/mnt/share/hosts.muxus-sessions.json', folder: 'Drive', refreshMinutes: 0 });
+db.failSharedSessionCheck(drive.id, ' hosts.muxus-sessions.json was not found. Check the path, and that the drive or share is connected. ');
 const diskSpace = db.saveScript({ id: 'script-df', name: 'Disk space', body: 'df -h\n' });
 db.saveScript({ name: 'uptime', body: 'uptime\n' });
 db.saveScript({ id: diskSpace.id, name: 'Free space', body: 'df -h /\n' });
@@ -202,6 +210,9 @@ const expected = {
   hostInputKeysSaved: db.hostInputKeys({ profileId: telnet.id }),
   hostInputKeysMissing: db.hostInputKeys({ alias: 'missing' }),
   scripts: db.listScripts(),
+  sharedSessionSources: db.listSharedSessionSources(),
+  sharedSessionSource: db.sharedSessionSource(lab.id) ?? null,
+  sharedSessionSourceMissing: db.sharedSessionSource('missing') ?? null,
   passwordManagerSources: db.listPasswordManagerSources(),
   passwordManagerSource: db.passwordManagerSource(bitwarden.id) ?? null,
   passwordManagerSourceRemoved: db.passwordManagerSource(dropped.id) ?? null,
@@ -234,7 +245,7 @@ const expected = {
   desktopIdentity: db.trustedDesktopIdentity('win-build', 3389, 'ssh:bastion'),
   managementRequests: db.listManagementRequests('gnmi', gnmi.id),
   managementShared: db.listManagementRequests('gnmi'),
-  ids: { ssh: ssh.id, telnet: telnet.id, serial: serial.id, rdp: rdp.id, vnc: vnc.id, gnmi: gnmi.id, netconf: netconf.id, web: web.id, tunnel: t1.id, bitwarden: bitwarden.id, pass: dropped.id },
+  ids: { ssh: ssh.id, telnet: telnet.id, serial: serial.id, rdp: rdp.id, vnc: vnc.id, gnmi: gnmi.id, netconf: netconf.id, web: web.id, tunnel: t1.id, bitwarden: bitwarden.id, pass: dropped.id, sharedSource: lab.id },
 };
 db.close();
 writeFileSync(path.join(outDir, 'ts-populated.expected.json'), `${JSON.stringify(b64(expected), null, 1)}\n`);

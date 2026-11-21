@@ -138,6 +138,7 @@ mod migrations {
             "web-hosts",
             "host-system-openssh",
             "password-managers",
+            "shared-sessions",
         ];
         let expected: Vec<(i64, String)> = expected
             .iter()
@@ -269,7 +270,7 @@ mod migrations {
         }
 
         let db = Database::open(&path).unwrap();
-        assert_eq!(db.applied_migrations().unwrap().last().unwrap().version, 38);
+        assert_eq!(db.applied_migrations().unwrap().last().unwrap().version, 39);
         let restored = db.saved_host_profile(&telnet_host.id).unwrap().unwrap();
         assert_eq!(restored.name, "Core switch");
         assert_eq!(restored.metadata.group.as_deref(), Some("Lab"));
@@ -419,7 +420,7 @@ mod migrations {
         let db = Database::open(&path).unwrap();
         assert_eq!(
             db.applied_migrations().unwrap().last().unwrap().name,
-            "password-managers"
+            "shared-sessions"
         );
         assert_eq!(
             db.saved_host_profile(&rdp.id)
@@ -789,6 +790,9 @@ mod migrations {
                 "DELETE FROM schema_migrations WHERE version >= 30;
         DROP TABLE scripts;
         DROP TABLE password_manager_sources;
+        DROP TABLE shared_session_sources;
+        ALTER TABLE connection_profiles DROP COLUMN shared_source_id;
+        ALTER TABLE connection_profiles DROP COLUMN shared_entry_json;
         ALTER TABLE connection_profiles DROP COLUMN password_ref_json;
         ALTER TABLE connection_profiles DROP COLUMN proxy_jump_fallbacks_json;
         ALTER TABLE connection_profiles DROP COLUMN discover_environments;
@@ -822,6 +826,7 @@ mod migrations {
                 (36, "web-hosts"),
                 (37, "host-system-openssh"),
                 (38, "password-managers"),
+                (39, "shared-sessions"),
             ]
             .map(|(version, name)| (version, name.to_owned()))
         );
@@ -1053,7 +1058,7 @@ mod migrations {
         }
 
         let db = Database::open(&path).unwrap();
-        assert_eq!(db.applied_migrations().unwrap().last().unwrap().version, 38);
+        assert_eq!(db.applied_migrations().unwrap().last().unwrap().version, 39);
         let config = db.password_vault_config().unwrap().unwrap().config;
         assert_eq!(config.format_version, 2);
         assert_eq!(
@@ -3274,5 +3279,264 @@ mod password_managers {
         let merged = muxus_store::db::merge_folder_auth([&auth]);
         assert_eq!(merged.user.as_deref(), Some("ops"));
         assert_eq!(merged.password_ref, None);
+    }
+}
+
+/// Migration 39: session lists read from a link, and the hosts each one keeps up to date.
+/// What applying a list does to the hosts is covered by the routes' tests in muxus-session.
+mod shared_sessions {
+    use super::*;
+    use chrono::{DateTime, Duration, Utc};
+    use muxus_core::api::{SharedSessionHost, SharedSessionSourceInput};
+    use muxus_store::db::SharedSessionCheck;
+
+    fn at(text: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(text).unwrap().to_utc()
+    }
+
+    fn link(
+        id: Option<&str>,
+        name: &str,
+        url: &str,
+        folder: &str,
+        minutes: u32,
+    ) -> SharedSessionSourceInput {
+        SharedSessionSourceInput {
+            id: id.map(str::to_owned),
+            name: name.into(),
+            url: url.into(),
+            folder: folder.into(),
+            refresh_minutes: minutes,
+        }
+    }
+
+    fn host(id: &str, group: &str) -> SharedSessionHost {
+        serde_json::from_value(json!({
+            "id": id,
+            "name": id,
+            "group": group,
+            "profile": { "kind": "telnet", "host": format!("{id}.example.net"), "port": 23 },
+        }))
+        .unwrap()
+    }
+
+    fn read(check: Option<SharedSessionCheck>) -> bool {
+        matches!(check, Some(SharedSessionCheck::Read(_)))
+    }
+
+    #[test]
+    fn retries_a_failed_link_sooner_than_its_interval() {
+        let db = memory();
+        let start = at("2026-11-20T08:00:00.000Z");
+        let source = db
+            .save_shared_session_source(
+                &link(
+                    Some("daily"),
+                    "Daily",
+                    "https://portal.example.net/list",
+                    "Daily",
+                    24 * 60,
+                ),
+                start,
+            )
+            .unwrap();
+        let later = |minutes: i64| start + Duration::minutes(minutes);
+        let check = |now| {
+            db.begin_shared_session_check(&source.id, false, now)
+                .unwrap()
+        };
+
+        // Restored with its ID, the link was never read: it is due at once.
+        assert!(read(check(start)));
+        assert_eq!(check(later(60)), Some(SharedSessionCheck::NotDue));
+
+        let failed = db
+            .fail_shared_session_check(&source.id, " portal.example.net could not be found. ")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            failed.last_error.as_deref(),
+            Some("portal.example.net could not be found.")
+        );
+        assert_eq!(check(later(10)), Some(SharedSessionCheck::NotDue));
+        assert!(read(check(later(16))));
+        // Asked for by hand, a link is read whenever.
+        assert!(read(
+            db.begin_shared_session_check(&source.id, true, later(17))
+                .unwrap()
+        ));
+        assert_eq!(
+            db.begin_shared_session_check("missing", true, start)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            db.fail_shared_session_check("missing", "gone").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn reads_a_link_again_at_once_after_its_address_changed() {
+        let db = memory();
+        let now = at("2026-11-20T08:00:00.000Z");
+        let source = db
+            .save_shared_session_source(
+                &link(
+                    Some("lab"),
+                    "Lab",
+                    "https://portal.example.net/old",
+                    "Lab",
+                    60,
+                ),
+                now,
+            )
+            .unwrap();
+        db.begin_shared_session_check(&source.id, false, now)
+            .unwrap();
+
+        db.save_shared_session_source(
+            &link(
+                Some("lab"),
+                "Renamed",
+                "https://portal.example.net/old",
+                "Lab",
+                60,
+            ),
+            now,
+        )
+        .unwrap();
+        assert_eq!(
+            db.begin_shared_session_check(&source.id, false, now)
+                .unwrap(),
+            Some(SharedSessionCheck::NotDue)
+        );
+
+        db.save_shared_session_source(
+            &link(
+                Some("lab"),
+                "Renamed",
+                "https://portal.example.net/new",
+                "Lab",
+                60,
+            ),
+            now,
+        )
+        .unwrap();
+        assert!(read(
+            db.begin_shared_session_check(&source.id, false, now)
+                .unwrap()
+        ));
+    }
+
+    #[test]
+    fn a_link_added_by_hand_counts_as_read_and_an_error_is_cut_to_what_fits() {
+        let db = memory();
+        let now = at("2026-11-20T08:00:00.000Z");
+        let source = db
+            .save_shared_session_source(
+                &link(
+                    None,
+                    "  Lab  ",
+                    "https://portal.example.net/list",
+                    "Lab",
+                    60,
+                ),
+                now,
+            )
+            .unwrap();
+        assert_eq!(source.name, "Lab");
+        assert_eq!(
+            source.last_checked_at.as_deref(),
+            Some("2026-11-20T08:00:00.000Z")
+        );
+        assert_eq!(source.last_synced_at, None);
+        assert_eq!(source.host_count, 0);
+        assert_eq!(
+            db.shared_session_source(&source.id).unwrap(),
+            Some(source.clone())
+        );
+
+        let long = db
+            .fail_shared_session_check(&source.id, &"x".repeat(1500))
+            .unwrap()
+            .unwrap();
+        assert_eq!(long.last_error.map(|error| error.len()), Some(1000));
+        let blank = db
+            .fail_shared_session_check(&source.id, "  ")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            blank.last_error.as_deref(),
+            Some("The shared sessions could not be read.")
+        );
+        assert!(matches!(
+            db.save_shared_session_source(&link(None, " ", "https://x.example", "Lab", 60), now),
+            Err(DbError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn lists_links_by_name_with_the_hosts_each_keeps() {
+        let db = memory();
+        let now = at("2026-11-20T08:00:00.000Z");
+        let zebra = db
+            .save_shared_session_source(
+                &link(None, "zebra", "https://z.example/list", "Z", 60),
+                now,
+            )
+            .unwrap();
+        let alpha = db
+            .save_shared_session_source(&link(None, "Alpha", "https://a.example/list", "A", 0), now)
+            .unwrap();
+        let counts = db
+            .apply_shared_sessions(&zebra.id, &[host("z1", "Z"), host("z2", "Z/Inner")], now)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                counts.added,
+                counts.updated,
+                counts.removed,
+                counts.unchanged
+            ),
+            (2, 0, 0, 0)
+        );
+        assert_eq!(
+            db.apply_shared_sessions("missing", &[host("m", "M")], now)
+                .unwrap(),
+            None
+        );
+
+        let listed = db.list_shared_session_sources().unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|source| (source.name.as_str(), source.host_count))
+                .collect::<Vec<_>>(),
+            [("Alpha", 0), ("zebra", 2)]
+        );
+        assert_eq!(listed[0].id, alpha.id);
+        assert_eq!(
+            listed[1].last_synced_at.as_deref(),
+            Some("2026-11-20T08:00:00.000Z")
+        );
+
+        // A folder renamed around a link takes the link's folder along.
+        db.move_shared_session_folders("Z", "Zoo/Z").unwrap();
+        db.move_shared_session_folders("Nowhere", "Else").unwrap();
+        assert_eq!(
+            db.shared_session_source(&zebra.id).unwrap().unwrap().folder,
+            "Zoo/Z"
+        );
+        assert_eq!(
+            db.shared_session_source(&alpha.id).unwrap().unwrap().folder,
+            "A"
+        );
+
+        // Removing a link takes its hosts along, with what was kept for them alone.
+        assert!(db.delete_shared_session_source(&zebra.id, false).unwrap());
+        assert!(db.list_saved_host_profiles().unwrap().is_empty());
+        assert!(!db.delete_shared_session_source(&zebra.id, false).unwrap());
     }
 }

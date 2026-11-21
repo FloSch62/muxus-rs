@@ -7,7 +7,7 @@ use super::migration_sql as sql;
 use super::{DbError, DbResult};
 
 /// The newest schema version this build knows (the last TypeScript migration).
-pub const SUPPORTED_SCHEMA_VERSION: i64 = 38;
+pub const SUPPORTED_SCHEMA_VERSION: i64 = 39;
 
 /// One row of `schema_migrations`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,6 +230,12 @@ const MIGRATIONS: &[Migration] = &[
         version: 38,
         name: "password-managers",
         step: Step::Sql(sql::MIGRATION_38),
+    },
+    // Session lists read from a link, and the saved hosts each one keeps up to date.
+    Migration {
+        version: 39,
+        name: "shared-sessions",
+        step: Step::Sql(sql::MIGRATION_39),
     },
 ];
 

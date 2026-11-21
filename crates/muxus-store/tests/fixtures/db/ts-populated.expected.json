@@ -151,11 +151,15 @@
   {
    "version": 38,
    "name": "password-managers"
+  },
+  {
+   "version": 39,
+   "name": "shared-sessions"
   }
  ],
  "openSshMetadata": {
   "production": {
-   "profileId": "2PQ3vhPwHPJ1ycEY2exkC",
+   "profileId": "ZEEzRpUThMTALlhFqe-MF",
    "sortOrder": 2,
    "displayName": "Production",
    "group": "Work/EU",
@@ -223,7 +227,7 @@
     ]
    },
    "passwordRef": {
-    "sourceId": "n8yTUSjenhxkQ4hp5_zAb",
+    "sourceId": "2mbcpFnPfOZk3tkeYpuTh",
     "entryId": "AAECAwQFBgcICQoLDA0ODw==",
     "title": "production root",
     "username": "root"
@@ -237,17 +241,17 @@
      "bastion-c"
     ]
    ],
-   "lastConnectedAt": "2026-11-20 22:41:13",
+   "lastConnectedAt": "2026-11-20 23:53:35",
    "connectCount": 1
   },
   "bastion": {
-   "profileId": "PiEZ8zFWBmgI4JAfyMAW9",
+   "profileId": "RpdEgzMdw9uizi4KoedW9",
    "sortOrder": 0,
    "group": "Work/EU",
    "connectCount": 0
   },
   "new-name": {
-   "profileId": "DqvwcY0-gHfCX16I4bcgp",
+   "profileId": "hbteLn8A1mdGB9ZdzsOHq",
    "color": "#ef4444",
    "connectCount": 0
   }
@@ -290,70 +294,108 @@
    "id": "script-df",
    "name": "Free space",
    "body": "df -h /\n",
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   },
   {
-   "id": "zeAvU96wyKV1H58YgdJfp",
+   "id": "XMuJkGM2kcMMoIhD0cpPS",
    "name": "uptime",
    "body": "uptime\n",
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   }
  ],
+ "sharedSessionSources": [
+  {
+   "id": "shared-drive",
+   "name": "Drive",
+   "url": "/mnt/share/hosts.muxus-sessions.json",
+   "folder": "Drive",
+   "refreshMinutes": 0,
+   "hostCount": 0,
+   "lastError": "hosts.muxus-sessions.json was not found. Check the path, and that the drive or share is connected.",
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
+  },
+  {
+   "id": "P2WF5AzAh18UpGh9a9TWn",
+   "name": "Lab hosts",
+   "url": "https://portal.example.com/lab.mxtsessions",
+   "folder": "Lab/Shared",
+   "refreshMinutes": 60,
+   "hostCount": 3,
+   "lastCheckedAt": "2026-07-24T12:00:00.000Z",
+   "lastSyncedAt": "2026-07-24T12:00:00.000Z",
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
+  }
+ ],
+ "sharedSessionSource": {
+  "id": "P2WF5AzAh18UpGh9a9TWn",
+  "name": "Lab hosts",
+  "url": "https://portal.example.com/lab.mxtsessions",
+  "folder": "Lab/Shared",
+  "refreshMinutes": 60,
+  "hostCount": 3,
+  "lastCheckedAt": "2026-07-24T12:00:00.000Z",
+  "lastSyncedAt": "2026-07-24T12:00:00.000Z",
+  "createdAt": "2026-11-20 23:53:35",
+  "updatedAt": "2026-11-20 23:53:35"
+ },
+ "sharedSessionSourceMissing": null,
  "passwordManagerSources": [
   {
-   "id": "eWoBhbyz0MAx5k6T84vKT",
+   "id": "UxEL04oshzqE870EhEb6y",
    "kind": "onepassword",
    "name": "1Password",
    "config": {
     "account": "my.1password.eu"
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   },
   {
-   "id": "n8yTUSjenhxkQ4hp5_zAb",
+   "id": "2mbcpFnPfOZk3tkeYpuTh",
    "kind": "keepass",
    "name": "KeePass – Work",
    "config": {
     "path": "~/Passwords/Work.kdbx",
     "keyFile": "~/Passwords/work.keyx"
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   },
   {
-   "id": "4Ll-I-vxZKrkQOvLbvERB",
+   "id": "30NK2mxl_hfeUvDd6U8Ca",
    "kind": "bitwarden",
    "name": "Vaultwarden",
    "config": {
     "program": "/opt/bw/bw"
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   }
  ],
  "passwordManagerSource": {
-  "id": "4Ll-I-vxZKrkQOvLbvERB",
+  "id": "30NK2mxl_hfeUvDd6U8Ca",
   "kind": "bitwarden",
   "name": "Vaultwarden",
   "config": {
    "program": "/opt/bw/bw"
   },
-  "createdAt": "2026-11-20 22:41:13",
-  "updatedAt": "2026-11-20 22:41:13"
+  "createdAt": "2026-11-20 23:53:35",
+  "updatedAt": "2026-11-20 23:53:35"
  },
  "passwordManagerSourceRemoved": null,
  "passwordRefForAlias": {
-  "sourceId": "n8yTUSjenhxkQ4hp5_zAb",
+  "sourceId": "2mbcpFnPfOZk3tkeYpuTh",
   "entryId": "AAECAwQFBgcICQoLDA0ODw==",
   "title": "production root",
   "username": "root"
  },
  "passwordRefForAliasUnlinked": null,
  "passwordRefForSavedHost": {
-  "sourceId": "4Ll-I-vxZKrkQOvLbvERB",
+  "sourceId": "30NK2mxl_hfeUvDd6U8Ca",
   "entryId": "6c1d0e7e-3f0a-4b1c-9d2e-5a6b7c8d9e0f",
   "title": "ci@win-build",
   "username": "ci"
@@ -361,7 +403,7 @@
  "passwordRefForSavedHostMissing": null,
  "savedHosts": [
   {
-   "id": "E4MS7lcxYWfQFVrVgQ1qJ",
+   "id": "10uCRHPgnnXanOBu_F0FF",
    "kind": "rdp",
    "name": "Build server",
    "profile": {
@@ -383,23 +425,23 @@
      }
     ],
     "shareClipboard": false,
-    "profileId": "E4MS7lcxYWfQFVrVgQ1qJ"
+    "profileId": "10uCRHPgnnXanOBu_F0FF"
    },
    "metadata": {
-    "profileId": "E4MS7lcxYWfQFVrVgQ1qJ",
+    "profileId": "10uCRHPgnnXanOBu_F0FF",
     "passwordRef": {
-     "sourceId": "4Ll-I-vxZKrkQOvLbvERB",
+     "sourceId": "30NK2mxl_hfeUvDd6U8Ca",
      "entryId": "6c1d0e7e-3f0a-4b1c-9d2e-5a6b7c8d9e0f",
      "title": "ci@win-build",
      "username": "ci"
     },
     "connectCount": 0
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   },
   {
-   "id": "Pyt6OQric0vi8yJ7IGJII",
+   "id": "eXoHLXzgtSYQMWkSAv7vA",
    "kind": "serial",
    "name": "Console",
    "profile": {
@@ -411,17 +453,36 @@
     "parity": "even",
     "flowControl": "hardware",
     "breakDurationMs": 500,
-    "profileId": "Pyt6OQric0vi8yJ7IGJII"
+    "profileId": "eXoHLXzgtSYQMWkSAv7vA"
    },
    "metadata": {
-    "profileId": "Pyt6OQric0vi8yJ7IGJII",
+    "profileId": "eXoHLXzgtSYQMWkSAv7vA",
     "connectCount": 0
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   },
   {
-   "id": "KNfewmib331HcTWeoaHlT",
+   "id": "shared-host-2",
+   "kind": "telnet",
+   "name": "console",
+   "profile": {
+    "kind": "telnet",
+    "host": "console.lab",
+    "port": 2001,
+    "profileId": "shared-host-2"
+   },
+   "metadata": {
+    "profileId": "shared-host-2",
+    "group": "Lab/Shared",
+    "sharedSourceId": "P2WF5AzAh18UpGh9a9TWn",
+    "connectCount": 0
+   },
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
+  },
+  {
+   "id": "2xe3hA0p-FDywK0y8Y1PV",
    "kind": "web",
    "name": "Grafana",
    "profile": {
@@ -430,19 +491,38 @@
     "sshGateway": {
      "target": "bastion"
     },
-    "profileId": "KNfewmib331HcTWeoaHlT"
+    "profileId": "2xe3hA0p-FDywK0y8Y1PV"
    },
    "metadata": {
-    "profileId": "KNfewmib331HcTWeoaHlT",
+    "profileId": "2xe3hA0p-FDywK0y8Y1PV",
     "group": "Lab",
     "color": "#22c55e",
     "connectCount": 0
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   },
   {
-   "id": "9GDNU1CKGXKXccuJStd6B",
+   "id": "shared-host-3",
+   "kind": "ssh",
+   "name": "jump",
+   "profile": {
+    "kind": "ssh",
+    "target": "jump.lab",
+    "useConfig": false,
+    "profileId": "shared-host-3"
+   },
+   "metadata": {
+    "profileId": "shared-host-3",
+    "group": "Elsewhere",
+    "sharedSourceId": "P2WF5AzAh18UpGh9a9TWn",
+    "connectCount": 0
+   },
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
+  },
+  {
+   "id": "T8A0NGYKVOFw_xm7_oEBj",
    "kind": "vnc",
    "name": "Lab VM",
    "profile": {
@@ -454,17 +534,17 @@
      "profileId": "saved-ssh"
     },
     "viewOnly": true,
-    "profileId": "9GDNU1CKGXKXccuJStd6B"
+    "profileId": "T8A0NGYKVOFw_xm7_oEBj"
    },
    "metadata": {
-    "profileId": "9GDNU1CKGXKXccuJStd6B",
+    "profileId": "T8A0NGYKVOFw_xm7_oEBj",
     "connectCount": 0
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   },
   {
-   "id": "1PZeG0y3UgkICvHqa-4mT",
+   "id": "jF7Bh_gR3cVY614nsSigi",
    "kind": "gnmi",
    "name": "leaf1",
    "profile": {
@@ -475,44 +555,70 @@
     "tls": "skip-verify",
     "caFile": "/lab/ca.pem",
     "encoding": "json_ietf",
-    "profileId": "1PZeG0y3UgkICvHqa-4mT"
+    "profileId": "jF7Bh_gR3cVY614nsSigi"
    },
    "metadata": {
-    "profileId": "1PZeG0y3UgkICvHqa-4mT",
+    "profileId": "jF7Bh_gR3cVY614nsSigi",
     "connectCount": 0
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   },
   {
-   "id": "RMqNJYl_j5sHxUOxNS_yx",
+   "id": "shared-host-1",
+   "kind": "ssh",
+   "name": "leaf1",
+   "profile": {
+    "kind": "ssh",
+    "target": "leaf1.lab",
+    "useConfig": false,
+    "user": "admin",
+    "port": 2222,
+    "proxyJump": [
+     "bastion"
+    ],
+    "profileId": "shared-host-1"
+   },
+   "metadata": {
+    "profileId": "shared-host-1",
+    "group": "Lab/Shared/Fabric",
+    "color": "#3b82f6",
+    "icon": "router",
+    "sharedSourceId": "P2WF5AzAh18UpGh9a9TWn",
+    "connectCount": 0
+   },
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
+  },
+  {
+   "id": "Z1OUS8DEqbZwwY3-IJEfX",
    "kind": "netconf",
    "name": "leaf1 netconf",
    "profile": {
     "kind": "netconf",
     "host": "leaf1",
     "port": 830,
-    "profileId": "RMqNJYl_j5sHxUOxNS_yx"
+    "profileId": "Z1OUS8DEqbZwwY3-IJEfX"
    },
    "metadata": {
-    "profileId": "RMqNJYl_j5sHxUOxNS_yx",
+    "profileId": "Z1OUS8DEqbZwwY3-IJEfX",
     "connectCount": 0
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   },
   {
-   "id": "ggdeCQj48SkkYTqgnA3TS",
+   "id": "h6Vyq8f4yz73ylgYmfZ5Q",
    "kind": "telnet",
    "name": "Switch",
    "profile": {
     "kind": "telnet",
     "host": "switch.lab",
     "port": 23,
-    "profileId": "ggdeCQj48SkkYTqgnA3TS"
+    "profileId": "h6Vyq8f4yz73ylgYmfZ5Q"
    },
    "metadata": {
-    "profileId": "ggdeCQj48SkkYTqgnA3TS",
+    "profileId": "h6Vyq8f4yz73ylgYmfZ5Q",
     "group": "Lab",
     "pasteCharDelayMs": 5,
     "pastePromptWait": {},
@@ -525,8 +631,8 @@
     "localEcho": true,
     "connectCount": 0
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   },
   {
    "id": "saved-ssh",
@@ -581,19 +687,19 @@
      "steps": []
     },
     "passwordRef": {
-     "sourceId": "n8yTUSjenhxkQ4hp5_zAb",
+     "sourceId": "2mbcpFnPfOZk3tkeYpuTh",
      "entryId": "EBESExQVFhcYGRobHB0eHw==",
      "title": "Core router"
     },
-    "lastConnectedAt": "2026-11-20 22:41:13",
+    "lastConnectedAt": "2026-11-20 23:53:35",
     "connectCount": 1
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   }
  ],
  "savedHost": {
-  "id": "9GDNU1CKGXKXccuJStd6B",
+  "id": "T8A0NGYKVOFw_xm7_oEBj",
   "kind": "vnc",
   "name": "Lab VM",
   "profile": {
@@ -605,14 +711,14 @@
     "profileId": "saved-ssh"
    },
    "viewOnly": true,
-   "profileId": "9GDNU1CKGXKXccuJStd6B"
+   "profileId": "T8A0NGYKVOFw_xm7_oEBj"
   },
   "metadata": {
-   "profileId": "9GDNU1CKGXKXccuJStd6B",
+   "profileId": "T8A0NGYKVOFw_xm7_oEBj",
    "connectCount": 0
   },
-  "createdAt": "2026-11-20 22:41:13",
-  "updatedAt": "2026-11-20 22:41:13"
+  "createdAt": "2026-11-20 23:53:35",
+  "updatedAt": "2026-11-20 23:53:35"
  },
  "workspaceSummaries": [
   {
@@ -620,17 +726,17 @@
    "name": "Daily",
    "isLocked": false,
    "isStartup": true,
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13",
-   "lastOpenedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35",
+   "lastOpenedAt": "2026-11-20 23:53:35"
   },
   {
    "id": "ws-empty",
    "name": "Empty",
    "isLocked": true,
    "isStartup": false,
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   }
  ],
  "workspaces": [
@@ -707,9 +813,9 @@
    ],
    "isLocked": false,
    "isStartup": true,
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13",
-   "lastOpenedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35",
+   "lastOpenedAt": "2026-11-20 23:53:35"
   },
   {
    "id": "ws-empty",
@@ -721,8 +827,8 @@
    "multiExecGroups": [],
    "isLocked": true,
    "isStartup": false,
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   }
  ],
  "latestWorkspace": {
@@ -798,9 +904,9 @@
   ],
   "isLocked": false,
   "isStartup": true,
-  "createdAt": "2026-11-20 22:41:13",
-  "updatedAt": "2026-11-20 22:41:13",
-  "lastOpenedAt": "2026-11-20 22:41:13"
+  "createdAt": "2026-11-20 23:53:35",
+  "updatedAt": "2026-11-20 23:53:35",
+  "lastOpenedAt": "2026-11-20 23:53:35"
  },
  "startupWorkspace": {
   "id": "ws-daily",
@@ -875,15 +981,15 @@
   ],
   "isLocked": false,
   "isStartup": true,
-  "createdAt": "2026-11-20 22:41:13",
-  "updatedAt": "2026-11-20 22:41:13",
-  "lastOpenedAt": "2026-11-20 22:41:13"
+  "createdAt": "2026-11-20 23:53:35",
+  "updatedAt": "2026-11-20 23:53:35",
+  "lastOpenedAt": "2026-11-20 23:53:35"
  },
  "snapshot": {
   "tabId": "tab-1",
   "data": "\u001b[1mbold\u001b[0m\r\n",
   "formatVersion": 2,
-  "updatedAt": "2026-11-20 22:41:13"
+  "updatedAt": "2026-11-20 23:53:35"
  },
  "tunnels": [
   {
@@ -893,8 +999,8 @@
    "bindPort": 1080,
    "autoStart": false,
    "autoReconnect": true,
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   },
   {
    "id": "tunnel-db",
@@ -916,8 +1022,8 @@
    "targetPort": 5432,
    "autoStart": true,
    "autoReconnect": false,
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   }
  ],
  "tunnel": {
@@ -927,8 +1033,8 @@
   "bindPort": 1080,
   "autoStart": false,
   "autoReconnect": true,
-  "createdAt": "2026-11-20 22:41:13",
-  "updatedAt": "2026-11-20 22:41:13"
+  "createdAt": "2026-11-20 23:53:35",
+  "updatedAt": "2026-11-20 23:53:35"
  },
  "policyExact": {
   "profileKey": "ssh:production",
@@ -971,17 +1077,17 @@
  },
  "folders": [
   {
-   "id": "hZr_Vlq4_lzk1bvG4XTDO",
+   "id": "Vh7Iiu49z9ZcPqROQ2TZu",
    "path": "Lab",
    "pathKey": "lab",
    "auth": {
     "user": "root"
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   },
   {
-   "id": "gvS26OsNuwNJth6eOxHwz",
+   "id": "s0DKaXSzgpFaWjyvQjuBw",
    "path": "Work/EU",
    "pathKey": "work/eu",
    "auth": {
@@ -994,7 +1100,7 @@
     "identityAgent": "none",
     "forwardAgent": false,
     "passwordRef": {
-     "sourceId": "n8yTUSjenhxkQ4hp5_zAb",
+     "sourceId": "2mbcpFnPfOZk3tkeYpuTh",
      "entryId": "ICEiIyQlJicoKSorLC0uLw==",
      "title": "EU ops",
      "username": "ops"
@@ -1022,12 +1128,12 @@
      }
     ]
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   }
  ],
  "folder": {
-  "id": "gvS26OsNuwNJth6eOxHwz",
+  "id": "s0DKaXSzgpFaWjyvQjuBw",
   "path": "Work/EU",
   "pathKey": "work/eu",
   "auth": {
@@ -1040,7 +1146,7 @@
    "identityAgent": "none",
    "forwardAgent": false,
    "passwordRef": {
-    "sourceId": "n8yTUSjenhxkQ4hp5_zAb",
+    "sourceId": "2mbcpFnPfOZk3tkeYpuTh",
     "entryId": "ICEiIyQlJicoKSorLC0uLw==",
     "title": "EU ops",
     "username": "ops"
@@ -1068,8 +1174,8 @@
     }
    ]
   },
-  "createdAt": "2026-11-20 22:41:13",
-  "updatedAt": "2026-11-20 22:41:13"
+  "createdAt": "2026-11-20 23:53:35",
+  "updatedAt": "2026-11-20 23:53:35"
  },
  "hostLoginSequenceAlias": {
   "loginSequence": {
@@ -1115,12 +1221,12 @@
   "masterKeyCiphertext": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
   "masterKeyTag": "BAQEBAQEBAQEBAQEBAQEBA==",
   "keyCheck": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=",
-  "createdAt": "2026-11-20 22:41:13",
-  "updatedAt": "2026-11-20 22:41:13"
+  "createdAt": "2026-11-20 23:53:35",
+  "updatedAt": "2026-11-20 23:53:35"
  },
  "sshPasswords": [
   {
-   "id": "Q6EXl9JMcZQdeTfqjXYIu",
+   "id": "o-uoODdHK3Mw0UB48IPPd",
    "provider": "muxus-master-vault",
    "service": "muxus/ssh-password/v1",
    "account": "acct-1",
@@ -1129,13 +1235,13 @@
    "nonce": "BgYGBgYGBgYGBgYG",
    "ciphertext": "Y2lwaGVy",
    "authTag": "BwcHBwcHBwcHBwcHBwcHBw==",
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   }
  ],
  "namedSecrets": [
   {
-   "id": "2t2N9392_TFHcRLjibMbR",
+   "id": "ZSei0VTcdcZDOb3W_31AY",
    "provider": "muxus-master-vault",
    "service": "muxus/named-secret/v1",
    "account": "acct-2",
@@ -1145,8 +1251,8 @@
    "nonce": "CAgICAgICAgICAgI",
    "ciphertext": "ZW5hYmxlLWNpcGhlcg==",
    "authTag": "CQkJCQkJCQkJCQkJCQkJCQ==",
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   }
  ],
  "pendingCleanup": [
@@ -1160,7 +1266,7 @@
   {
    "id": "req-own",
    "protocol": "gnmi",
-   "profileId": "1PZeG0y3UgkICvHqa-4mT",
+   "profileId": "jF7Bh_gR3cVY614nsSigi",
    "name": "Counters",
    "request": {
     "operation": "subscribe",
@@ -1172,8 +1278,8 @@
      "sample": 10
     }
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   },
   {
    "id": "req-shared",
@@ -1185,8 +1291,8 @@
      "/system"
     ]
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   }
  ],
  "managementShared": [
@@ -1200,21 +1306,22 @@
      "/system"
     ]
    },
-   "createdAt": "2026-11-20 22:41:13",
-   "updatedAt": "2026-11-20 22:41:13"
+   "createdAt": "2026-11-20 23:53:35",
+   "updatedAt": "2026-11-20 23:53:35"
   }
  ],
  "ids": {
   "ssh": "saved-ssh",
-  "telnet": "ggdeCQj48SkkYTqgnA3TS",
-  "serial": "Pyt6OQric0vi8yJ7IGJII",
-  "rdp": "E4MS7lcxYWfQFVrVgQ1qJ",
-  "vnc": "9GDNU1CKGXKXccuJStd6B",
-  "gnmi": "1PZeG0y3UgkICvHqa-4mT",
-  "netconf": "RMqNJYl_j5sHxUOxNS_yx",
-  "web": "KNfewmib331HcTWeoaHlT",
+  "telnet": "h6Vyq8f4yz73ylgYmfZ5Q",
+  "serial": "eXoHLXzgtSYQMWkSAv7vA",
+  "rdp": "10uCRHPgnnXanOBu_F0FF",
+  "vnc": "T8A0NGYKVOFw_xm7_oEBj",
+  "gnmi": "jF7Bh_gR3cVY614nsSigi",
+  "netconf": "Z1OUS8DEqbZwwY3-IJEfX",
+  "web": "2xe3hA0p-FDywK0y8Y1PV",
   "tunnel": "tunnel-db",
-  "bitwarden": "4Ll-I-vxZKrkQOvLbvERB",
-  "pass": "CDWvvkViPX7OgWkNSmPUM"
+  "bitwarden": "30NK2mxl_hfeUvDd6U8Ca",
+  "pass": "JWfM7VlxGFxgngIU_2W5W",
+  "sharedSource": "P2WF5AzAh18UpGh9a9TWn"
  }
 }

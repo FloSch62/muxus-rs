@@ -106,6 +106,18 @@ fn reads_match_the_typescript_database_layer() {
         "jumpFallbacksForAlias",
         value(db.jump_fallbacks_for_alias("production").unwrap()),
     );
+    check(
+        "sharedSessionSources",
+        value(db.list_shared_session_sources().unwrap()),
+    );
+    check(
+        "sharedSessionSource",
+        value(db.shared_session_source(&id("sharedSource")).unwrap()),
+    );
+    check(
+        "sharedSessionSourceMissing",
+        value(db.shared_session_source("missing").unwrap()),
+    );
     let source = |row: &PasswordManagerSourceRow| {
         json!({
             "id": row.id,
@@ -313,11 +325,70 @@ fn reads_match_the_typescript_database_layer() {
     );
 }
 
+/// The list the TypeScript build applied to the fixture's link (`generate.mts`).
+fn fixture_list() -> Vec<muxus_core::api::SharedSessionHost> {
+    serde_json::from_value(json!([
+        {
+            "id": "shared-host-1", "name": "leaf1",
+            "profile": {
+                "kind": "ssh", "target": "leaf1.lab", "useConfig": false, "user": "admin",
+                "port": 2222, "proxyJump": ["bastion"],
+            },
+            "group": "Lab/Shared/Fabric", "color": "#3b82f6", "icon": "router",
+        },
+        {
+            "id": "shared-host-2", "name": "console",
+            "profile": { "kind": "telnet", "host": "console.lab", "port": 2001 },
+            "group": "Lab/Shared",
+        },
+        {
+            "id": "shared-host-3", "name": "jump",
+            "profile": { "kind": "ssh", "target": "jump.lab", "useConfig": false },
+            "group": "Elsewhere",
+        },
+    ]))
+    .unwrap()
+}
+
+#[test]
+fn a_list_the_typescript_build_applied_reads_as_unchanged() {
+    // What the list last said about each host is compared as text, so both builds have to
+    // write it the same way, or every check would look like a change.
+    let dir = tempfile::tempdir().unwrap();
+    let db = open_fixture(dir.path());
+    let link = expected()["ids"]["sharedSource"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let now = chrono::DateTime::parse_from_rfc3339("2026-08-01T08:00:00Z")
+        .unwrap()
+        .to_utc();
+    let counts = db
+        .apply_shared_sessions(&link, &fixture_list(), now)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (
+            counts.unchanged,
+            counts.added,
+            counts.updated,
+            counts.removed
+        ),
+        (3, 0, 0, 0)
+    );
+    let source = db.shared_session_source(&link).unwrap().unwrap();
+    assert_eq!(
+        source.last_synced_at.as_deref(),
+        Some("2026-08-01T08:00:00.000Z")
+    );
+    assert_eq!(source.host_count, 3);
+}
+
 /// Every JSON metadata column of a host, in one string per row.
 const METADATA_JSON_SQL: &str = "SELECT COALESCE(keyword_highlights_json, '') || COALESCE(login_sequence_json, '') \
      || COALESCE(paste_prompt_wait_json, '') || COALESCE(anti_idle_json, '') \
      || COALESCE(proxy_jump_fallbacks_json, '') || COALESCE(password_ref_json, '') \
-     FROM connection_profiles ORDER BY id";
+     || COALESCE(shared_entry_json, '') FROM connection_profiles ORDER BY id";
 
 #[test]
 fn stored_json_columns_round_trip_byte_for_byte() {

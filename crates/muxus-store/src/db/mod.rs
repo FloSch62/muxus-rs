@@ -1,7 +1,7 @@
 //! The application database (port of `server/src/persistence/database.ts`).
 //!
 //! One SQLite file, `muxus.sqlite3`, shared with the TypeScript build: the
-//! same schema (created by the same 38 migrations, whose SQL text is copied
+//! same schema (created by the same 39 migrations, whose SQL text is copied
 //! verbatim so a fresh file is identical), the same pragmas, the same row
 //! semantics and JSON columns. A database written by a newer build is refused
 //! with [`DbError::NewerSchema`], exactly as the TypeScript refuses it, so this
@@ -21,6 +21,7 @@ mod migration_sql;
 mod passwords;
 mod scripts;
 mod secrets;
+mod shared_sessions;
 mod tunnels;
 mod workspaces;
 
@@ -41,6 +42,7 @@ pub use logging::DEFAULT_SESSION_LOGGING_POLICY;
 pub use migrate::{AppliedMigration, SUPPORTED_SCHEMA_VERSION};
 pub use passwords::PasswordManagerSourceRow;
 pub use secrets::assert_secret_free;
+pub use shared_sessions::{SharedSessionCheck, SharedSessionCounts};
 pub use workspaces::{DEFAULT_SNAPSHOT_GRACE_SECONDS, StoredWorkspace, WorkspaceInput};
 
 /// Everything that can go wrong in the database layer. The messages match the

@@ -460,6 +460,32 @@ pub(super) const MIGRATION_38: &str = r#"
         CHECK(password_ref_json IS NULL OR json_valid(password_ref_json));
     "#;
 
+/// Migration 39, `shared-sessions`: session lists read from a link, and the saved hosts each
+/// one keeps up to date. No foreign key: a rebuild of connection_profiles would cascade into
+/// it. Removing a link deletes or releases its hosts explicitly.
+pub(super) const MIGRATION_39: &str = r#"
+      CREATE TABLE shared_session_sources (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 200),
+        url TEXT NOT NULL CHECK(length(url) BETWEEN 1 AND 4096),
+        folder TEXT NOT NULL CHECK(length(folder) BETWEEN 1 AND 300),
+        refresh_minutes INTEGER NOT NULL DEFAULT 60 CHECK(refresh_minutes >= 0),
+        last_checked_at TEXT,
+        last_synced_at TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      ) STRICT;
+
+      ALTER TABLE connection_profiles ADD COLUMN shared_source_id TEXT;
+      -- What the list said about the host when it was last applied. A check
+      -- only touches a host whose entry changed, and then only the settings
+      -- that changed, so what the user set on the host stays.
+      ALTER TABLE connection_profiles
+        ADD COLUMN shared_entry_json TEXT
+        CHECK(shared_entry_json IS NULL OR json_valid(shared_entry_json));
+    "#;
+
 /// Migration 22: the kinds connection_profiles admitted before.
 pub(super) const REMOTE_DESKTOP_PREVIOUS_KINDS: &str =
     r#"kind IN ('openssh', 'ssh', 'local', 'serial', 'telnet')"#;

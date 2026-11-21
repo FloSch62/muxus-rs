@@ -22,7 +22,7 @@ use super::{Database, DbError, DbResult, assert_secret_free, optional_string, re
 use crate::ids::nanoid;
 
 /// Kinds stored as Muxus-owned saved hosts (everything but OpenSSH metadata rows).
-const SAVED_HOST_KINDS_SQL: &str =
+pub(super) const SAVED_HOST_KINDS_SQL: &str =
     "('ssh', 'serial', 'telnet', 'rdp', 'vnc', 'gnmi', 'netconf', 'web')";
 
 const METADATA_BY_ALIAS_SQL: &str = "
@@ -53,6 +53,7 @@ const METADATA_BY_ALIAS_SQL: &str = "
         profiles.discover_environments,
         profiles.login_sequence_json,
         profiles.password_ref_json,
+        profiles.shared_source_id,
         profiles.proxy_jump_fallbacks_json,
         profiles.last_connected_at,
         profiles.connect_count,
@@ -102,6 +103,7 @@ struct MetadataRow {
     discover_environments: Option<i64>,
     login_sequence_json: Option<String>,
     password_ref_json: Option<String>,
+    shared_source_id: Option<String>,
     proxy_jump_fallbacks_json: Option<String>,
     last_connected_at: Option<String>,
     connect_count: i64,
@@ -136,6 +138,7 @@ fn metadata_row(row: &Row<'_>) -> rusqlite::Result<MetadataRow> {
         discover_environments: row.get("discover_environments")?,
         login_sequence_json: row.get("login_sequence_json")?,
         password_ref_json: row.get("password_ref_json")?,
+        shared_source_id: row.get("shared_source_id")?,
         proxy_jump_fallbacks_json: row.get("proxy_jump_fallbacks_json")?,
         last_connected_at: row.get("last_connected_at")?,
         connect_count: row.get("connect_count")?,
@@ -185,6 +188,12 @@ impl MetadataRow {
             discover_environments: self.discover_environments.map(|value| value == 1),
             login_sequence: login_sequence_from_json(self.login_sequence_json.as_deref()),
             password_ref: password_ref_from_json(self.password_ref_json.as_deref()),
+            // Only Muxus-owned hosts are kept by a shared session list.
+            shared_source_id: if open_ssh {
+                None
+            } else {
+                optional_string(self.shared_source_id.clone())
+            },
             proxy_jump_fallbacks: if open_ssh {
                 jump_fallbacks_from_json(self.proxy_jump_fallbacks_json.as_deref())
             } else {
@@ -434,7 +443,7 @@ fn ensure_open_ssh_profile(conn: &Connection, alias: &str) -> DbResult<MetadataR
 /// silently create two visually indistinguishable sidebar groups. A spelling
 /// that differs only by case updates the row instead of being discarded, so
 /// renaming a folder to fix its capitalization actually takes effect.
-fn group_id_for_name(conn: &Connection, name: Option<&str>) -> DbResult<Option<String>> {
+pub(super) fn group_id_for_name(conn: &Connection, name: Option<&str>) -> DbResult<Option<String>> {
     let Some(normalized) = name
         .map(muxus_core::js::js_trim)
         .filter(|name| !name.is_empty())
@@ -659,6 +668,109 @@ fn management_request_from_row(
             updated_at,
         })
     })())
+}
+
+/// One Muxus-owned host, on a connection the caller holds.
+pub(super) fn saved_host_on(conn: &Connection, id: &str) -> DbResult<Option<SavedHostProfile>> {
+    let row = conn
+        .query_row(
+            &saved_host_sql("profiles.id = ?"),
+            [id],
+            saved_host_from_row,
+        )
+        .optional()?;
+    row.transpose()
+}
+
+/// Create a Muxus-owned host, or replace the one with the input's id; the id it has.
+pub(super) fn save_saved_host_on(
+    conn: &Connection,
+    input: &SavedHostProfileInput,
+) -> DbResult<String> {
+    require_non_empty(&input.name, "name")?;
+    if let SavedHostSessionProfile::Ssh(ssh) = &input.profile
+        && ssh.use_config != Some(false)
+    {
+        return Err(DbError::Invalid(
+            "Muxus-owned SSH profiles must set useConfig to false".into(),
+        ));
+    }
+    let kind = input.profile.kind();
+    let config = Value::Object(saved_host_config(&input.profile)?);
+    assert_secret_free(&config, "profile.config")?;
+    let id = input.id.clone().unwrap_or_else(nanoid);
+    let name = muxus_core::js::js_trim(&input.name);
+    let current: Option<String> = conn
+        .query_row(
+            "SELECT kind FROM connection_profiles WHERE id = ?",
+            [&id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(current) = current {
+        if SavedHostKind::parse(&current).is_none() {
+            return Err(DbError::Invalid(
+                "profile ID belongs to a different connection type".into(),
+            ));
+        }
+        conn.execute(
+            "
+          UPDATE connection_profiles
+          SET kind = ?, name = ?, native_config_json = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        ",
+            params![kind.as_str(), name, serde_json::to_string(&config)?, id],
+        )?;
+    } else {
+        conn.execute(
+            "
+          INSERT INTO connection_profiles(id, kind, name, native_config_json)
+          VALUES (?, ?, ?, ?)
+        ",
+            params![id, kind.as_str(), name, serde_json::to_string(&config)?],
+        )?;
+    }
+    Ok(id)
+}
+
+/// Write a saved host's Muxus metadata from a patch.
+pub(super) fn update_saved_host_metadata_on(
+    conn: &Connection,
+    id: &str,
+    patch: &OpenSshMetadataPatch,
+) -> DbResult<()> {
+    let current = conn
+        .query_row(&saved_host_sql("profiles.id = ?"), [id], metadata_row)
+        .optional()?
+        .ok_or_else(|| DbError::NotFound("saved host not found".into()))?;
+    let name = match &patch.display_name {
+        Patch::Keep | Patch::Clear => current.name.clone(),
+        Patch::Set(name) => {
+            let trimmed = muxus_core::js::js_trim(name);
+            if trimmed.is_empty() {
+                current.name.clone()
+            } else {
+                trimmed.to_owned()
+            }
+        }
+    };
+    apply_metadata_patch(conn, &current, &name, patch, false)
+}
+
+/// Delete a Muxus-owned host and what was kept for it alone; whether there was one.
+pub(super) fn delete_saved_host_on(conn: &Connection, id: &str) -> DbResult<bool> {
+    let deleted = conn.execute(
+        &format!("DELETE FROM connection_profiles WHERE id = ? AND kind IN {SAVED_HOST_KINDS_SQL}"),
+        [id],
+    )? > 0;
+    if deleted {
+        conn.execute(
+            "DELETE FROM session_logging_policies WHERE profile_key = ?",
+            [format!("profile:{id}")],
+        )?;
+        conn.execute("DELETE FROM management_requests WHERE profile_id = ?", [id])?;
+    }
+    Ok(deleted)
 }
 
 impl Database {
@@ -1012,67 +1124,14 @@ impl Database {
         &self,
         input: &SavedHostProfileInput,
     ) -> DbResult<SavedHostProfile> {
-        require_non_empty(&input.name, "name")?;
-        if let SavedHostSessionProfile::Ssh(ssh) = &input.profile
-            && ssh.use_config != Some(false)
-        {
-            return Err(DbError::Invalid(
-                "Muxus-owned SSH profiles must set useConfig to false".into(),
-            ));
-        }
-        let kind = input.profile.kind();
-        let config = Value::Object(saved_host_config(&input.profile)?);
-        assert_secret_free(&config, "profile.config")?;
-        let id = input.id.clone().unwrap_or_else(nanoid);
-        let name = muxus_core::js::js_trim(&input.name);
-        {
-            let conn = self.lock();
-            let current: Option<String> = conn
-                .query_row(
-                    "SELECT kind FROM connection_profiles WHERE id = ?",
-                    [&id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if let Some(current) = current {
-                if SavedHostKind::parse(&current).is_none() {
-                    return Err(DbError::Invalid(
-                        "profile ID belongs to a different connection type".into(),
-                    ));
-                }
-                conn.execute(
-                    "
-          UPDATE connection_profiles
-          SET kind = ?, name = ?, native_config_json = ?, updated_at = CURRENT_TIMESTAMP
-          WHERE id = ?
-        ",
-                    params![kind.as_str(), name, serde_json::to_string(&config)?, id],
-                )?;
-            } else {
-                conn.execute(
-                    "
-          INSERT INTO connection_profiles(id, kind, name, native_config_json)
-          VALUES (?, ?, ?, ?)
-        ",
-                    params![id, kind.as_str(), name, serde_json::to_string(&config)?],
-                )?;
-            }
-        }
-        self.saved_host_profile(&id)?
-            .ok_or_else(|| DbError::NotFound("saved host not found".into()))
+        let conn = self.lock();
+        let id = save_saved_host_on(&conn, input)?;
+        saved_host_on(&conn, &id)?.ok_or_else(|| DbError::NotFound("saved host not found".into()))
     }
 
     /// One Muxus-owned host.
     pub fn saved_host_profile(&self, id: &str) -> DbResult<Option<SavedHostProfile>> {
-        let conn = self.lock();
-        let row = conn
-            .query_row(
-                &saved_host_sql("profiles.id = ?"),
-                [id],
-                saved_host_from_row,
-            )
-            .optional()?;
-        row.transpose()
+        saved_host_on(&self.lock(), id)
     }
 
     /// Update a saved host's Muxus metadata.
@@ -1081,27 +1140,9 @@ impl Database {
         id: &str,
         patch: &OpenSshMetadataPatch,
     ) -> DbResult<SavedHostProfile> {
-        {
-            let conn = self.lock();
-            let current = conn
-                .query_row(&saved_host_sql("profiles.id = ?"), [id], metadata_row)
-                .optional()?
-                .ok_or_else(|| DbError::NotFound("saved host not found".into()))?;
-            let name = match &patch.display_name {
-                Patch::Keep | Patch::Clear => current.name.clone(),
-                Patch::Set(name) => {
-                    let trimmed = muxus_core::js::js_trim(name);
-                    if trimmed.is_empty() {
-                        current.name.clone()
-                    } else {
-                        trimmed.to_owned()
-                    }
-                }
-            };
-            apply_metadata_patch(&conn, &current, &name, patch, false)?;
-        }
-        self.saved_host_profile(id)?
-            .ok_or_else(|| DbError::NotFound("saved host not found".into()))
+        let conn = self.lock();
+        update_saved_host_metadata_on(&conn, id, patch)?;
+        saved_host_on(&conn, id)?.ok_or_else(|| DbError::NotFound("saved host not found".into()))
     }
 
     /// Count one more connection to a saved host.
@@ -1123,21 +1164,7 @@ impl Database {
 
     /// Delete a saved host with its logging policy and its own saved requests.
     pub fn delete_saved_host_profile(&self, id: &str) -> DbResult<bool> {
-        let conn = self.lock();
-        let deleted = conn.execute(
-            &format!(
-                "DELETE FROM connection_profiles WHERE id = ? AND kind IN {SAVED_HOST_KINDS_SQL}"
-            ),
-            [id],
-        )? > 0;
-        if deleted {
-            conn.execute(
-                "DELETE FROM session_logging_policies WHERE profile_key = ?",
-                [format!("profile:{id}")],
-            )?;
-            conn.execute("DELETE FROM management_requests WHERE profile_id = ?", [id])?;
-        }
-        Ok(deleted)
+        delete_saved_host_on(&self.lock(), id)
     }
 
     /// A host's own login sequence and the folder it lives in. `None` when the

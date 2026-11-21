@@ -12,6 +12,7 @@ mod history;
 mod hosts;
 mod passwords;
 mod scripts;
+mod shared_sessions;
 mod vault;
 mod workspace;
 
@@ -23,6 +24,7 @@ pub use history::*;
 pub use hosts::*;
 pub use passwords::*;
 pub use scripts::*;
+pub use shared_sessions::*;
 pub use vault::*;
 pub use workspace::*;
 

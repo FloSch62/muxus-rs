@@ -554,6 +554,8 @@ pub struct OpenSshProfileMetadata {
     pub login_sequence: Option<LoginSequence>,
     /// Password-manager entry this host logs in with; absent uses saved or folder passwords.
     pub password_ref: Option<ExternalPasswordRef>,
+    /// Shared session list that keeps this host up to date; absent for hosts of your own.
+    pub shared_source_id: Option<String>,
     /// Jump routes tried in order when the ProxyJump in ssh_config fails, each
     /// a whole chain. Kept by Muxus: ssh_config has no way to say it. OpenSSH
     /// aliases only; a saved host keeps them in its profile.
