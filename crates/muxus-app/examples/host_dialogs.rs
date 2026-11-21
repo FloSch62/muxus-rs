@@ -9,7 +9,9 @@
 //! - `MUXUS_THEME=light|dark` (default light)
 //! - `MUXUS_DIALOG_SCENE`: `launch` (Production), `organize` (db-primary),
 //!   `folder` (edit Lab), `folder-new`, `move` (two hosts), `bulk`
-//!   (the Production hosts), `tunnel` (new), `tunnel-edit` (Postgres via bastion)
+//!   (the Production hosts), `tunnel` (new), `tunnel-edit` (Postgres via bastion),
+//!   `shared-link` (follow a list), `shared-link-edit`, `shared-link-error`,
+//!   `share-folder` (Production), `stop-following`
 //! - `MUXUS_WINDOW=fullscreen` fills the monitor
 //! - `MUXUS_DATA_DIR=<dir>` keeps the sandbox there instead of a temp dir
 
@@ -24,6 +26,9 @@ use muxus_app::features::host_editor::dialogs::tunnel::open_tunnel_editor;
 use muxus_app::features::host_editor::logic::folder::FolderDialogState;
 use muxus_app::features::host_editor::logic::tunnel::TunnelEditorState;
 use muxus_app::features::host_editor::palette::demo;
+use muxus_app::features::shared_sessions::dialog::open_shared_sessions_dialog;
+use muxus_app::features::shared_sessions::share::open_share_folder;
+use muxus_app::features::shared_sessions::stop::open_stop_following;
 use muxus_app::hosts::managed::ManagedHost;
 use muxus_app::sidebar::folder_prefs::FolderPrefs;
 use muxus_store::prefs::state::{FolderStyle, ThemeMode};
@@ -72,6 +77,23 @@ fn folder_prefs() -> FolderPrefs {
         );
     }
     prefs
+}
+
+/// A shared sessions link that has hosts, as the dialogs about one show it.
+fn followed_link() -> muxus_core::api::SharedSessionSource {
+    muxus_core::api::SharedSessionSource {
+        id: "lab".into(),
+        name: "Lab hosts".into(),
+        url: "https://portal.example.com/sessions/you.mxtsessions".into(),
+        folder: "Teams/Lab".into(),
+        refresh_minutes: 45,
+        host_count: 12,
+        last_checked_at: None,
+        last_synced_at: None,
+        last_error: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    }
 }
 
 fn main() {
@@ -200,6 +222,35 @@ fn main() {
                             },
                         )
                         .into(),
+                        "shared-link" => {
+                            let dialog =
+                                open_shared_sessions_dialog(backend.clone(), None, window, cx);
+                            dialog.update(cx, |dialog, cx| dialog.set_name("Lab hosts", cx));
+                            dialog.into()
+                        }
+                        "shared-link-edit" => open_shared_sessions_dialog(
+                            backend.clone(),
+                            Some(followed_link()),
+                            window,
+                            cx,
+                        )
+                        .into(),
+                        "shared-link-error" => {
+                            let dialog =
+                                open_shared_sessions_dialog(backend.clone(), None, window, cx);
+                            dialog.update(cx, |dialog, cx| {
+                                dialog.set_link("portal.example.com/sessions/you", cx);
+                                dialog.set_name("Lab hosts", cx);
+                                dialog.set_folder("Teams/Lab", cx);
+                                dialog.submit(window, cx);
+                            });
+                            dialog.into()
+                        }
+                        "share-folder" => {
+                            open_share_folder(backend.clone(), "Production".into(), window, cx)
+                                .into()
+                        }
+                        "stop-following" => open_stop_following(followed_link(), window, cx).into(),
                         _ => open_launch_group(
                             window,
                             cx,

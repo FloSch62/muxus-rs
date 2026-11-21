@@ -38,6 +38,7 @@ use crate::state::tabs::{TabStatus, TerminalTab};
 pub enum LauncherAction {
     NewLocal,
     NewHost,
+    SharedSessions,
     Settings,
     Workspaces,
     History,
@@ -54,6 +55,7 @@ impl LauncherAction {
         match self {
             LauncherAction::NewLocal => "new-local",
             LauncherAction::NewHost => "new-host",
+            LauncherAction::SharedSessions => "shared-sessions",
             LauncherAction::Settings => "settings",
             LauncherAction::Workspaces => "workspaces",
             LauncherAction::History => "history",
@@ -721,6 +723,21 @@ pub fn build_action_results(
             "Add host",
             "Create an SSH, Telnet, serial, RDP, VNC, gNMI, or NETCONF host",
             &["new", "connection", "profile"],
+        ),
+        action_result(
+            LauncherAction::SharedSessions,
+            "Follow shared sessions",
+            "Keep a folder of hosts up to date from a link or a shared file",
+            &[
+                "link",
+                "url",
+                "subscribe",
+                "team",
+                "lab",
+                "mobaxterm",
+                "mxtsessions",
+                "sync",
+            ],
         ),
         action_result(
             LauncherAction::Settings,

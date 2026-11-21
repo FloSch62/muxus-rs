@@ -11,6 +11,8 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use muxus_app::features::shared_sessions::logic::folder_link_tooltip;
+use muxus_app::features::shared_sessions::store::{SharedSessions, link_for_folder};
 use muxus_app::hosts::tree::{BuildOptions, build_host_tree, flatten_visible_tree};
 use muxus_app::hosts::{
     HostTree, ManagedHost, RowNode, VisibleNode, best_managed_host_match, group_managed_hosts,
@@ -134,6 +136,18 @@ pub enum SidebarAction {
         path: String,
         label: String,
     },
+    /// Follow a shared sessions link, or change the one with this ID.
+    FollowLink {
+        source: Option<String>,
+    },
+    /// Read a shared sessions link now.
+    RefreshLink(String),
+    /// Stop following a shared sessions link, after asking what happens to its hosts.
+    StopFollowing(String),
+    /// Write a folder as a session list for others to follow.
+    ShareFolder {
+        path: String,
+    },
     /// Settings → Local shells, on the profile the menu was opened for.
     LocalShellSettings {
         item: Option<String>,
@@ -230,7 +244,11 @@ impl SessionSidebar {
             local_shells: LocalShells::default(),
             writes: 0,
             sessions_menu_key: None,
-            _subscriptions: vec![subscription],
+            _subscriptions: vec![
+                subscription,
+                // A folder that follows a shared sessions link shows how the link is doing.
+                cx.observe_global::<SharedSessions>(|_, cx| cx.notify()),
+            ],
         };
         sidebar.rebuild();
         sidebar
@@ -686,10 +704,19 @@ impl Render for SessionSidebar {
             )
             .child(
                 IconButton::new("add-host", "Add")
-                    .tooltip("Add host")
-                    .on_click(
-                        cx.listener(|_, _, _, cx| cx.emit(SidebarEvent::AddHost { prefill: None })),
-                    ),
+                    .tooltip(if matches!(self.menu, Some(SidebarMenu::Add { .. })) {
+                        ""
+                    } else {
+                        "Add a host, folder or shared sessions link"
+                    })
+                    .on_click(cx.listener(
+                        |this, event: &muxus_ui::gpui_kit::ClickEvent, _, cx| {
+                            this.menu = Some(SidebarMenu::Add {
+                                position: event.mouse_position().unwrap_or_default(),
+                            });
+                            cx.notify();
+                        },
+                    )),
             );
 
         let mut list = div()
@@ -1235,6 +1262,14 @@ impl SessionSidebar {
                 } else {
                     Some("server".into())
                 };
+                // The shared sessions link the folder follows: what its tooltip says and
+                // whether its last check failed.
+                let link = if is_folder {
+                    link_for_folder(&key, cx).map(folder_link_tooltip)
+                } else {
+                    None
+                };
+                let link_failing = link.as_ref().is_some_and(|(_, failing)| *failing);
                 let count = *descendant_host_count;
                 let group_name: SharedString = format!("folder-row-{key}").into();
                 let chevron = icon("ChevronRight", 16., p.text.disabled).with_transformation(
@@ -1253,11 +1288,12 @@ impl SessionSidebar {
                     .cursor_pointer()
                     .child(chevron)
                     .child(icon(
-                        folder_icon_name(icon_id.as_deref(), expanded),
+                        folder_icon_name(icon_id.as_deref(), expanded, link.is_some()),
                         16.,
                         color.unwrap_or(p.text.secondary),
                     ))
                     .child(label_text(label.clone().into(), p.sidebar_ink, 550.).grow())
+                    .children(link_failing.then(|| icon("ErrorOutlineOutlined", 14., p.error.main)))
                     .child(
                         div()
                             .flex_none()
@@ -1360,7 +1396,12 @@ impl SessionSidebar {
                         }),
                     );
                 }
-                if let Some(tooltip) = file_tooltip {
+                let tooltip = if is_folder {
+                    link.map(|(tooltip, _)| tooltip)
+                } else {
+                    file_tooltip
+                };
+                if let Some(tooltip) = tooltip {
                     let anchor = AnchorBounds::default();
                     let placement = if self.on_right {
                         Placement::Left

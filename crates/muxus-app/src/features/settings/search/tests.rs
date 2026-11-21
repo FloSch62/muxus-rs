@@ -123,6 +123,7 @@ const FILE_SECTIONS: &[(&str, SettingsSection)] = &[
     ("view/keyboard.rs", SettingsSection::Keyboard),
     ("view/passwords.rs", SettingsSection::Passwords),
     ("view/data.rs", SettingsSection::Data),
+    ("view/shared_sessions.rs", SettingsSection::Data),
     ("view/debug.rs", SettingsSection::Debug),
 ];
 

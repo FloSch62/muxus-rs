@@ -29,14 +29,15 @@ use muxus_core::api::{
     AntiIdle, FolderAuthSettings, FolderSettingsRecord, HostBlockOptions,
     HostKeywordHighlightConfig, HostOrderRequest, HostUpsertRequest, LoginSequence, ManagedHostRef,
     OpenSshMetadataPatch, OpenSshProfileMetadata, SavedHostProfile, SavedHostProfileInput,
-    SessionLoggingPolicyInput, SshHostEntry, TerminalBackspaceKey, TerminalEnterKey, TunnelInput,
-    TunnelRecord, is_anti_idle, is_jump_routes,
+    SessionLoggingPolicyInput, SharedSessionSourceInput, SshHostEntry, TerminalBackspaceKey,
+    TerminalEnterKey, TunnelInput, TunnelRecord, is_anti_idle, is_jump_routes,
 };
 use muxus_core::collate::locale_compare;
 use muxus_core::input_modes::{TerminalInputModes, apply_terminal_input_modes_patch};
 use muxus_core::js::{self, Patch};
 use muxus_core::paste_pacing::{PastePromptWaitSetting, is_paste_prompt_wait};
 use muxus_core::protocol::SavedHostSessionProfile;
+use muxus_import::saved_profile_folder_defaults;
 use muxus_session::login_sequence::editor::is_login_sequence;
 use muxus_session::routes::folders::FolderSettingsUpsert;
 use muxus_session::{ApiError, Backend};
@@ -228,6 +229,11 @@ impl TransferDocument {
     /// Absent in backups from before folder credentials existed.
     pub fn folder_settings(&self) -> &[Value] {
         self.list("folderSettings")
+    }
+
+    /// Absent in backups from before shared sessions existed.
+    pub fn shared_session_sources(&self) -> &[Value] {
+        self.list("sharedSessionSources")
     }
 
     pub fn preferences(&self) -> &Map<String, Value> {
@@ -485,6 +491,18 @@ pub struct PortableFolderSettings {
     pub login_sequence: Option<LoginSequence>,
 }
 
+/// A shared sessions link. Its hosts are in the backup like any other, and restoring the
+/// link with them lets it go on keeping those hosts up to date.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortableSharedSessionSource {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub folder: String,
+    pub refresh_minutes: u32,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BackupDocumentOut<'a> {
@@ -509,6 +527,8 @@ struct BackupDataOut {
     /// Without the log folder, for the same reason.
     log_file_settings: Map<String, Value>,
     folder_settings: Vec<PortableFolderSettings>,
+    /// The links only: how following each one is going stays behind.
+    shared_session_sources: Vec<PortableSharedSessionSource>,
 }
 
 /// Read the lightweight counts shown in Settings without downloading the
@@ -573,6 +593,7 @@ pub async fn create_backup_document(
         backend.folder_settings(),
     )
     .await?;
+    let shared_sessions = backend.shared_session_sources().await?;
     let prefs = backend.prefs().await?;
 
     let document = BackupDocumentOut {
@@ -595,6 +616,17 @@ pub async fn create_backup_document(
                     path: folder.path,
                     auth: folder.auth,
                     login_sequence: folder.login_sequence,
+                })
+                .collect(),
+            shared_session_sources: shared_sessions
+                .sources
+                .into_iter()
+                .map(|source| PortableSharedSessionSource {
+                    id: source.id,
+                    name: source.name,
+                    url: source.url,
+                    folder: source.folder,
+                    refresh_minutes: source.refresh_minutes,
                 })
                 .collect(),
         },
@@ -732,43 +764,6 @@ fn portable_saved_ssh_options(
         strict_host_key_checking: saved.strict_host_key_checking,
         extras: None,
     }
-}
-
-/// Materialize the non-secret defaults a saved profile inherits in Muxus,
-/// nearest folder first, and whether any of those folders has a password.
-fn saved_profile_folder_defaults(
-    group: Option<&str>,
-    folders: &[FolderSettingsRecord],
-) -> (FolderAuthSettings, bool) {
-    let normalized = group.unwrap_or_default().replace('\\', "/");
-    let parts: Vec<&str> = normalized
-        .split('/')
-        .map(js::js_trim)
-        .filter(|part| !part.is_empty())
-        .collect();
-    let mut auth = FolderAuthSettings::default();
-    let mut has_password = false;
-    if parts.is_empty() {
-        return (auth, has_password);
-    }
-    let by_path: HashMap<String, &FolderSettingsRecord> = folders
-        .iter()
-        .map(|folder| (folder.path.to_lowercase(), folder))
-        .collect();
-    for length in (1..=parts.len()).rev() {
-        let Some(folder) = by_path.get(&parts[..length].join("/").to_lowercase()) else {
-            continue;
-        };
-        has_password |= folder.has_password;
-        let from = &folder.auth;
-        auth.user = auth.user.or_else(|| from.user.clone());
-        auth.port = auth.port.or(from.port);
-        auth.identity_files = auth.identity_files.or_else(|| from.identity_files.clone());
-        auth.identities_only = auth.identities_only.or(from.identities_only);
-        auth.identity_agent = auth.identity_agent.or_else(|| from.identity_agent.clone());
-        auth.forward_agent = auth.forward_agent.or(from.forward_agent);
-    }
-    (auth, has_password)
 }
 
 /// A Host alias from a saved host's name (or its target): runs of blanks and
@@ -934,6 +929,13 @@ pub async fn restore_transfer_document(
         restore_connections(backend, data, conflicts, &mut result).await?;
         restore_folder_settings(backend, document.folder_settings(), conflicts, &mut result)
             .await?;
+        restore_shared_session_sources(
+            backend,
+            document.shared_session_sources(),
+            conflicts,
+            &mut result,
+        )
+        .await?;
     }
 
     if selection.tunnels {
@@ -1141,6 +1143,64 @@ async fn restore_folder_settings(
             .put_folder_settings(folder_settings_upsert(entry)?)
             .await?;
         if exists {
+            result.updated += 1;
+        } else {
+            result.added += 1;
+        }
+    }
+    Ok(())
+}
+
+/// Links come back under their own ID: the hosts restored next to them carry IDs derived
+/// from it, so the next check takes those hosts over instead of adding a second copy of
+/// each.
+async fn restore_shared_session_sources(
+    backend: &Backend,
+    entries: &[Value],
+    conflicts: TransferConflictStrategy,
+    result: &mut RestoreResult,
+) -> Result<(), TransferError> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let current = backend.shared_session_sources().await?;
+    let existing_ids: HashSet<&str> = current
+        .sources
+        .iter()
+        .map(|source| source.id.as_str())
+        .collect();
+    for entry in entries {
+        // Checked when the file was read: every one of these is there.
+        let text = |key: &str| {
+            entry
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let id = text("id");
+        let exists = existing_ids.contains(id.as_str());
+        if exists && conflicts == TransferConflictStrategy::Keep {
+            result.skipped += 1;
+            continue;
+        }
+        let saved = backend
+            .save_shared_session_source(SharedSessionSourceInput {
+                id: Some(id),
+                name: text("name"),
+                url: text("url"),
+                folder: text("folder"),
+                refresh_minutes: entry
+                    .get("refreshMinutes")
+                    .and_then(Value::as_f64)
+                    .unwrap_or_default() as u32,
+            })
+            .await;
+        // A link this computer cannot use, such as a file path of another system, is left
+        // out rather than failing the restore. Its hosts are restored like any others.
+        if saved.is_err() {
+            result.skipped += 1;
+        } else if exists {
             result.updated += 1;
         } else {
             result.added += 1;

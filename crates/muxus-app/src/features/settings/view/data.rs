@@ -38,6 +38,8 @@ pub struct DataState {
     pub busy: Option<Busy>,
     pub drag_active: bool,
     loaded: bool,
+    /// The count of shared sessions checks the summary was read at.
+    shared_applied: u64,
 }
 
 /// `RestoreReviewDialog`'s state.
@@ -52,6 +54,9 @@ pub struct RestoreReview {
 impl SettingsWindow {
     fn load_data_section(&mut self, cx: &mut Context<Self>) {
         self.state.data.loaded = true;
+        self.state.data.shared_applied = crate::features::shared_sessions::store::applied(cx);
+        // The links are read and changed outside this window too.
+        crate::features::shared_sessions::store::refresh(&self.backend, cx);
         self.state.data.summary_loading = true;
         let backend = self.backend.clone();
         self.fetch(
@@ -71,7 +76,26 @@ impl SettingsWindow {
         );
     }
 
+    /// Count the connections again: a shared sessions link added or removed hosts.
+    fn reload_data_summary(&mut self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        self.fetch(
+            cx,
+            async move { Ok(data_transfer::fetch_data_summary(&backend).await.ok()) },
+            |this, result, _| {
+                if let Ok(Some(summary)) = result {
+                    this.state.data.summary = Some(summary);
+                }
+            },
+        );
+    }
+
     pub fn data_section(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let applied = crate::features::shared_sessions::store::applied(cx);
+        if self.state.data.loaded && self.state.data.shared_applied != applied {
+            self.state.data.shared_applied = applied;
+            self.reload_data_summary(cx);
+        }
         if !self.state.data.loaded {
             self.load_data_section(cx);
         }
@@ -180,6 +204,7 @@ impl SettingsWindow {
                 .on_click(cx.listener(|this, _, _, cx| this.export_openssh(cx))),
             )
             .render();
+        let shared_sessions = self.shared_sessions_group(&theme, cx);
         let import = |source: SessionImportSource, id: &'static str, icon_name: &'static str| {
             Button::new(id, "Import sessions")
                 .outlined()
@@ -202,9 +227,10 @@ impl SettingsWindow {
             .mt(px(-12.))
             .child(div().mt(px(2.)).child(icon("LockOutlined", 15., p.text.secondary)))
             .child(
-                div().flex_1().child(
+                // The longer sentence wraps inside the page's column.
+                div().flex_1().min_w_0().child(
                     paragraph(
-                        "Backups never include private key files, passwords or recorded session history. Key file paths are kept so profiles still know where to look.",
+                        "Backups never include private key files, passwords or recorded session history. Key file paths are kept so profiles still know where to look, and the links of your shared sessions are included.",
                     )
                     .size(CAPTION)
                     .line_height(snap(CAPTION * 1.66))
@@ -252,6 +278,7 @@ impl SettingsWindow {
                             .render(),
                     )
                     .render(&theme),
+                shared_sessions,
                 note.into_any_element(),
             ],
         )

@@ -810,6 +810,7 @@ fn result_icon(result: &LauncherResult, theme: &Theme) -> (&'static str, Ink) {
                 LauncherAction::Environments => "ViewInArOutlined",
                 LauncherAction::Sftp => "FolderOutlined",
                 LauncherAction::NewHost => "DnsOutlined",
+                LauncherAction::SharedSessions => "FolderSharedOutlined",
                 LauncherAction::NewLocal | LauncherAction::FindTerminal => "TerminalOutlined",
             },
             Ink::Default,

@@ -635,6 +635,22 @@ pub static SETTINGS_SEARCH_INDEX: &[SettingsSearchEntry] = &[
         "SecureCRT",
         &["import sessions", "migrate", "button bar"],
     ),
+    group(
+        Data,
+        "Shared sessions",
+        &[
+            "link",
+            "url",
+            "subscribe",
+            "shared hosts",
+            "lab",
+            "team",
+            "mobaxterm",
+            "mxtsessions",
+            "auto update",
+            "sync",
+        ],
+    ),
     // Debug
     bare_row(
         Debug,

@@ -594,6 +594,14 @@ impl AppShell {
             SidebarAction::DeleteFolder { key, path, label } => {
                 self.request_delete_folder(key, path, label, window, cx)
             }
+            SidebarAction::FollowLink { source } => {
+                self.open_shared_sessions_link(source, window, cx)
+            }
+            SidebarAction::RefreshLink(id) => self.refresh_shared_sessions(&id, cx),
+            SidebarAction::StopFollowing(id) => {
+                self.stop_following_shared_sessions(&id, window, cx)
+            }
+            SidebarAction::ShareFolder { path } => self.open_share_folder(path, window, cx),
             SidebarAction::LocalShellSettings { item } => self.open_settings(
                 Some(SettingsTarget {
                     section: SettingsSection::LocalShells,

@@ -31,6 +31,7 @@ pub mod logging;
 pub mod passwords;
 pub mod scheme;
 pub mod search;
+pub mod shared_sessions;
 pub mod shortcuts;
 pub mod state;
 pub mod terminal;

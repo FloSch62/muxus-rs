@@ -117,6 +117,21 @@ pub fn with_active_shell(
 /// `SettingsPrefs::init`.
 pub fn install(backend: &Backend, cx: &mut App) {
     muxus_app::features::launcher::kit::set_toast_hook(toast_with_details, cx);
+    // Shared sessions links are read when they are due, and every window shows the hosts a
+    // check added, changed or removed.
+    muxus_app::features::shared_sessions::store::start(backend, cx);
+    let mut applied = 0;
+    cx.observe_global::<muxus_app::features::shared_sessions::store::SharedSessions>(move |cx| {
+        let now = muxus_app::features::shared_sessions::store::applied(cx);
+        if now == applied {
+            return;
+        }
+        applied = now;
+        for shell in shells(cx) {
+            shell.update(cx, |shell, cx| shell.load_catalog(cx));
+        }
+    })
+    .detach();
     // The interface scale is one preference for every window (`applyInterfaceZoom`).
     if let Some(shared) = SettingsPrefs::global(cx) {
         let zoom = shared.read(cx).prefs().interface_zoom;

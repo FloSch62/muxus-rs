@@ -1696,7 +1696,7 @@ fn dialog_label(dialog_: &Option<SectionDialog>) -> String {
     }
 }
 
-fn empty_list(theme: &Theme, text: &str) -> AnyElement {
+pub(super) fn empty_list(theme: &Theme, text: &str) -> AnyElement {
     div()
         .px(px(16.))
         .py(px(20.))
@@ -1710,7 +1710,7 @@ fn empty_list(theme: &Theme, text: &str) -> AnyElement {
         .into_any_element()
 }
 
-fn bordered(theme: &Theme, border: bool, element: AnyElement) -> AnyElement {
+pub(super) fn bordered(theme: &Theme, border: bool, element: AnyElement) -> AnyElement {
     div()
         .when(border, |d| {
             d.border_t_1().border_color(theme.palette.divider)

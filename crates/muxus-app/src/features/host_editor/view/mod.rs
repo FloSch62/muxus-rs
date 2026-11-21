@@ -59,6 +59,7 @@ use super::logic::web_draft::{
 use super::services::{self, ConnectTarget, EditorData};
 use super::widgets::inputs::{InputCache, Menus};
 use super::widgets::shell::{SectionTab, ShellProps, confirm_paper, editor_shell};
+use crate::features::shared_sessions::{self, logic::shared_host_caption};
 use crate::hosts::managed::ManagedHost;
 use form::Form;
 
@@ -614,7 +615,13 @@ impl HostEditor {
         }
     }
 
-    fn storage_caption(&self) -> String {
+    fn storage_caption(&self, cx: &App) -> String {
+        // A host a shared sessions link keeps up to date says so instead.
+        if let HostEditorTarget::Edit(ManagedHost::Profile(entry)) = &self.target
+            && let Some(link) = &entry.metadata.shared_source_id
+        {
+            return shared_host_caption(shared_sessions::store::link_name(link, cx));
+        }
         match self.kind {
             SavedHostKind::Ssh if self.ssh.storage == Storage::Muxus => {
                 "Saved in Muxus app data — ssh_config is unchanged".into()
@@ -1135,7 +1142,7 @@ impl Render for HostEditor {
         let deletable = self.editing();
         let props = ShellProps {
             title: self.title().into(),
-            storage: self.storage_caption().into(),
+            storage: self.storage_caption(cx).into(),
             kind: self.is_new().then_some(self.kind),
             on_kind: self.is_new().then(|| {
                 std::rc::Rc::new(move |next: SavedHostKind, _: &mut Window, cx: &mut App| {

@@ -16,6 +16,8 @@
 //! - `MUXUS_SETTINGS_PASSWORD_MANAGERS=1` connects a few password managers (a KeePass
 //!   database among them); `=connect` also opens the connect dialog, `=edit` the edit
 //!   dialog of the database and `=unlock` its unlock dialog
+//! - `MUXUS_SETTINGS_SHARED_SESSIONS=1` follows a few shared sessions links: one read from
+//!   a file, one whose address answers nothing, one never read
 //! - `MUXUS_WINDOW=fullscreen` fills the monitor (as the capture viewport does)
 //! - `MUXUS_DATA_DIR=<dir>` keeps the sandbox there instead of a temp dir
 
@@ -196,6 +198,60 @@ async fn seed_password_managers(backend: &Backend) {
     }
 }
 
+/// Follow a few lists: one from a file with three hosts, one that cannot be reached, and
+/// one restored from a backup that was never read.
+async fn seed_shared_sessions(backend: &Backend, scratch: &std::path::Path) {
+    let file = scratch.join("team.muxus-sessions.json");
+    let list = serde_json::json!({
+        "format": "muxus-shared-sessions",
+        "version": 1,
+        "hosts": [
+            { "id": "leaf-01", "name": "leaf-01", "folder": "Fabric",
+              "profile": { "kind": "ssh", "target": "leaf-01.lab.example.net" } },
+            { "id": "leaf-02", "name": "leaf-02", "folder": "Fabric",
+              "profile": { "kind": "ssh", "target": "leaf-02.lab.example.net" } },
+            { "id": "console", "name": "console",
+              "profile": { "kind": "telnet", "host": "console.lab.example.net", "port": 2001 } },
+        ],
+    });
+    let _ = std::fs::write(&file, list.to_string());
+    for (link, read) in [
+        (
+            serde_json::json!({
+                "name": "Team lab", "url": file.to_string_lossy(),
+                "folder": "Teams/Lab", "refreshMinutes": 60,
+            }),
+            true,
+        ),
+        (
+            serde_json::json!({
+                "name": "Portal sessions", "url": "http://127.0.0.1:9/sessions/you.mxtsessions",
+                "folder": "Portal", "refreshMinutes": 15,
+            }),
+            true,
+        ),
+        (
+            serde_json::json!({
+                "id": "restored", "name": "Field sites",
+                "url": "https://git.example.com/ops/hosts/raw/main/sites.json",
+                "folder": "Sites", "refreshMinutes": 0,
+            }),
+            false,
+        ),
+    ] {
+        let Ok(input) = serde_json::from_value(link) else {
+            continue;
+        };
+        match backend.save_shared_session_source(input).await {
+            Ok(source) if read => {
+                let _ = backend.sync_shared_sessions(&source.id, true).await;
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("could not follow a shared sessions link: {error}"),
+        }
+    }
+}
+
 fn main() {
     let mode = match std::env::var("MUXUS_THEME").as_deref() {
         Ok("dark") => ThemeMode::Dark,
@@ -214,6 +270,8 @@ fn main() {
     let fullscreen = std::env::var("MUXUS_WINDOW").is_ok_and(|value| value == "fullscreen");
     let password_managers = std::env::var("MUXUS_SETTINGS_PASSWORD_MANAGERS").ok();
     let seed_managers = password_managers.is_some();
+    let shared_sessions =
+        std::env::var("MUXUS_SETTINGS_SHARED_SESSIONS").is_ok_and(|value| value == "1");
 
     let scratch = scratch_dir();
     let home = scratch.join("home");
@@ -228,6 +286,9 @@ fn main() {
         seed_demo(&backend).await;
         if seed_managers {
             seed_password_managers(&backend).await;
+        }
+        if shared_sessions {
+            seed_shared_sessions(&backend, &scratch).await;
         }
         // Logging is off on a fresh install; the demo turns it on.
         let _ = backend

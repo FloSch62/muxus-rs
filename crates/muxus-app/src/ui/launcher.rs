@@ -117,6 +117,7 @@ impl AppShell {
         match action {
             LauncherAction::NewLocal => self.open_local(None, cx),
             LauncherAction::NewHost => self.add_host(None, window, cx),
+            LauncherAction::SharedSessions => self.open_shared_sessions_link(None, window, cx),
             LauncherAction::Settings => self.open_settings(None, cx),
             LauncherAction::Workspaces => self.open_workspaces(window, cx),
             LauncherAction::History => self.open_history("", None, window, cx),

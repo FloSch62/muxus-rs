@@ -402,7 +402,7 @@ impl Render for FolderDialog {
                     .rounded(px(theme.radius * 1.5))
                     .bg(p.sidebar)
                     .child(icon(
-                        folder_icon_name(self.draft.icon.as_deref(), true),
+                        folder_icon_name(self.draft.icon.as_deref(), true, false),
                         18.,
                         accent.unwrap_or(p.text.secondary),
                     ))

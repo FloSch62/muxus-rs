@@ -19,6 +19,7 @@ use muxus_ui::widgets::menu::{self, MenuItem, menu_divider};
 
 use crate::ui::sidebar::{SessionSidebar, SidebarAction, SidebarEvent};
 use muxus_app::features::host_editor::view::NewHost;
+use muxus_app::features::shared_sessions::store::{is_reading, link_for_folder};
 use muxus_app::hosts::tree::collect_hosts;
 
 /// Which context menu is showing, and where.
@@ -33,6 +34,10 @@ pub enum SidebarMenu {
         position: Point<Pixels>,
     },
     Panel {
+        position: Point<Pixels>,
+    },
+    /// What the header's + adds (`AddMenu.tsx`).
+    Add {
         position: Point<Pixels>,
     },
     /// Right-click on Local terminal, a saved shell profile or a WSL distribution.
@@ -438,6 +443,9 @@ impl SessionSidebar {
                             .collect()
                     })
                     .unwrap_or_default();
+                // The shared sessions link this folder follows, when it follows one.
+                let link = link_for_folder(&key, cx).map(|link| link.id.clone());
+                let link_busy = link.as_ref().is_some_and(|id| is_reading(id, cx));
                 let paper = menu::paper(theme)
                     .child(
                         MenuItem::new("folder-launch", launch)
@@ -470,6 +478,28 @@ impl SessionSidebar {
                             )),
                     )
                     .child(menu_divider(theme))
+                    .children(link.clone().map(|id| {
+                        MenuItem::new(
+                            "folder-refresh-link",
+                            if link_busy {
+                                "Reading shared sessions…"
+                            } else {
+                                "Refresh shared sessions"
+                            },
+                        )
+                        .icon("Refresh")
+                        .disabled(link_busy)
+                        .on_click(Self::action(SidebarAction::RefreshLink(id), cx))
+                    }))
+                    .children(link.clone().map(|id| {
+                        MenuItem::new("folder-edit-link", "Edit shared sessions link…")
+                            .icon("LinkOutlined")
+                            .on_click(Self::action(
+                                SidebarAction::FollowLink { source: Some(id) },
+                                cx,
+                            ))
+                    }))
+                    .children(link.is_some().then(|| menu_divider(theme)))
                     .child(
                         MenuItem::new("folder-up", "Move up")
                             .icon("KeyboardArrowUp")
@@ -532,9 +562,24 @@ impl SessionSidebar {
                                 this.collapse_subtree(&collapse_key, cx);
                             })),
                     )
-                    .child(menu_divider(theme))
                     .child(
-                        MenuItem::new("folder-delete", "Delete folder")
+                        MenuItem::new("folder-share", "Share folder…")
+                            .icon("IosShareOutlined")
+                            .disabled(count == 0)
+                            .on_click(Self::action(
+                                SidebarAction::ShareFolder { path: path.clone() },
+                                cx,
+                            )),
+                    )
+                    .child(menu_divider(theme))
+                    .child(match link {
+                        // Deleting the folder would only last until the next check brings
+                        // it back.
+                        Some(id) => MenuItem::new("folder-stop-following", "Stop following…")
+                            .icon("LinkOffOutlined")
+                            .destructive()
+                            .on_click(Self::action(SidebarAction::StopFollowing(id), cx)),
+                        None => MenuItem::new("folder-delete", "Delete folder")
                             .icon("DeleteOutlined")
                             .destructive()
                             .on_click(Self::action(
@@ -545,7 +590,7 @@ impl SessionSidebar {
                                 },
                                 cx,
                             )),
-                    );
+                    });
                 (position, paper)
             }
             SidebarMenu::Panel { position } => {
@@ -574,6 +619,11 @@ impl SessionSidebar {
                             .disabled(!folder_edits)
                             .on_click(Self::action(SidebarAction::NewFolder { parent: None }, cx)),
                     )
+                    .child(
+                        MenuItem::new("panel-follow-link", "Shared sessions link…")
+                            .icon("FolderSharedOutlined")
+                            .on_click(Self::action(SidebarAction::FollowLink { source: None }, cx)),
+                    )
                     .child(menu_divider(theme))
                     .child(
                         MenuItem::new("panel-sort", "Sort all hosts alphabetically")
@@ -590,6 +640,33 @@ impl SessionSidebar {
                                 cx.emit(SidebarEvent::MoveSidebar);
                                 cx.notify();
                             })),
+                    );
+                (position, paper)
+            }
+            SidebarMenu::Add { position } => {
+                // The host stays first, so + and Enter is all it takes. Folder paths are
+                // rewritten across the full list, never a filtered one.
+                let folder_edits = self.reorder_enabled();
+                let paper = menu::paper(theme)
+                    .child(
+                        MenuItem::new("add-new-host", "New host…")
+                            .icon("DnsOutlined")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.menu = None;
+                                cx.emit(SidebarEvent::AddHost { prefill: None });
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        MenuItem::new("add-new-folder", "New folder…")
+                            .icon("CreateNewFolderOutlined")
+                            .disabled(!folder_edits)
+                            .on_click(Self::action(SidebarAction::NewFolder { parent: None }, cx)),
+                    )
+                    .child(
+                        MenuItem::new("add-follow-link", "Shared sessions link…")
+                            .icon("FolderSharedOutlined")
+                            .on_click(Self::action(SidebarAction::FollowLink { source: None }, cx)),
                     );
                 (position, paper)
             }

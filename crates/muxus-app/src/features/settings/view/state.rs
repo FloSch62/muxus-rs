@@ -107,6 +107,8 @@ pub struct SectionState {
     >,
     /// A password manager is being locked.
     pub manager_busy: bool,
+    /// The dialog that follows a shared sessions link, changes one or stops following one.
+    pub shared_sessions: Option<super::shared_sessions::SharedSessionsModal>,
     /// Installed WSL distributions (Windows), read when Local shells opens.
     pub wsl: Option<super::window::Load<Vec<muxus_core::api::WslDistribution>>>,
     pub update: super::about::UpdateState,
@@ -163,6 +165,9 @@ impl SectionState {
             return true;
         }
         if self.manager_dialog.take().is_some() || self.manager_unlock.take().is_some() {
+            return true;
+        }
+        if self.shared_sessions.take().is_some() {
             return true;
         }
         self.dialog.take().is_some()

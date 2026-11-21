@@ -198,6 +198,10 @@ impl SettingsWindow {
             cx.observe_global::<crate::features::password_managers::store::PasswordManagerList>(
                 |_, cx| cx.notify(),
             ),
+            // Backup & data lists the shared sessions links as they stand.
+            cx.observe_global::<crate::features::shared_sessions::store::SharedSessions>(
+                |_, cx| cx.notify(),
+            ),
             cx.observe_window_appearance(window, |this, _, cx| {
                 let prefs = this.prefs.clone();
                 prefs.update(cx, |model, cx| model.apply_theme(cx));
@@ -1175,6 +1179,12 @@ impl Render for SettingsWindow {
             .children(dialogs)
             .children(self.state.manager_dialog.clone())
             .children(self.state.manager_unlock.clone())
+            .children(
+                self.state
+                    .shared_sessions
+                    .as_ref()
+                    .map(super::shared_sessions::SharedSessionsModal::element),
+            )
             .children(self.render_rule_colors(cx))
             .children(self.render_color_picker(window, cx))
             .children(shortcuts)

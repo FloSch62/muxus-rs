@@ -28,6 +28,7 @@ mod scenes;
 mod scripts;
 mod session_views;
 mod sftp;
+mod shared_sessions;
 mod shell;
 #[cfg(test)]
 mod shell_tests;

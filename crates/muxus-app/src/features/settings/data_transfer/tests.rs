@@ -708,6 +708,7 @@ fn backup_carries_every_preference_key_in_order() {
             "historySettings",
             "logFileSettings",
             "folderSettings",
+            "sharedSessionSources",
         ]
     );
     let text = document.to_file_text();
@@ -2169,4 +2170,215 @@ fn remembers_the_last_backup() {
     // A stored value that is not a time is ignored.
     block_on(remember_backup(&sandbox.backend, "yesterday")).unwrap();
     assert_eq!(block_on(read_last_backup(&sandbox.backend)), None);
+}
+
+// --- backing up shared sessions links ----------------------------------------
+
+fn shared_link() -> Value {
+    json!({
+        "id": "lab-link",
+        "name": "Lab hosts",
+        "url": "https://portal.example.net/me.mxtsessions",
+        "folder": "Lab",
+        "refreshMinutes": 60,
+    })
+}
+
+/// A backup with nothing in it but these links.
+fn links_backup_text(links: Value) -> String {
+    json!({
+        "format": "muxus-backup",
+        "version": 2,
+        "createdAt": "2026-11-20T00:00:00.000Z",
+        "data": {
+            "sshHosts": [],
+            "savedHosts": [],
+            "hostOrder": [],
+            "preferences": {},
+            "tunnels": [],
+            "loggingPolicies": [],
+            "historySettings": { "maxTotalBytes": 1, "minFreeBytes": 0, "minFreePercent": 0 },
+            "sharedSessionSources": links,
+        },
+    })
+    .to_string()
+}
+
+fn restore_links(
+    sandbox: &Sandbox,
+    links: Value,
+    strategy: TransferConflictStrategy,
+) -> RestoreResult {
+    let document = parse_transfer_document(&links_backup_text(links)).unwrap();
+    block_on(restore_transfer_document(
+        &sandbox.backend,
+        &document,
+        RestoreSelection {
+            preferences: false,
+            connections: true,
+            tunnels: false,
+            logging: false,
+        },
+        strategy,
+    ))
+    .unwrap()
+}
+
+#[test]
+fn keeps_each_link_with_its_id_and_leaves_its_status_behind() {
+    let sandbox = Sandbox::new();
+    block_on(
+        sandbox
+            .backend
+            .save_shared_session_source(serde_json::from_value(shared_link()).unwrap()),
+    )
+    .unwrap();
+    // The link has hosts and a failed check by now; neither belongs in a backup.
+    block_on(
+        sandbox.backend.apply_shared_sessions(
+            "lab-link",
+            serde_json::from_value(json!({ "hosts": [{
+            "id": "node0", "name": "node0", "group": "Lab",
+            "profile": { "kind": "telnet", "host": "node0.example.net", "port": 23 },
+        }] }))
+            .unwrap(),
+        ),
+    )
+    .unwrap();
+    block_on(sandbox.backend.apply_shared_sessions(
+        "lab-link",
+        serde_json::from_value(json!({ "error": "gone" })).unwrap(),
+    ))
+    .unwrap();
+
+    let document = sandbox.backup();
+
+    assert_eq!(
+        document.data()["sharedSessionSources"],
+        json!([shared_link()])
+    );
+    let parsed = parse_transfer_document(&document.to_file_text()).unwrap();
+    assert_eq!(parsed.shared_session_sources(), [shared_link()]);
+    // The link's host is in the backup like any other.
+    assert_eq!(parsed.saved_hosts()[0]["id"], "node0");
+}
+
+#[test]
+fn restores_links_with_the_connections_keeping_or_replacing_one_that_is_already_there() {
+    let mut renamed = shared_link();
+    renamed["name"] = json!("Renamed in the backup");
+    let mut added = shared_link();
+    added["id"] = json!("new-link");
+    added["name"] = json!("New");
+    added["hostCount"] = json!(3);
+    let links = json!([renamed, added]);
+    let names = |sandbox: &Sandbox| -> Vec<(String, String)> {
+        let mut names: Vec<_> = block_on(sandbox.backend.shared_session_sources())
+            .unwrap()
+            .sources
+            .into_iter()
+            .map(|source| (source.id, source.name))
+            .collect();
+        names.sort();
+        names
+    };
+    let with_link = || {
+        let sandbox = Sandbox::new();
+        block_on(
+            sandbox
+                .backend
+                .save_shared_session_source(serde_json::from_value(shared_link()).unwrap()),
+        )
+        .unwrap();
+        sandbox
+    };
+
+    let sandbox = with_link();
+    let kept = restore_links(&sandbox, links.clone(), TransferConflictStrategy::Keep);
+    assert_eq!((kept.added, kept.updated, kept.skipped), (1, 0, 1));
+    assert_eq!(
+        names(&sandbox),
+        [
+            ("lab-link".to_owned(), "Lab hosts".to_owned()),
+            ("new-link".to_owned(), "New".to_owned()),
+        ]
+    );
+
+    let sandbox = with_link();
+    let replaced = restore_links(&sandbox, links, TransferConflictStrategy::Replace);
+    assert_eq!(
+        (replaced.added, replaced.updated, replaced.skipped),
+        (1, 1, 0)
+    );
+    assert_eq!(
+        names(&sandbox),
+        [
+            ("lab-link".to_owned(), "Renamed in the backup".to_owned()),
+            ("new-link".to_owned(), "New".to_owned()),
+        ]
+    );
+    // A restored link is read at the next check: nobody is reading it now.
+    let restored = block_on(sandbox.backend.shared_session_sources())
+        .unwrap()
+        .sources
+        .into_iter()
+        .find(|source| source.id == "new-link")
+        .unwrap();
+    assert_eq!(restored.last_checked_at, None);
+}
+
+#[test]
+fn leaves_out_a_link_this_computer_cannot_use_without_failing_the_restore() {
+    let sandbox = Sandbox::new();
+    let mut elsewhere = shared_link();
+    elsewhere["id"] = json!("share");
+    // A path of another system: not a full path here, and not a web address.
+    elsewhere["url"] = json!("lists/lab.json");
+
+    let result = restore_links(
+        &sandbox,
+        json!([elsewhere, shared_link()]),
+        TransferConflictStrategy::Keep,
+    );
+
+    assert_eq!((result.added, result.updated, result.skipped), (1, 0, 1));
+    let sources = block_on(sandbox.backend.shared_session_sources())
+        .unwrap()
+        .sources;
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].id, "lab-link");
+}
+
+#[test]
+fn refuses_a_backup_whose_links_are_malformed() {
+    let mut negative = shared_link();
+    negative["refreshMinutes"] = json!(-5);
+    let mut fraction = shared_link();
+    fraction["refreshMinutes"] = json!(1.5);
+    let mut nameless = shared_link();
+    nameless["name"] = json!("");
+    let mut too_rare = shared_link();
+    too_rare["refreshMinutes"] = json!(7 * 24 * 60 + 1);
+    for links in [
+        json!([negative]),
+        json!([fraction]),
+        json!([nameless]),
+        json!([too_rare]),
+        json!(["link"]),
+        json!({ "id": "lab-link" }),
+    ] {
+        let error = parse_transfer_document(&links_backup_text(links.clone())).unwrap_err();
+        assert_eq!(
+            error.message, "The backup data is incomplete or too large.",
+            "for {links}"
+        );
+    }
+    // A backup from before shared sessions has no such list.
+    let mut document: Value = serde_json::from_str(&links_backup_text(json!([]))).unwrap();
+    document["data"]
+        .as_object_mut()
+        .unwrap()
+        .remove("sharedSessionSources");
+    let parsed = parse_transfer_document(&document.to_string()).unwrap();
+    assert!(parsed.shared_session_sources().is_empty());
 }

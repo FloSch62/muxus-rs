@@ -8,6 +8,7 @@ use std::collections::HashSet;
 
 use serde_json::{Map, Value};
 
+use muxus_core::api::MAX_SHARED_SESSIONS_REFRESH_MINUTES;
 use muxus_core::js;
 
 use super::{
@@ -207,7 +208,38 @@ fn validate_backup_data(data: &Map<String, Value>) -> Result<(), TransferError> 
             })
         })
     });
-    if !tunnels_valid || !policies_valid || !history_valid || !log_files_valid || !folders_valid {
+    let text = |entry: &Map<String, Value>, key: &str| {
+        entry
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty())
+    };
+    let links_valid = data.get("sharedSessionSources").is_none_or(|links| {
+        bounded_array(Some(links), 200).is_some_and(|links| {
+            links.iter().all(|entry| {
+                entry.as_object().is_some_and(|entry| {
+                    ["id", "name", "url", "folder"]
+                        .iter()
+                        .all(|key| text(entry, key))
+                        && entry
+                            .get("refreshMinutes")
+                            .and_then(Value::as_f64)
+                            .is_some_and(|minutes| {
+                                minutes.fract() == 0.0
+                                    && (0.0..=f64::from(MAX_SHARED_SESSIONS_REFRESH_MINUTES))
+                                        .contains(&minutes)
+                            })
+                })
+            })
+        })
+    });
+    if !tunnels_valid
+        || !policies_valid
+        || !history_valid
+        || !log_files_valid
+        || !folders_valid
+        || !links_valid
+    {
         return Err(incomplete());
     }
     let tunnel_ids: Vec<String> = tunnels
