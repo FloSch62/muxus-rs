@@ -10,6 +10,8 @@
 //!   messages); [`restore`] plans the conflict-safe writes into the store.
 //! - [`launch`] parses the desktop executable's arguments and resolves what
 //!   they name against the host and workspace catalogs.
+//! - [`shared_sessions`] reads the session list behind a shared sessions link;
+//!   [`shared_sessions_export`] writes a sidebar folder as such a list.
 //!
 //! Parsing is synchronous and bounded by the vendors' size limits (10 MB and
 //! 20 MB). The async entry points ([`ImportReview::read_file`],
@@ -24,6 +26,8 @@ pub mod restore;
 pub mod review;
 pub mod securecrt;
 pub mod session;
+pub mod shared_sessions;
+pub mod shared_sessions_export;
 mod text;
 
 pub use mobaxterm::{MAX_MOBAXTERM_IMPORT_BYTES, mobaxterm_connections, parse_mobaxterm_sessions};
@@ -39,6 +43,15 @@ pub use session::{
     ImportError, ImportedAuthMode, ImportedDesktopSession, ImportedJumpHost, ImportedSerialSession,
     ImportedSession, ImportedSessionKind, ImportedSessionParseResult, ImportedSshSession,
     ImportedSshStorage, SkippedImportedSession, imported_connections,
+};
+pub use shared_sessions::{
+    SHARED_SESSIONS_FORMAT, SHARED_SESSIONS_VERSION, SharedListHost, SharedSessionsFormat,
+    SharedSessionsList, parse_shared_sessions,
+};
+pub use shared_sessions_export::{
+    SHARED_JUMP_HOST_FOLDER, ShareFolderOptions, SharedFolder, SharedSessionsDocument,
+    SharedSessionsDocumentHost, saved_profile_folder_defaults, share_folder,
+    shared_sessions_filename,
 };
 pub use text::{
     clean_import_name, normalize_import_folder, stable_import_id, strip_control_characters,

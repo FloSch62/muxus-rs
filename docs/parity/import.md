@@ -30,6 +30,7 @@ cd ../muxus/server && TMPDIR=$T ./node_modules/.bin/tsx \
 | MobaXterm SSH gateways, multi-hop (`__PIPE__`), shared hops, readable names, collision-free aliases | mobaxterm-import.ts `parseGateway`, `jumpHostRegistry` | done | hops are `Arc`-shared like the TypeScript's shared objects |
 | MobaXterm "Execute command" with `__PTVIRG__`/`__PIPE__`/`__EQUAL__`/`__DIEZE__` and "do not exit" | mobaxterm-import.ts `startupCommand` | done | |
 | MobaXterm skipped-session report and size limit (10 MB) | mobaxterm-import.ts | done | |
+| Shared sessions: the list behind a link (MobaXterm file, Muxus session list, Muxus backup) and a folder written as a list | client/src/shared-sessions.ts, shared-sessions-export.ts | done | `shared_sessions`, `shared_sessions_export`; see `shared-sessions.md` |
 | SecureCRT XML export: nested folders, SSH2 (host, user, port, auth intent), serial (port, baud, data/stop bits, parity, flow control) | client/src/securecrt-import.ts | done | golden: 11 documents; `roxmltree` instead of `DOMParser` |
 | SecureCRT DTD/entity refusal, size limit (20 MB), root/Sessions checks | securecrt-import.ts | done | see "Known differences" for the malformed-XML message |
 | Reviewed-session model, stable IDs (FNV-1a per code point, base 36), alias/name/folder cleaning | client/src/session-import.ts | done | golden helper cases, non-BMP included |
