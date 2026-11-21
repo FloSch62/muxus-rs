@@ -46,6 +46,7 @@ mod prefs;
 pub mod recovery;
 pub mod routes;
 pub mod scripts;
+pub mod shared_sessions;
 pub mod stats;
 pub mod terminal;
 pub mod updater;

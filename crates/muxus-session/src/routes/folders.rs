@@ -219,6 +219,7 @@ impl Backend {
             let destination_preserved =
                 source_key != target_key && database.folder_settings_for_path(&to)?.is_some();
             let moved = database.move_folder_settings(&from, &to)?;
+            database.move_shared_session_folders(&from, &to)?;
             for row in &moved.dropped {
                 shared
                     .vault

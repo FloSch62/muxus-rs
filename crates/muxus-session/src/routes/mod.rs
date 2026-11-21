@@ -16,6 +16,7 @@
 //! | `password-vault.ts` | [`vault`] |
 //! | `session-history.ts` | [`history`] |
 //! | `sftp.ts`, `ws/sftp-lease-socket.ts` | [`sftp`] |
+//! | `shared-sessions.ts` | [`shared_sessions`] |
 //! | `ssh.ts` | [`ssh`] |
 //! | `workspaces.ts` | [`workspaces`] |
 //! | `management-requests.ts` | not here: see [`crate::management`] |
@@ -31,6 +32,7 @@ pub mod hosts;
 pub mod local_files;
 pub mod password_managers;
 pub mod sftp;
+pub mod shared_sessions;
 pub mod ssh;
 pub mod vault;
 pub mod workspaces;
